@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
+from app.routers.ops import router as ops_router
 from app import database as dbmod
 from app.seed import seed_if_empty
 
@@ -22,8 +23,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DevOpsAgent",
-    description="智能运维数字员工 · 一期 MVP。LLM 只做分析与建议，策略引擎做决定，执行器做动作，证据链做证明。",
-    version="0.1.0",
+    description="智能运维数字员工。LLM 只做分析与建议，策略引擎做决定，执行器做动作，证据链做证明。",
+    version="0.2.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -34,3 +35,4 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(ops_router)

@@ -48,24 +48,15 @@ def _check(asset_id: str, action_id: str, params: dict, tenant_id: str, asset_te
 
 
 def query_metrics(asset_id: str, scenario: str, trigger: str) -> dict[str, Any]:
-    cpu = 92.4 if "cpu" in trigger.lower() or scenario in {"green", "verify_fail", "cooldown"} else 41.0
-    if scenario == "yellow":
-        cpu = 28.0
-    if scenario == "red":
-        cpu = 67.0
-    return {
-        "ref": "metrics:cpu",
-        "window_minutes": 30,
-        "cpu_pct": cpu,
-        "mem_pct": 71.2,
-        "disk_pct": 38.0,
-        "top_process": "java OrderApplication" if scenario != "yellow" else "mysqld",
-        "series": [
-            {"t": "-25m", "cpu": max(20, cpu - 40)},
-            {"t": "-10m", "cpu": max(40, cpu - 10)},
-            {"t": "now", "cpu": cpu},
-        ],
-    }
+    return _metrics_via_adapter(asset_id, scenario, trigger)
+
+
+def _metrics_via_adapter(asset_id: str, scenario: str, trigger: str) -> dict[str, Any]:
+    from app.integrations import get_zabbix_client
+
+    return get_zabbix_client().query_metrics(
+        asset_id, 30, scenario=scenario, trigger=trigger
+    )
 
 
 def read_logs(asset_id: str, scenario: str) -> dict[str, Any]:
@@ -140,7 +131,7 @@ def gather_evidence(
         "metrics": (
             "TOOL-METRICS-QUERY",
             {"window_minutes": 30},
-            lambda: query_metrics(asset_id, scenario, trigger),
+            lambda: _metrics_via_adapter(asset_id, scenario, trigger),
         ),
         "logs": (
             "TOOL-LOGS-READ",

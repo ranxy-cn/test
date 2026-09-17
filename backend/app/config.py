@@ -17,6 +17,21 @@ class Settings(BaseSettings):
     probe_required_passes: int = 3
     probe_interval_seconds: float = 1.0
     restart_cooldown_seconds: int = 1800
+    action_fail_cooldown_seconds: int = 1800
+    lock_ttl_seconds: int = 120
+
+    integration_mode: str = "mock"
+    zabbix_mode: str = ""
+    ansible_mode: str = ""
+    vault_mode: str = ""
+
+    zabbix_url: str = ""
+    zabbix_token: str = ""
+    vault_addr: str = ""
+    vault_token: str = ""
+    ansible_runner_enabled: bool = False
+    ansible_private_data_dir: str = "/tmp/ansible-runner"
+    notify_webhook_url: str = ""
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"

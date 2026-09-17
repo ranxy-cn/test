@@ -128,6 +128,9 @@ def test_daily_report_and_employee(client):
     emp = client.get("/api/v1/employee/DE-OPS-001").json()
     assert emp["id"] == "DE-OPS-001"
     report = client.get("/api/v1/reports/daily").json()
-    assert report["backups"]["status"] == "未检查"
+    assert report["backups"]["jobs"] >= 1
     assert report["completed"] >= 1
-    assert "不得将未检查写成成功" in report["backups"]["note"]
+    assert "不得写成成功" in report["backups"]["note"]
+    notes = client.get("/api/v1/notifications").json()["items"]
+    assert any(n["kind"] == "ticket_created" for n in notes)
+    assert any(n["kind"] == "recovered" for n in notes)

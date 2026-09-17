@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Asset, DigitalEmployee, MaintenanceWindow, utcnow
+from app.services.backups import seed_backup_jobs
 
 
 def seed_if_empty(db: Session) -> None:
@@ -124,3 +125,4 @@ def seed_if_empty(db: Session) -> None:
             )
         )
     db.flush()
+    seed_backup_jobs(db)

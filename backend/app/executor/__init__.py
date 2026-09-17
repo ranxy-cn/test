@@ -1,5 +1,5 @@
-from app.executor.ansible import MockAnsibleRunner
-from app.executor.vault import MockVault
+from app.integrations.ansible.mock import MockPlaybookRunner as MockAnsibleRunner
+from app.integrations.vault.mock import MockVaultClient as MockVault
 from app.executor.verifier import BusinessProbeVerifier
 
 __all__ = ["MockAnsibleRunner", "MockVault", "BusinessProbeVerifier"]

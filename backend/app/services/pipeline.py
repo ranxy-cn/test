@@ -11,11 +11,14 @@ from app.domain.catalog import get_playbook
 from app.domain.policy import AssetContext, evaluate_policy
 from app.domain.safety import UnsafeExecutionError, parse_diagnosis, validate_tool_call
 from app.domain.state_machine import transition
-from app.executor.ansible import MockAnsibleRunner
 from app.executor.verifier import BusinessProbeVerifier
+from app.integrations import get_playbook_runner
 from app.models import Approval, Asset, MaintenanceWindow, Ticket, TicketStatus, utcnow
 from app.schemas import params_digest
 from app.services.audit import add_audit, add_event
+from app.services.cooldowns import last_action_failure, record_action_failure
+from app.services.locks import acquire_asset_lock, heartbeat_lock, record_lock_conflict, release_asset_lock
+from app.services.notify import notify_ticket
 from sqlalchemy import select
 
 
@@ -35,7 +38,7 @@ def in_maintenance(db: Session, asset_id: str):
     )
 
 
-def asset_context(db: Session, asset: Asset) -> AssetContext:
+def asset_context(db: Session, asset: Asset, action_id: str | None = None) -> AssetContext:
     mw = in_maintenance(db, asset.id)
     return AssetContext(
         asset_id=asset.id,
@@ -45,6 +48,7 @@ def asset_context(db: Session, asset: Asset) -> AssetContext:
         last_restart_at=asset.last_restart_at,
         in_maintenance=mw is not None,
         role=asset.role,
+        action_failed_at=last_action_failure(db, asset.id, action_id),
     )
 
 
@@ -132,7 +136,7 @@ def run_pipeline(ticket_id: int) -> None:
             policy_version=get_settings().policy_version,
         )
 
-        ctx = asset_context(db, asset)
+        ctx = asset_context(db, asset, diagnosis.candidate_action_id)
         policy = evaluate_policy(diagnosis, ctx)
         ticket.policy_result = policy.model_dump()
         ticket.policy_light = policy.light
@@ -166,6 +170,7 @@ def run_pipeline(ticket_id: int) -> None:
             _escalate(db, ticket, "；".join(policy.reasons))
         elif policy.light == "yellow":
             _request_approval(db, ticket, pb.id if pb else (policy.action_id or ""))
+            notify_ticket(db, ticket, "pending_approval", f"{ticket.number} 等待审批 {ticket.candidate_action_id}")
         else:
             _set_status(ticket, TicketStatus.pending_execution)
             add_event(db, ticket_id=ticket.id, kind="auto_execute_authorized", message="绿灯：进入自动执行")
@@ -187,6 +192,8 @@ def run_pipeline(ticket_id: int) -> None:
 
 def run_execution(ticket_id: int, db: Session | None = None) -> None:
     close = False
+    acquired = False
+    asset_id_held = None
     if db is None:
         from app.database import SessionLocal
 
@@ -210,6 +217,15 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
             db.commit()
             return
 
+        ok, held = acquire_asset_lock(db, asset_id=ticket.asset_id, ticket_id=ticket.id)
+        if not ok:
+            record_lock_conflict(db, ticket.id, ticket.asset_id, held.ticket_id if held else 0)
+            notify_ticket(db, ticket, "lock_queued", f"{ticket.number} 等待资源锁 {ticket.asset_id}")
+            db.commit()
+            return
+        acquired = True
+        asset_id_held = ticket.asset_id
+
         try:
             call = validate_tool_call(
                 asset_id=ticket.asset_id,
@@ -228,9 +244,10 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
         add_event(db, ticket_id=ticket.id, kind="execution_started", message=f"按剧本 {pb.id}@{pb.version} 执行")
         db.flush()
 
-        runner = MockAnsibleRunner()
+        runner = get_playbook_runner()
 
         def on_step(step: dict[str, Any]) -> None:
+            heartbeat_lock(db, ticket.asset_id, ticket.id)
             add_event(
                 db,
                 ticket_id=ticket.id,
@@ -256,6 +273,7 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
             policy_version=get_settings().policy_version,
         )
         if not result["ok"]:
+            record_action_failure(db, ticket.asset_id, ticket.candidate_action_id or "", "Playbook 执行失败")
             _escalate(db, ticket, "Playbook 执行失败，停止并升级")
             db.commit()
             return
@@ -265,6 +283,7 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
 
         _set_status(ticket, TicketStatus.verifying)
         add_event(db, ticket_id=ticket.id, kind="verification_started", message="开始业务探测与观察期")
+        heartbeat_lock(db, ticket.asset_id, ticket.id)
         db.flush()
 
         verifier = BusinessProbeVerifier()
@@ -285,6 +304,9 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
             params_digest=ticket.params_digest,
         )
         if not verify["ok"]:
+            record_action_failure(
+                db, ticket.asset_id, ticket.candidate_action_id or "", verify.get("reason") or "验证失败"
+            )
             _escalate(db, ticket, verify.get("reason") or "验证失败，禁止循环重启")
             db.commit()
             return
@@ -306,6 +328,7 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
             params_digest=ticket.params_digest,
             evidence_refs=(ticket.diagnosis or {}).get("evidence_refs") or [],
         )
+        notify_ticket(db, ticket, "recovered", f"{ticket.number} 已自动恢复")
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -316,6 +339,12 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
         else:
             raise
     finally:
+        if acquired and asset_id_held:
+            try:
+                release_asset_lock(db, asset_id_held, ticket_id)
+                db.commit()
+            except Exception:
+                db.rollback()
         if close:
             db.close()
 
@@ -403,6 +432,31 @@ def _request_approval(db: Session, ticket: Ticket, playbook_id: str) -> None:
     add_event(db, ticket_id=ticket.id, kind="approval_requested", message="高风险动作等待审批，任务单已挂起")
 
 
+def retry_queued_executions() -> int:
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    n = 0
+    try:
+        tickets = db.scalars(
+            select(Ticket).where(Ticket.status == TicketStatus.pending_execution.value)
+        ).all()
+        ids = []
+        from app.services.locks import get_lock
+
+        for t in tickets:
+            lock = get_lock(db, t.asset_id)
+            if lock is None or lock.ticket_id == t.id:
+                ids.append(t.id)
+        db.commit()
+    finally:
+        db.close()
+    for tid in ids:
+        dispatch_execution(tid)
+        n += 1
+    return n
+
+
 def _escalate(db: Session, ticket: Ticket, reason: str) -> None:
     if ticket.status in {TicketStatus.escalated.value, TicketStatus.recovered.value, TicketStatus.skipped.value}:
         ticket.escalate_reason = reason
@@ -420,6 +474,7 @@ def _escalate(db: Session, ticket: Ticket, reason: str) -> None:
         playbook_version=ticket.playbook_version,
         evidence_refs=(ticket.diagnosis or {}).get("evidence_refs") or [],
     )
+    notify_ticket(db, ticket, "escalated", f"{ticket.number} 已升级：{reason}")
 
 
 def _evidence_refs(evidence: dict[str, Any]) -> list[str]:

@@ -73,6 +73,24 @@
           </el-table>
           <p class="mono" style="margin-top: 8px; color: #64748b">params_digest: {{ ticket.params_digest || '-' }}</p>
         </el-card>
+        <el-card header="资源锁" style="margin-top: 16px">
+          <p v-if="detail.lock">资产 {{ detail.lock.asset_id }} 由任务 {{ detail.lock.ticket_id }} 持有，过期 {{ detail.lock.expires_at }}</p>
+          <p v-else>当前无锁</p>
+          <el-button
+            v-if="ticket.status === 'pending_execution'"
+            size="small"
+            type="primary"
+            style="margin-top: 8px"
+            @click="doRetry"
+          >重试执行（锁释放后）</el-button>
+        </el-card>
+        <el-card header="通知记录" style="margin-top: 16px">
+          <el-table :data="detail.notifications || []" size="small">
+            <el-table-column prop="kind" label="类型" width="130" />
+            <el-table-column prop="channel" label="通道" width="90" />
+            <el-table-column prop="title" label="标题" />
+          </el-table>
+        </el-card>
       </el-col>
     </el-row>
   </div>
@@ -81,7 +99,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { approveTicket, fetchTicket, rejectTicket } from '../api'
+import { approveTicket, fetchTicket, rejectTicket, retryExecution } from '../api'
 
 const props = defineProps({ id: { type: String, required: true } })
 const detail = ref(null)
@@ -119,6 +137,11 @@ async function doApprove() {
 async function doReject() {
   await rejectTicket(props.id, { approver: approver.value, comment: comment.value || '驳回' })
   ElMessage.warning('已驳回并升级')
+  await load()
+}
+async function doRetry() {
+  await retryExecution(props.id)
+  ElMessage.success('已触发重试')
   await load()
 }
 

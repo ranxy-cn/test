@@ -9,7 +9,10 @@
         <el-menu-item index="/tickets">任务单</el-menu-item>
         <el-menu-item index="/employee">数字员工</el-menu-item>
         <el-menu-item index="/assets">资产台账</el-menu-item>
+        <el-menu-item index="/backups">备份</el-menu-item>
+        <el-menu-item index="/notifications">通知</el-menu-item>
         <el-menu-item index="/report">日报</el-menu-item>
+        <el-menu-item index="/status">集成状态</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

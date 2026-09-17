@@ -15,7 +15,8 @@ os.environ["DEMO_MODE"] = "true"
 os.environ["OBSERVATION_SECONDS"] = "0"
 os.environ["PROBE_INTERVAL_SECONDS"] = "0"
 os.environ["WEBHOOK_SECRET"] = "dev-webhook-secret"
-os.environ["OPENAI_API_KEY"] = ""
+os.environ["INTEGRATION_MODE"] = "mock"
+os.environ["ACTION_FAIL_COOLDOWN_SECONDS"] = "1800"
 os.environ["PLAYBOOKS_DIR"] = str(ROOT / "playbooks")
 os.environ["KNOWLEDGE_DIR"] = str(ROOT / "knowledge")
 
@@ -32,6 +33,9 @@ from app.main import app  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_db():
     get_settings.cache_clear()
+    from app.domain.catalog import load_catalog
+
+    load_catalog.cache_clear()
     dbmod.Base.metadata.drop_all(bind=dbmod.engine)
     dbmod.Base.metadata.create_all(bind=dbmod.engine)
     from app.seed import seed_if_empty

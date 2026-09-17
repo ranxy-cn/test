@@ -35,6 +35,26 @@ def mock_diagnose(alert: dict[str, Any], evidence: dict[str, Any]) -> Diagnosis:
             recommended_params={"force": False},
         )
 
+    if scenario == "disk" or "disk" in trigger or "磁盘" in trigger or "临时日志" in trigger:
+        return Diagnosis(
+            root_cause="应用临时日志堆积导致磁盘使用率升高",
+            evidence_refs=["metrics:disk", "runbook:RB-DISK-001"],
+            candidate_action_id="ACT-CLEAN-TMPLOG",
+            confidence=0.81,
+            summary="命中低风险预案 ACT-CLEAN-TMPLOG。",
+            recommended_params={"max_age_hours": 24},
+        )
+
+    if scenario == "probe" or "探针" in trigger or "probe" in trigger:
+        return Diagnosis(
+            root_cause="旁路业务探针进程异常退出",
+            evidence_refs=["deps:health", "runbook:RB-DISK-001"],
+            candidate_action_id="ACT-RESTART-PROBE",
+            confidence=0.8,
+            summary="命中低风险预案 ACT-RESTART-PROBE。",
+            recommended_params={"probe_name": "biz-probe"},
+        )
+
     if scenario == "red" or not rag_hits and ("native crash" in logs or "mystery" in trigger or "未知" in trigger):
         return Diagnosis(
             root_cause="出现未知原生崩溃，现有手册未覆盖该故障模式",

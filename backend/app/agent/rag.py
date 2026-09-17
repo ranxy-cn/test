@@ -20,25 +20,27 @@ def search_runbooks(query: str, top_k: int = 3) -> list[dict[str, Any]]:
         title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), path.stem)
         blob = (title + "\n" + text).lower()
         score = 0.0
-        for kw in ("cpu", "飙高", "full gc", "内存", "gc"):
+        for kw in ("cpu", "飙高", "full gc", "内存", "gc", "磁盘", "日志", "探针", "probe", "tmp"):
             if kw in q and kw in blob:
                 score += 0.25
-            elif kw in q or kw in blob:
-                score += 0.08
         if "cpu" in q and "cpu" in blob:
             score += 0.35
+        if any(k in q for k in ("磁盘", "disk", "探针", "probe")) and any(
+            k in blob for k in ("磁盘", "探针", "act-clean", "act-restart-probe")
+        ):
+            score += 0.4
         if score >= 0.4:
-            excerpt = ""
-            for ln in text.splitlines():
-                if "ACT-ROLLING-RESTART" in ln or "候选预案" in ln:
-                    excerpt = ln.strip()
-                    break
+            excerpt = next(
+                (ln.strip() for ln in text.splitlines() if "ACT-" in ln or "候选预案" in ln),
+                text.strip().splitlines()[0][:120],
+            )
+            doc_id = "RB-DISK-001" if "disk" in path.name or "磁盘" in title else "RB-CPU-001"
             hits.append(
                 {
-                    "doc_id": "RB-CPU-001",
+                    "doc_id": doc_id,
                     "title": title,
                     "score": round(min(score, 0.99), 2),
-                    "excerpt": excerpt or text.strip().splitlines()[0][:120],
+                    "excerpt": excerpt,
                     "path": str(Path(path.name)),
                 }
             )

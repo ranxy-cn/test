@@ -17,4 +17,14 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
+    beat_schedule={
+        "retry-queued-tickets": {
+            "task": "retry_queued_tickets",
+            "schedule": 15.0,
+        },
+        "run-due-backups": {
+            "task": "run_due_backups",
+            "schedule": 60.0,
+        },
+    },
 )

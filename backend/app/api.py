@@ -15,6 +15,7 @@ from app.models import (
     Asset,
     AuditLog,
     DigitalEmployee,
+    Notification,
     Ticket,
     TicketEvent,
     TicketStatus,
@@ -22,6 +23,7 @@ from app.models import (
 )
 from app.schemas import ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services.audit import add_audit, add_event
+from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
 from app.services.tickets import make_idempotency_key, next_ticket_number
 
@@ -30,7 +32,14 @@ router = APIRouter()
 
 @router.get("/health")
 def health():
-    return {"ok": True, "service": "devops-agent", "employee": get_settings().employee_id}
+    from app.integrations import describe_integrations
+
+    return {
+        "ok": True,
+        "service": "devops-agent",
+        "employee": get_settings().employee_id,
+        "integrations": describe_integrations(),
+    }
 
 
 @router.get("/api/v1/playbooks")
@@ -176,6 +185,7 @@ def zabbix_webhook(
         event_type="ticket_created",
         result={"number": ticket.number, "asset_id": asset.id},
     )
+    notify_ticket(db, ticket, "ticket_created", f"{ticket.number} 已立案，正在排查")
     db.commit()
     dispatch_investigation(ticket.id)
     db.refresh(ticket)
@@ -215,6 +225,12 @@ def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
     audits = db.scalars(
         select(AuditLog).where(AuditLog.ticket_id == ticket_id).order_by(AuditLog.id.asc())
     ).all()
+    from app.services.locks import get_lock
+
+    lock = get_lock(db, ticket.asset_id)
+    notes = db.scalars(
+        select(Notification).where(Notification.ticket_id == ticket_id).order_by(Notification.id.asc())
+    ).all()
     return {
         "ticket": TicketOut.model_validate(ticket),
         "events": [TicketEventOut.model_validate(e) for e in events],
@@ -247,6 +263,27 @@ def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
                 "created_at": a.created_at,
             }
             for a in audits
+        ],
+        "lock": None
+        if lock is None
+        else {
+            "asset_id": lock.asset_id,
+            "ticket_id": lock.ticket_id,
+            "holder": lock.holder,
+            "expires_at": lock.expires_at,
+            "heartbeat_at": lock.heartbeat_at,
+        },
+        "notifications": [
+            {
+                "id": n.id,
+                "kind": n.kind,
+                "channel": n.channel,
+                "title": n.title,
+                "body": n.body,
+                "read": n.read,
+                "created_at": n.created_at,
+            }
+            for n in notes
         ],
     }
 
@@ -328,6 +365,9 @@ def daily_report(report_date: date | None = Query(default=None, alias="date"), d
         not in {TicketStatus.recovered.value, TicketStatus.escalated.value, TicketStatus.skipped.value}
     ]
     employee = db.get(DigitalEmployee, get_settings().employee_id)
+    from app.services.backups import backup_report
+
+    backups = backup_report(db)
     return {
         "date": day.isoformat(),
         "employee_id": get_settings().employee_id,
@@ -347,11 +387,7 @@ def daily_report(report_date: date | None = Query(default=None, alias="date"), d
             }
             for t in tickets
         ],
-        "backups": {
-            "checked": False,
-            "status": "未检查",
-            "note": "一期未接入真实备份/恢复验证，不得将未检查写成成功",
-        },
+        "backups": backups,
         "open_items": [
             {
                 "number": t.number,

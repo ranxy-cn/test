@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.domain.catalog import Playbook, get_playbook
 from app.domain.safety import cooldown_violated
 from app.schemas import Diagnosis, PolicyResult
+from app.services.cooldowns import action_fail_cooldown_violated
 
 
 @dataclass
@@ -23,6 +24,7 @@ class AssetContext:
     last_restart_at: datetime | None
     in_maintenance: bool = False
     role: str = "app"
+    action_failed_at: datetime | None = None
 
 
 def evaluate_policy(
@@ -64,6 +66,8 @@ def evaluate_policy(
         reasons.append("前置条件失败：依赖数据库异常，禁止重启应用")
     if pb.restart_cooldown and cooldown_violated(asset.last_restart_at, now):
         reasons.append("前置条件失败：30 分钟内已执行过重启，禁止循环重启")
+    if action_fail_cooldown_violated(asset.action_failed_at, now):
+        reasons.append("前置条件失败：同资产同动作失败后处于冷却期，禁止自动再试")
 
     if reasons:
         return PolicyResult(

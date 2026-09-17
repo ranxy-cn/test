@@ -67,3 +67,22 @@ def test_red_recent_restart():
 def test_red_maintenance():
     result = evaluate_policy(_diag("ACT-ROLLING-RESTART"), _asset(in_maintenance=True))
     assert result.light == "red"
+
+
+def test_red_action_fail_cooldown():
+    last = datetime.now(timezone.utc) - timedelta(minutes=5)
+    result = evaluate_policy(_diag("ACT-ROLLING-RESTART"), _asset(action_failed_at=last))
+    assert result.light == "red"
+    assert "冷却" in "".join(result.reasons)
+
+
+def test_green_clean_tmplog():
+    result = evaluate_policy(_diag("ACT-CLEAN-TMPLOG"), _asset(db_ok=False))
+    assert result.light == "green"
+
+
+def test_green_restart_probe():
+    result = evaluate_policy(_diag("ACT-RESTART-PROBE"), _asset(db_ok=False))
+    assert result.light == "green"
+    assert result.can_execute is True
+

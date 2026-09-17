@@ -1,3 +1,33 @@
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg2://devops:devops@postgres:5432/devops_agent
+  REDIS_URL: redis://redis:6379/0
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+  USE_CELERY: "true"
+  DEMO_MODE: "true"
+  INTEGRATION_MODE: ${INTEGRATION_MODE:-mock}
+  ZABBIX_MODE: ${ZABBIX_MODE:-}
+  ANSIBLE_MODE: ${ANSIBLE_MODE:-}
+  VAULT_MODE: ${VAULT_MODE:-}
+  ZABBIX_URL: ${ZABBIX_URL:-}
+  ZABBIX_TOKEN: ${ZABBIX_TOKEN:-}
+  VAULT_ADDR: ${VAULT_ADDR:-}
+  VAULT_TOKEN: ${VAULT_TOKEN:-}
+  ANSIBLE_RUNNER_ENABLED: ${ANSIBLE_RUNNER_ENABLED:-false}
+  ANSIBLE_PRIVATE_DATA_DIR: ${ANSIBLE_PRIVATE_DATA_DIR:-/tmp/ansible-runner}
+  NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+  ACTION_FAIL_COOLDOWN_SECONDS: ${ACTION_FAIL_COOLDOWN_SECONDS:-1800}
+  LOCK_TTL_SECONDS: ${LOCK_TTL_SECONDS:-120}
+  OBSERVATION_SECONDS: "10"
+  PROBE_REQUIRED_PASSES: "3"
+  PROBE_INTERVAL_SECONDS: "1"
+  RESTART_COOLDOWN_SECONDS: "1800"
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+  POLICY_VERSION: policy-v1.0.0
+  TENANT_ID: tenant-default
+  EMPLOYEE_ID: DE-OPS-001
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -31,21 +61,7 @@ services:
       dockerfile: backend/Dockerfile
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
-      DATABASE_URL: postgresql+psycopg2://devops:devops@postgres:5432/devops_agent
-      REDIS_URL: redis://redis:6379/0
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
-      USE_CELERY: "true"
-      DEMO_MODE: "true"
-      OBSERVATION_SECONDS: "10"
-      PROBE_REQUIRED_PASSES: "3"
-      PROBE_INTERVAL_SECONDS: "1"
-      RESTART_COOLDOWN_SECONDS: "1800"
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      POLICY_VERSION: policy-v1.0.0
-      TENANT_ID: tenant-default
-      EMPLOYEE_ID: DE-OPS-001
+      <<: *backend-env
     ports:
       - "8000:8000"
     depends_on:
@@ -63,21 +79,23 @@ services:
       dockerfile: backend/Dockerfile
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
     environment:
-      DATABASE_URL: postgresql+psycopg2://devops:devops@postgres:5432/devops_agent
-      REDIS_URL: redis://redis:6379/0
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
-      USE_CELERY: "true"
-      DEMO_MODE: "true"
-      OBSERVATION_SECONDS: "10"
-      PROBE_REQUIRED_PASSES: "3"
-      PROBE_INTERVAL_SECONDS: "1"
-      RESTART_COOLDOWN_SECONDS: "1800"
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      POLICY_VERSION: policy-v1.0.0
-      TENANT_ID: tenant-default
-      EMPLOYEE_ID: DE-OPS-001
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./playbooks:/app/playbooks:ro
+      - ./knowledge:/app/knowledge:ro
+
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      <<: *backend-env
     depends_on:
       postgres:
         condition: service_healthy

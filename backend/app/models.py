@@ -176,3 +176,65 @@ class AlertEvent(Base):
     skip_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ticket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResourceLock(Base):
+    __tablename__ = "resource_locks"
+
+    asset_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(Integer, index=True)
+    holder: Mapped[str] = mapped_column(String(64), default="DE-OPS-001")
+    token: Mapped[str] = mapped_column(String(64))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class ActionFailure(Base):
+    __tablename__ = "action_failures"
+
+    asset_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="inbox")
+    title: Mapped[str] = mapped_column(String(256))
+    body: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BackupJob(Base):
+    __tablename__ = "backup_jobs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    asset_id: Mapped[str] = mapped_column(String(64), index=True)
+    schedule: Mapped[str] = mapped_column(String(64), default="daily")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_backup_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_restore_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
+class BackupRun(Base):
+    __tablename__ = "backup_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("backup_jobs.id"), index=True)
+    backup_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    restore_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    note: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
