@@ -18,6 +18,7 @@ ZABBIX_URL = "http://zabbix.test/api_jsonrpc.php"
 
 def test_readonly_whitelist_rejects_writes():
     for method in (
+        "host.create",
         "script.execute",
         "configuration.import",
         "event.acknowledge",
@@ -31,6 +32,10 @@ def test_readonly_whitelist_rejects_writes():
     client = HttpZabbixClient(ZABBIX_URL, "tok")
     with pytest.raises(ZabbixWriteRejected):
         client._rpc("script.execute", {"scriptid": "1", "hostid": "10105"})
+    with pytest.raises(ZabbixWriteRejected):
+        client._rpc("host.create", {"host": "evil"})
+    assert "user.login" in READ_ONLY_METHODS
+    assert "user.logout" in READ_ONLY_METHODS
     assert "host.get" in READ_ONLY_METHODS
     assert "history.get" in READ_ONLY_METHODS
     assert "problem.get" in READ_ONLY_METHODS
@@ -231,3 +236,55 @@ def test_webhook_native_macros_resolve_host(client):
     detail = client.get(f"/api/v1/tickets/{ticket['id']}").json()
     assert "events" in detail["ticket"]["evidence"]
     assert detail["ticket"]["evidence"]["metrics"]["source"] in {"mock", "zabbix-http", "zabbix-http-degraded"}
+
+
+@respx.mock
+def test_zabbix_50_user_login_session_auth():
+    """5.0 用 user+password 登录，session 放 JSON-RPC auth，不发 Bearer。"""
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        method = body["method"]
+        if method == "apiinfo.version":
+            assert "auth" not in body
+            return _rpc_ok("5.0.41", body.get("id"))
+        if method == "user.login":
+            params = body.get("params") or {}
+            assert "user" in params
+            assert "username" not in params
+            assert params["user"] == "Admin"
+            assert "auth" not in body
+            assert "Authorization" not in request.headers or not str(request.headers.get("Authorization", "")).startswith(
+                "Bearer"
+            )
+            return _rpc_ok("5f0sessionidabcdef", body.get("id"))
+        if method == "host.get":
+            assert body.get("auth") == "5f0sessionidabcdef"
+            return _rpc_ok(
+                [{"hostid": "10084", "host": "Zabbix server", "name": "Zabbix server", "status": "0"}],
+                body.get("id"),
+            )
+        if method == "problem.get":
+            assert body.get("auth") == "5f0sessionidabcdef"
+            return _rpc_ok([{"eventid": "1", "name": "Zabbix agent is not available"}], body.get("id"))
+        if method == "user.logout":
+            assert body.get("auth") == "5f0sessionidabcdef"
+            return _rpc_ok(True, body.get("id"))
+        return Response(400, json={"jsonrpc": "2.0", "error": {"message": f"unexpected {method}"}, "id": 1})
+
+    respx.post(ZABBIX_URL).mock(side_effect=handler)
+    client = HttpZabbixClient(ZABBIX_URL, token="", username="Admin", password="secret")
+    health = client.health()
+    assert health["ok"] is True
+    assert health["version"] == "5.0.41"
+    assert health["auth_style"] == "session"
+    hosts = client.list_hosts()
+    assert hosts[0]["host"] == "Zabbix server"
+    assert len(client.list_problems()) == 1
+    client.logout()
+    methods = [c["method"] for c in calls]
+    assert methods[0] == "apiinfo.version"
+    assert "user.login" in methods
+    assert "user.logout" in methods

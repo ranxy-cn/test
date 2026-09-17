@@ -14,6 +14,21 @@ from app.integrations.zabbix.mock import mock_metrics
 UNMAPPED_NOTE = "未映射，使用 mock/降级"
 
 
+def _major_version(version: str | None) -> int | None:
+    if not version:
+        return None
+    try:
+        return int(str(version).split(".")[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _legacy_session_auth(version: str | None) -> bool:
+    """Zabbix 5.x/4.x：user.login 用 user+password，session 放 JSON-RPC auth 字段。"""
+    major = _major_version(version)
+    return major is not None and major < 6
+
+
 class HttpZabbixClient:
     """Zabbix 6.0/7.0 JSON-RPC 只读客户端。方法名白名单，禁止写操作。"""
 
@@ -38,14 +53,16 @@ class HttpZabbixClient:
         self.retries = max(1, int(retries))
         self.verify_ssl = verify_ssl
         self._session: str | None = None
+        self.auth_style: str | None = None
         self.last_error: str | None = None
         self.last_latency_ms: float | None = None
         self.last_version: str | None = None
         self._rpc_id = 0
 
     def _headers(self, *, use_auth: bool) -> dict[str, str]:
-        headers = {"Content-Type": "application/json-rpc"}
-        if use_auth and self.token:
+        # 5.0 只认 JSON-RPC auth 字段；Bearer 仅 6.x+ API Token。
+        headers = {"Content-Type": "application/json"}
+        if use_auth and self.token and not _legacy_session_auth(self.last_version):
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
@@ -79,32 +96,72 @@ class HttpZabbixClient:
         self.last_error = str(last_exc) if last_exc else "unknown"
         raise RuntimeError(self.last_error)
 
+    def _login_param_candidates(self) -> list[dict[str, str]]:
+        user = self.username
+        password = self.password
+        if _legacy_session_auth(self.last_version):
+            return [{"user": user, "password": password}]
+        if self.last_version:
+            return [
+                {"username": user, "password": password},
+                {"user": user, "password": password},
+            ]
+        return [
+            {"user": user, "password": password},
+            {"username": user, "password": password},
+        ]
+
     def _ensure_session(self) -> None:
-        if self.token or self._session:
+        if self.token:
+            self.auth_style = "token"
+            return
+        if self._session:
+            self.auth_style = "session"
             return
         if not (self.username and self.password):
             return
-        result = self._rpc(
-            "user.login",
-            {"username": self.username, "password": self.password},
-            use_auth=False,
-        )
-        self._session = result if isinstance(result, str) else None
+        last_err: Exception | None = None
+        for params in self._login_param_candidates():
+            try:
+                result = self._rpc("user.login", params, use_auth=False)
+                if isinstance(result, str) and result:
+                    self._session = result
+                    self.auth_style = "session"
+                    return
+            except ZabbixWriteRejected:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        raise RuntimeError(str(last_err) if last_err else "user.login 失败")
+
+    def logout(self) -> None:
+        if not self._session:
+            return
+        try:
+            self._rpc("user.logout", [])
+        except Exception:
+            try:
+                self._rpc("user.logout", {})
+            except Exception:
+                pass
+        self._session = None
 
     def health(self) -> dict[str, Any]:
         started = time.perf_counter()
         try:
             version = self._rpc("apiinfo.version", {}, use_auth=False)
+            self.last_version = str(version)
             self._ensure_session()
             self._rpc("host.get", {"output": ["hostid"], "limit": 1})
             latency = round((time.perf_counter() - started) * 1000, 1)
             self.last_latency_ms = latency
-            self.last_version = str(version)
             self.last_error = None
             return {
                 "ok": True,
                 "mode": "real",
                 "version": version,
+                "auth_style": self.auth_style or ("token" if self.token else "session"),
                 "latency_ms": latency,
                 "last_error": None,
             }
@@ -322,6 +379,29 @@ class HttpZabbixClient:
                 "items": [],
                 "last_error": str(exc),
             }
+
+
+    def list_hosts(self, limit: int = 20) -> list[dict[str, Any]]:
+        self._ensure_session()
+        rows = self._rpc(
+            "host.get",
+            {"output": ["hostid", "host", "name", "status"], "limit": limit},
+        )
+        return rows if isinstance(rows, list) else []
+
+    def list_problems(self, limit: int = 100) -> list[dict[str, Any]]:
+        self._ensure_session()
+        rows = self._rpc(
+            "problem.get",
+            {
+                "output": ["eventid", "name", "severity", "clock"],
+                "recent": True,
+                "sortfield": "eventid",
+                "sortorder": "DESC",
+                "limit": limit,
+            },
+        )
+        return rows if isinstance(rows, list) else []
 
 
 def _pick_item(items: list[dict[str, Any]], keys: tuple[str, ...]) -> dict[str, Any] | None:

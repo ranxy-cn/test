@@ -151,6 +151,26 @@ ZABBIX_RETRIES=2
 - `real`：有 URL+凭据则注入 HTTP 客户端；调用失败时该次采证降级 mock 并在证据里标注「未映射，使用 mock/降级」。
 - `auto`：有 URL+Token（或 user/password）**且** `apiinfo.version` + 轻量 `host.get` 通过才用 real，否则 mock。
 
+**认证差异**：
+
+| 版本 | 方式 | 说明 |
+| --- | --- | --- |
+| Zabbix **5.0** | `user.login` + JSON-RPC `auth` | 参数名为 `user` + `password`，session id 放请求体 `auth` 字段；**没有** API Token / Bearer |
+| Zabbix **6.x / 7.x** | API Token（优先）或 `user.login` | Token 可用 `Authorization: Bearer`；登录参数名为 `username` |
+
+生产环境请**立刻修改默认 Admin 密码**，并改用只读用户。密码只放环境变量，不要写入仓库或 `.env` 提交。
+
+#### 对接联调 Zabbix（5.0.41）
+
+```bash
+export ZABBIX_URL=http://124.221.251.186:8081/api_jsonrpc.php
+export ZABBIX_USER=Admin
+export ZABBIX_PASSWORD=***          # 不要写入仓库
+export ZABBIX_MODE=auto             # 或 real
+python3 scripts/zabbix_ping.py
+# 工作台：http://localhost:8000/api/v1/status  应看到 zabbix.mode=real、version=5.0.41
+```
+
 工作台 **集成状态** 展示：请求模式、生效模式、版本、延迟、最近错误。
 
 主机映射：CMDB `external_id`（Zabbix hostid）/ `zabbix_host` / `hostname` 对齐 webhook 的 `hostid`/`host`。对不上时证据 `mapped=false` 并注明降级。
@@ -171,10 +191,11 @@ Webhook 同时接受演示字段与 Zabbix 宏：
 
 完整样例见 `scripts/zabbix_webhook.example.json`。仍可继续用 `asset_id` + `event_id` + `trigger_name` 跑 demo。
 
-有实例时自测（不会写 Zabbix）：
+有实例时自测（不会写 Zabbix；5.0 用用户会话，6.x 可用 Token）：
 
 ```bash
-export ZABBIX_URL=... ZABBIX_TOKEN=...
+export ZABBIX_URL=... ZABBIX_USER=Admin ZABBIX_PASSWORD=***
+# 或：export ZABBIX_TOKEN=...
 python3 scripts/zabbix_ping.py
 ```
 

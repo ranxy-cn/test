@@ -6,6 +6,7 @@ READ_ONLY_METHODS = frozenset(
     {
         "apiinfo.version",
         "user.login",
+        "user.logout",
         "host.get",
         "item.get",
         "history.get",
