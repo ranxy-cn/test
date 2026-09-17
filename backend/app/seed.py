@@ -14,7 +14,7 @@ def seed_if_empty(db: Session) -> None:
         db.add(
             DigitalEmployee(
                 id="DE-OPS-001",
-                name="运维数字员工·小维",
+                name="智能巡检·小维",
                 team="平台运维组",
                 systems=["订单系统"],
                 manager="张三",

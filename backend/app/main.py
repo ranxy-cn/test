@@ -24,7 +24,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DevOpsAgent",
-    description="智能运维数字员工。LLM 只做分析与建议，策略引擎做决定，执行器做动作，证据链做证明。",
+    description="智能巡检。LLM 只做分析与建议，策略引擎做决定，执行器做动作，证据链做证明。",
     version="0.2.0",
     lifespan=lifespan,
 )

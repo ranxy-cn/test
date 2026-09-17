@@ -1,6 +1,6 @@
 <template>
   <el-card v-if="emp">
-    <template #header>数字员工档案</template>
+    <template #header>智能巡检档案</template>
     <el-descriptions :column="2" border>
       <el-descriptions-item label="工号">{{ emp.id }}</el-descriptions-item>
       <el-descriptions-item label="名称">{{ emp.name }}</el-descriptions-item>

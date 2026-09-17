@@ -4,11 +4,11 @@
     <el-aside width="232px" class="aside">
       <div class="brand">
         <h1>DevOpsAgent</h1>
-        <p>智能运维数字员工 · 工作台</p>
+        <p>智能巡检 · 工作台</p>
       </div>
       <el-menu :router="true" :default-active="$route.path" background-color="transparent">
         <el-menu-item index="/tickets">任务单</el-menu-item>
-        <el-menu-item index="/employee">数字员工</el-menu-item>
+        <el-menu-item index="/employee">智能巡检</el-menu-item>
         <el-menu-item index="/assets">资产台账</el-menu-item>
         <el-menu-item index="/backups">备份</el-menu-item>
         <el-menu-item index="/notifications">通知</el-menu-item>

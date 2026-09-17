@@ -3,7 +3,7 @@
     <el-card class="login-card">
       <div class="login-brand">
         <h1>DevOpsAgent</h1>
-        <p>智能运维数字员工 · 工作台登录</p>
+        <p>智能巡检 · 工作台登录</p>
       </div>
       <el-form :model="form" @submit.prevent="submit">
         <el-form-item>

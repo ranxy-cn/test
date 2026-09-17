@@ -10,7 +10,7 @@ from app.domain.safety import never_give_secrets_to_llm, parse_diagnosis
 from app.schemas import Diagnosis
 
 
-SYSTEM_PROMPT = """你是运维数字员工的分析模块，只做根因分析与预案推荐。
+SYSTEM_PROMPT = """你是智能巡检的分析模块，只做根因分析与预案推荐。
 硬约束：
 - 不要输出任何命令、shell、路径或凭据。
 - candidate_action_id 只能是预案目录中的编号（如 ACT-ROLLING-RESTART），没有命中则设为 null。

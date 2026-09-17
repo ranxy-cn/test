@@ -53,7 +53,7 @@ def playbooks():
 def employee_profile(employee_id: str, db: Session = Depends(get_db)):
     row = db.get(DigitalEmployee, employee_id)
     if row is None:
-        raise HTTPException(404, "数字员工不存在")
+        raise HTTPException(404, "智能巡检不存在")
 
     total = db.scalar(select(func.count()).select_from(Ticket).where(Ticket.employee_id == employee_id)) or 0
     recovered = db.scalar(
