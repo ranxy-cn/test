@@ -26,39 +26,39 @@
       <el-table-column label="DB" width="70">
         <template #default="{ row }">{{ row.db_ok ? '正常' : '异常' }}</template>
       </el-table-column>
-      <el-table-column label="CPU" width="150">
+      <el-table-column label="CPU" width="160">
         <template #default="{ row }">
           <el-tag v-if="unmapped(row)" type="info" size="small" effect="plain">未映射</el-tag>
           <el-progress
             v-else-if="hasMetric(row, 'cpu_pct')"
             :percentage="barPercent(row, 'cpu_pct')"
-            :status="metricTone(row, 'cpu_pct')"
+            :color="metricColor(row, 'cpu_pct')"
             :stroke-width="10"
             :format="() => metricLabel(row, 'cpu_pct')"
           />
           <span v-else class="metric-empty">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="内存" width="150">
+      <el-table-column label="内存" width="160">
         <template #default="{ row }">
           <el-tag v-if="unmapped(row)" type="info" size="small" effect="plain">未映射</el-tag>
           <el-progress
             v-else-if="hasMetric(row, 'mem_pct')"
             :percentage="barPercent(row, 'mem_pct')"
-            :status="metricTone(row, 'mem_pct')"
+            :color="metricColor(row, 'mem_pct')"
             :stroke-width="10"
             :format="() => metricLabel(row, 'mem_pct')"
           />
           <span v-else class="metric-empty">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="磁盘" width="150">
+      <el-table-column label="磁盘" width="160">
         <template #default="{ row }">
           <el-tag v-if="unmapped(row)" type="info" size="small" effect="plain">未映射</el-tag>
           <el-progress
             v-else-if="hasMetric(row, 'disk_pct')"
             :percentage="barPercent(row, 'disk_pct')"
-            :status="metricTone(row, 'disk_pct')"
+            :color="metricColor(row, 'disk_pct')"
             :stroke-width="10"
             :format="() => metricLabel(row, 'disk_pct')"
           />
@@ -113,12 +113,12 @@ function metricLabel(row, field) {
   return `${value.toFixed(1)}%`
 }
 
-function metricTone(row, field) {
+function metricColor(row, field) {
   const value = metricNumber(row, field)
-  if (value == null) return undefined
-  if (value >= 90) return 'exception'
-  if (value >= 75) return 'warning'
-  return 'success'
+  if (value == null) return '#67c23a'
+  if (value >= 90) return '#f56c6c'
+  if (value >= 75) return '#e6a23c'
+  return '#67c23a'
 }
 
 function formatClock(iso) {
@@ -168,5 +168,8 @@ onUnmounted(() => {
 }
 .metric-empty {
   color: var(--muted);
+}
+:deep(.el-progress) {
+  min-width: 118px;
 }
 </style>
