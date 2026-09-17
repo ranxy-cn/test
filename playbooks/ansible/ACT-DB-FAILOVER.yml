@@ -1,0 +1,12 @@
+---
+- name: DB failover (whitelist ACT-DB-FAILOVER, no shell)
+  hosts: devops
+  gather_facts: false
+  vars:
+    failover_force: "{{ force | default(false) }}"
+  tasks:
+    - name: structured failover note
+      ansible.builtin.debug:
+        msg: "ACT-DB-FAILOVER force={{ failover_force }} on {{ inventory_hostname }} (no ad-hoc shell)"
+    - name: health ping
+      ansible.builtin.ping:

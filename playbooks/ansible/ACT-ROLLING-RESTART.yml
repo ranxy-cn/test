@@ -1,0 +1,22 @@
+---
+- name: Rolling restart (whitelist ACT-ROLLING-RESTART)
+  hosts: devops
+  gather_facts: false
+  vars:
+    app_service: "{{ service_name | default('order-app') }}"
+    restart_batch_size: "{{ batch_size | default(1) }}"
+  tasks:
+    - name: drain
+      ansible.builtin.debug:
+        msg: "drain {{ inventory_hostname }} batch_size={{ restart_batch_size }}"
+    - name: restart application service
+      ansible.builtin.service:
+        name: "{{ app_service }}"
+        state: restarted
+      when: (ansible_connection | default('ssh')) != 'local'
+    - name: skip live restart on local/demo
+      ansible.builtin.debug:
+        msg: "local connection: skip service restart for {{ app_service }}"
+      when: (ansible_connection | default('ssh')) == 'local'
+    - name: health ping
+      ansible.builtin.ping:

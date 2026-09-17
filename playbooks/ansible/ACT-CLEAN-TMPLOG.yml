@@ -1,0 +1,26 @@
+---
+- name: Clean temp logs (whitelist ACT-CLEAN-TMPLOG)
+  hosts: devops
+  gather_facts: false
+  vars:
+    log_max_age_hours: "{{ max_age_hours | default(24) }}"
+    log_root: /tmp/devops-agent-logs
+  tasks:
+    - name: ensure constrained log dir exists
+      ansible.builtin.file:
+        path: "{{ log_root }}"
+        state: directory
+        mode: "0755"
+    - name: find expired temp logs
+      ansible.builtin.find:
+        paths: "{{ log_root }}"
+        age: "{{ log_max_age_hours }}h"
+        patterns: "*.log"
+      register: stale_logs
+    - name: remove expired temp logs only under constrained dir
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ stale_logs.files | default([]) }}"
+    - name: health ping
+      ansible.builtin.ping:

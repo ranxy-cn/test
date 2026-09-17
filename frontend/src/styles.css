@@ -1,0 +1,90 @@
+:root {
+  --ink: #1e293b;
+  --muted: #64748b;
+  --brand: #4f46e5;
+  --brand2: #0ea5e9;
+  --line: #e5e9f2;
+  --bg: #f4f6fb;
+}
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; height: 100%; }
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+.layout { min-height: 100%; }
+.aside {
+  background: linear-gradient(180deg, #1e1b4b 0%, #312e81 55%, #0e3a5c 100%);
+  color: #fff;
+}
+.brand {
+  padding: 22px 18px 12px;
+}
+.brand h1 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: .5px;
+}
+.brand p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #c7d2fe;
+  line-height: 1.5;
+}
+.aside .el-menu { border-right: none; background: transparent; }
+.aside .el-menu-item { color: #e0e7ff; }
+.aside .el-menu-item.is-active {
+  background: rgba(255,255,255,.12);
+  color: #fff;
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,.9);
+}
+.header-actions { display: flex; align-items: center; gap: 10px; }
+.slogan { font-size: 13px; color: var(--muted); }
+.main { padding: 18px 22px 28px; }
+.status-green { color: #047857; }
+.status-yellow { color: #b45309; }
+.status-red { color: #b91c1c; }
+.card-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
+@media (max-width: 960px) {
+  .card-grid { grid-template-columns: 1fr 1fr; }
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.evidence pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 12px;
+  border-radius: 10px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.light-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+.light-green { background: #10b981; }
+.light-yellow { background: #f59e0b; }
+.light-red { background: #ef4444; }
+.login-page {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #1e1b4b 0%, #312e81 50%, #0e3a5c 100%);
+}
+.login-card { width: 380px; }
+.login-brand { margin-bottom: 8px; }
+.login-brand h1 { margin: 0; font-size: 22px; color: var(--brand); }
+.login-brand p { margin: 6px 0 12px; color: var(--muted); font-size: 13px; }
+.login-hint { margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
