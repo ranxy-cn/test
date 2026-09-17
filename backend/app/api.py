@@ -100,6 +100,13 @@ def list_assets(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/api/v1/assets/status")
+def list_asset_status(db: Session = Depends(get_db)):
+    from app.services.asset_status import collect_asset_runtime_status
+
+    return collect_asset_runtime_status(db)
+
+
 @router.post("/api/v1/auth/login")
 def login(body: LoginIn):
     token, ttl, username = authenticate(body.username, body.password)

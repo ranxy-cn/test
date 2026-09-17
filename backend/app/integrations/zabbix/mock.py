@@ -53,8 +53,9 @@ class MockZabbixClient:
         trigger: str = "",
         host_hint: dict[str, Any] | None = None,
         event_id: str = "",
+        include_history: bool = True,
     ) -> dict[str, Any]:
-        _ = (host_hint, event_id)
+        _ = (host_hint, event_id, include_history)
         return mock_metrics(asset_id, scenario, trigger, window_minutes)
 
     def query_events(
