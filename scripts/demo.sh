@@ -66,11 +66,11 @@ wait_status "$RID" escalated
 
 echo "== 资源锁冲突：占用后绿灯任务排队 =="
 curl -sS -X POST "$BASE/api/v1/locks" -H "Content-Type: application/json" \
-  -d '{"asset_id":"ast-order-app-01","ttl_seconds":120}'
+  -d '{"asset_id":"ast-order-gw-01","ttl_seconds":120}'
 echo
 LOCK=$(json -X POST "$BASE/api/v1/webhooks/zabbix" -d '{
   "event_id":"demo-lock-'"$(date +%s)"'",
-  "asset_id":"ast-order-app-01",
+  "asset_id":"ast-order-gw-01",
   "trigger_name":"CPU usage > 85% for 5 minutes",
   "demo_scenario":"green"
 }')
@@ -78,7 +78,7 @@ echo "$LOCK"
 LID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['ticket']['id'])" "$LOCK")
 wait_status "$LID" pending_execution
 echo "== 释放锁并重试执行 =="
-curl -sS -X DELETE "$BASE/api/v1/locks/ast-order-app-01"; echo
+curl -sS -X DELETE "$BASE/api/v1/locks/ast-order-gw-01"; echo
 curl -sS -X POST "$BASE/api/v1/tickets/$LID/retry-execution"; echo
 wait_status "$LID" recovered
 
