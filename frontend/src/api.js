@@ -47,6 +47,7 @@ export const rejectTicket = (id, payload) => http.post(`/tickets/${id}/reject`, 
 export const fetchEmployee = (id = 'DE-OPS-001') => http.get(`/employee/${id}`)
 export const fetchReport = (date) => http.get('/reports/daily', { params: date ? { date } : {} })
 export const fetchAssets = () => http.get('/assets')
+export const fetchAssetStatus = () => http.get('/assets/status')
 export const fetchPlaybooks = () => http.get('/playbooks')
 export const postWebhook = (payload, secret = 'dev-webhook-secret') =>
   http.post('/webhooks/zabbix', payload, { headers: { 'X-Webhook-Secret': secret } })

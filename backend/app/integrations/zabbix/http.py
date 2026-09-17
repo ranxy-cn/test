@@ -239,6 +239,7 @@ class HttpZabbixClient:
         trigger: str = "",
         host_hint: dict[str, Any] | None = None,
         event_id: str = "",
+        include_history: bool = True,
     ) -> dict[str, Any]:
         _ = event_id
         hint = host_hint or {}
@@ -274,7 +275,7 @@ class HttpZabbixClient:
             mem_item = _pick_item(items, ("vm.memory.utilization", "vm.memory.pavailable", "memory"))
             disk_item = _pick_item(items, ("vfs.fs.size[/,pused]", "vfs.fs.size", "fs.size"))
             time_from = int(time.time()) - int(window_minutes) * 60
-            series = _history_series(self, cpu_item, time_from)
+            series = _history_series(self, cpu_item, time_from) if include_history else []
             cpu_pct = _num(cpu_item.get("lastvalue") if cpu_item else None)
             mem_pct = _num(mem_item.get("lastvalue") if mem_item else None)
             disk_pct = _num(disk_item.get("lastvalue") if disk_item else None)
@@ -464,7 +465,7 @@ def _pick_item(items: list[dict[str, Any]], keys: tuple[str, ...]) -> dict[str, 
         for it, key in lowered:
             if want.lower() == key or want.lower() in key:
                 return it
-    return items[0] if items else None
+    return None
 
 
 def _num(value: Any) -> float | None:

@@ -21,6 +21,7 @@ class ZabbixClient(Protocol):
         trigger: str = "",
         host_hint: dict[str, Any] | None = None,
         event_id: str = "",
+        include_history: bool = True,
     ) -> dict[str, Any]: ...
 
     def query_events(

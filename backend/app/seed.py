@@ -136,12 +136,22 @@ def seed_if_empty(db: Session) -> None:
             tenant_id="tenant-default",
             reachable=False,
         ),
+        Asset(
+            id="ast-lab-unmapped",
+            hostname="lab-unmapped-01",
+            zabbix_host="",
+            external_id="",
+            app="订单系统",
+            role="app",
+            owner="张三",
+            tenant_id="tenant-default",
+        ),
     ]
     for asset in assets:
         if db.get(Asset, asset.id) is None:
             db.add(asset)
     for row in db.scalars(select(Asset)).all():
-        if not row.zabbix_host:
+        if not row.zabbix_host and row.external_id:
             row.zabbix_host = row.hostname
 
     existing_mw = db.scalar(select(MaintenanceWindow).limit(1))
