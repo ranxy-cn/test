@@ -7,10 +7,13 @@ import AssetsView from './views/AssetsView.vue'
 import StatusView from './views/StatusView.vue'
 import NotificationsView from './views/NotificationsView.vue'
 import BackupsView from './views/BackupsView.vue'
+import LoginView from './views/LoginView.vue'
+import { getToken } from './api'
 
-export default createRouter({
+const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/login', component: LoginView, meta: { public: true } },
     { path: '/', redirect: '/tickets' },
     { path: '/tickets', component: TicketsView },
     { path: '/tickets/:id', component: TicketDetailView, props: true },
@@ -22,3 +25,13 @@ export default createRouter({
     { path: '/backups', component: BackupsView },
   ],
 })
+
+router.beforeEach((to) => {
+  if (to.meta.public) return true
+  if (!getToken()) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  return true
+})
+
+export default router

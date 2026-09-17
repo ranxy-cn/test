@@ -37,10 +37,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
-- 工作台：http://localhost:8080
+- 工作台：http://localhost:8080（先用 `.env.example` 里的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录）
 - API 文档：http://localhost:8000/docs
-- 健康检查：http://localhost:8000/health
-- 集成状态：http://localhost:8000/api/v1/status
+- 健康检查：http://localhost:8000/health（公开）
+- 登录：`POST /api/v1/auth/login`（公开）
+- 集成状态：http://localhost:8000/api/v1/status（需 `Authorization: Bearer`）
 
 无 Docker 时（开发）：
 
@@ -63,6 +64,11 @@ BASE=http://localhost:8000 ./scripts/demo.sh
 也可在工作台点「模拟告警」，或用 curl：
 
 ```bash
+# 工作台 HMAC JWT（健康检查 / 文档 / Webhook / 登录除外，其余 /api/* 需 Bearer）
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
 # 绿灯：CPU 飙高 → ACT-ROLLING-RESTART → 自动执行 → 探测 3 次通过 → 已恢复
 curl -s -X POST http://localhost:8000/api/v1/webhooks/zabbix \
   -H 'Content-Type: application/json' \
@@ -77,6 +83,7 @@ curl -s -X POST http://localhost:8000/api/v1/webhooks/zabbix \
 # 批准
 curl -s -X POST http://localhost:8000/api/v1/tickets/1/approve \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"approver":"王五","comment":"同意"}'
 
 # 红灯：未知故障 → 不执行、升级人工
@@ -89,6 +96,22 @@ curl -s -X POST http://localhost:8000/api/v1/webhooks/zabbix \
 幂等键 = `event_id|asset_id|job_version|action_type`。`ast-order-app-03` 处于维护窗口，告警只记录不处置。
 
 演示模式观察期默认 **10 秒**（生产建议 10 分钟）。业务探测需连续 3 次通过。
+
+## 工作台登录
+
+工作台使用 HMAC JWT（HS256）Bearer，**不是**企业 IAM。演示默认账号只写在 `.env.example` / 环境变量里，不要把生产密码提交进仓库。
+
+```bash
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin
+AUTH_TOKEN_SECRET=dev-auth-token-secret
+AUTH_TOKEN_TTL_SECONDS=86400
+AUTH_TOKEN_ALGORITHM=HS256
+```
+
+- 公开：`GET /health`、`/docs` / `/redoc` / `/openapi.json`、`POST /api/v1/auth/login`、`POST /api/v1/webhooks/*`（Webhook 仍校验 `WEBHOOK_SECRET`）
+- 其余 `/api/*` 需 `Authorization: Bearer <access_token>`
+- Vue 登录页 + 路由守卫；请求自动带 Authorization；退出清 token
 
 ## 任务单状态机
 
@@ -246,39 +269,45 @@ python3 scripts/zabbix_ping.py
 
 ### Ansible（Playbook Runner）
 
-默认 **mock**。`ANSIBLE_MODE=real`（或 `INTEGRATION_MODE=real` 且 `ANSIBLE_RUNNER_ENABLED=true`）时，白名单动作走真实 Ansible：`ACT-ROLLING-RESTART` / `ACT-CLEAN-TMPLOG` / `ACT-RESTART-PROBE`（以及已审批的 `ACT-DB-FAILOVER`）。只跑 `playbooks/ansible/{action_id}.yml`，拒绝任意 ad-hoc shell；LLM 不能发明命令。
+默认 **mock**，demo 不需要安装 Ansible。只有显式打开真实路径时才尝试 runner；缺 `ansible-runner` / `ansible-playbook` / inventory 时**自动回退 mock**（`auto` 同样如此），不会把 mock 演示打挂。
 
 ```bash
-# 安装 runner（任选其一）
+# 1) 安装 runner（任选其一）
 pip install ansible-runner
 # 或系统包：ansible / ansible-playbook
 
+# 2) 打开真实模式（不要依赖全局 INTEGRATION_MODE=real 单独打开 Ansible）
 export ANSIBLE_MODE=real
 export ANSIBLE_RUNNER_ENABLED=true
 export ANSIBLE_PRIVATE_DATA_DIR=/tmp/ansible-runner
-# 可选固定 inventory；否则从 CMDB 资产生成临时 inventory
-export ANSIBLE_INVENTORY=/path/to/inventory.ini
-export ANSIBLE_ROLES_PATH=/path/to/roles
-# 私钥只给路径，不要写入仓库
-export ANSIBLE_SSH_PRIVATE_KEY_FILE=/path/to/id_ed25519
-export ANSIBLE_SSH_USER=devops
-# 无远端主机：check / dry-run
+
+# 3) 无远端主机：本地 inventory + check / dry-run
+cp inventory/demo.ini.example inventory/demo.ini   # 已 gitignore，勿提交真实主机
+export ANSIBLE_INVENTORY="$PWD/inventory/demo.ini"
 export ANSIBLE_CHECK_MODE=true
+
+# 有远端主机时再配私钥路径（不要把私钥写入仓库）
+# export ANSIBLE_SSH_PRIVATE_KEY_FILE=/path/to/id_ed25519
+# export ANSIBLE_SSH_USER=devops
+# export ANSIBLE_ROLES_PATH=/path/to/roles
+
 python3 scripts/ansible_ping.py
 # 或 ./scripts/ansible_ping.sh
 ```
 
-- `mock`：内存模拟步骤，demo 不需要 Ansible。
-- `real`：已启用且能导入 `ansible-runner`（或 PATH 上有 `ansible-playbook`）才注入真实执行器；否则回退 mock 并在集成状态写 `last_error`。
-- `auto`：启用 **且可导入 ansible-runner** 才 real，否则 mock。
+- `mock`（默认）：内存模拟步骤。`scripts/demo.sh` 保持这条路径。
+- `real`：`ANSIBLE_MODE=real` 或 `ANSIBLE_RUNNER_ENABLED=true`，且能导入 `ansible-runner` **或** PATH 上有 `ansible-playbook` 才注入真实执行器；否则回退 mock 并在集成状态写 `last_error`。
+- `auto`：已启用 **且可导入 ansible-runner** 才 real，否则 mock。
 
-**最小 inventory**：复制 `inventory/demo.ini.example` 为 `inventory/demo.ini`（已 gitignore），主机用 `ansible_connection=local`。无 SSH 私钥、也没有资产 IP 时，执行器会改用该示例并强制 `--check`，不会对未知主机下手。有真实 IP 但缺 `ANSIBLE_SSH_PRIVATE_KEY_FILE`（或 Vault 短凭证路径）会失败并升级，不循环重启。
+真实执行只跑 `playbooks/ansible/{action_id}.yml`（`ACT-ROLLING-RESTART` / `ACT-CLEAN-TMPLOG` / `ACT-RESTART-PROBE`，以及已审批的 `ACT-DB-FAILOVER`），拒绝任意 ad-hoc shell。Play 变量不得自引用（例如不要写 `probe_name: "{{ probe_name | default(...) }}"`，应使用 `probe_service` 这类独立名）。`ansible-runner` 的 `envvars` 会注入当前 `PATH`，以便找到 `ansible-playbook`。
+
+**最小 inventory**：`inventory/demo.ini.example` 使用 `ansible_connection=local`。无 SSH 私钥、也没有资产 IP 时，执行器会改用该示例并强制 `--check`。有真实 IP 但缺 `ANSIBLE_SSH_PRIVATE_KEY_FILE`（或 Vault 短凭证路径）会失败并升级，不循环重启。
 
 凭证优先 Vault adapter 短凭证（审计只记 `lease_id`）；否则 `ANSIBLE_SSH_PRIVATE_KEY_FILE`。密钥不得进入 LLM / 审计明文。超时 `ANSIBLE_TIMEOUT_SECONDS`（默认 120），日志截断并脱敏。
 
 工作台 **集成状态** 显示 ansible requested / effective / last_error；任务单证据 `evidence.execution` 含 playbook 名、rc、摘要日志。
 
-与 Zabbix real e2e 联调：先按上文 export `ZABBIX_*` 与 `ANSIBLE_MODE=real`，无远端主机时加 `ANSIBLE_CHECK_MODE=true`，再 `./scripts/e2e_real_zabbix.sh`。绿灯终态仍可能是 `recovered`，但执行摘要会标明 `runner=ansible-runner` 且 `mode=check`。不想跑真实 Ansible 时保持默认 mock 即可。
+与 Zabbix real e2e 联调：先 export `ZABBIX_*` 与 `ANSIBLE_MODE=real`，无远端主机时加 `ANSIBLE_CHECK_MODE=true` 和本地 inventory，再 `./scripts/e2e_real_zabbix.sh`。绿灯终态仍可能是 `recovered`，但执行摘要会标明 runner 与 `mode=check`。不想跑真实 Ansible 时保持默认 mock 即可。
 
 ### Vault（短期凭据）
 
@@ -313,7 +342,7 @@ NOTIFY_WEBHOOK_URL=https://hooks.example.com/devops
 cd backend && pytest -q
 ```
 
-覆盖：Webhook 鉴权与去重、状态机、策略引擎、诊断 schema、拒绝任意命令、绿灯/黄灯/红灯闭环、适配工厂切换、资源锁互斥与过期抢占、通知触发、备份状态字段、失败冷却禁止循环、Ansible 白名单与 real 路径选择。
+覆盖：Webhook 鉴权与去重、工作台 HMAC JWT 登录与 /api 保护、状态机、策略引擎、诊断 schema、拒绝任意命令、绿灯/黄灯/红灯闭环、适配工厂切换、资源锁互斥与过期抢占、通知触发、备份状态字段、失败冷却禁止循环、Ansible 白名单 / PATH 注入 / Play 变量不自引用。
 
 ## 一期 Mock vs 二期真实接入
 
@@ -327,7 +356,7 @@ cd backend && pytest -q
 | 密钥 | Mock Vault 30 分钟租约 | VaultClient 工厂；可选 HTTP |
 | 备份 | 日报「未检查」 | BackupJob/Run 骨架，成功 ≠ 恢复验证 |
 | 锁 / 通知 | 无 | 资源锁 + Notifier（日志/Webhook/工作台） |
-| 身份 | 单租户种子数据 | 不变 |
+| 身份 | 单租户种子数据 | 工作台 HMAC JWT（ADMIN_* / AUTH_TOKEN_*）；非企业 IAM |
 
 ## 目录
 
@@ -337,7 +366,7 @@ backend/app/services/      流水线、锁、通知、冷却、备份
 backend/app/routers/ops.py  状态 / 锁 / 通知 / 备份 API
 playbooks/                 版本化预案白名单（含清理日志、重启探针）
 knowledge/                 已审核操作手册
-frontend/                  Vue 3 + Element Plus（任务 / 通知 / 备份 / 集成状态）
+frontend/                  Vue 3 + Element Plus（登录 / 任务 / 通知 / 备份 / 集成状态）
 scripts/demo.sh            三色路径 + 锁冲突 + mock 备份
 scripts/zabbix_ping.py     有实例时只读连通性自测
 scripts/e2e_real_zabbix.sh 真实 Zabbix 告警 → 工单终态（凭据走环境变量）
@@ -351,7 +380,7 @@ playbooks/ansible/         真实 Ansible 白名单 YAML
 
 - 不要求提供真实生产密钥才能跑通 demo（缺凭据一律 mock）。
 - 不接 Kubernetes、不训练模型、不做完整 restic/灾备编排。
-- HashiCorp Vault 动态库完整策略、企业 IAM、pgvector RAG、跨集群 Ansible inventory 批量：均未做。真实 Ansible 仅白名单 play + 单资产 inventory/SSH。
+- HashiCorp Vault 动态库完整策略、企业 IAM、pgvector RAG、跨集群 Ansible inventory 批量：均未做。工作台仅为 HMAC JWT 登录。真实 Ansible 仅白名单 play + 单资产 inventory/SSH。
 - 不实现 Zabbix 自动应答、远程命令或改监控配置（只读白名单强制）。
 - 备份仅为任务/运行记录骨架，**备份成功 ≠ 可恢复**，隔离恢复也只是 mock 标记。
 

@@ -8,9 +8,15 @@ from app.config import get_settings
 from app.domain.safety import UnsafeExecutionError
 from app.integrations import describe_integrations, get_playbook_runner
 from app.integrations.ansible.mock import MockPlaybookRunner
-from app.integrations.ansible.real import AnsiblePlaybookRunner, PlaceholderPlaybookRunner
+from app.integrations.ansible.real import AnsiblePlaybookRunner, PlaceholderPlaybookRunner, run_ansible_job
 from app.integrations.ansible.safety import extra_vars_from, resolve_ansible_playbook
 from app.schemas import ToolCall
+
+
+def test_ansible_mode_settings_present():
+    settings = get_settings()
+    assert hasattr(settings, "ansible_mode")
+    assert hasattr(settings, "ansible_runner_enabled")
 
 
 def test_placeholder_alias():
@@ -159,3 +165,59 @@ def test_demo_inventory_example_exists():
     example = root / "inventory" / "demo.ini.example"
     assert example.is_file()
     assert "ansible_connection=local" in example.read_text(encoding="utf-8")
+
+
+def test_playbooks_do_not_self_reference_vars():
+    root = Path(__file__).resolve().parents[2] / "playbooks" / "ansible"
+    import yaml
+
+    files = list(root.glob("ACT-*.yml"))
+    assert files
+    for path in files:
+        plays = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+        for play in plays:
+            for name, value in (play.get("vars") or {}).items():
+                if not isinstance(value, str) or "{{" not in value:
+                    continue
+                compact = value.replace(" ", "")
+                assert f"{{{{{name}" not in compact, f"{path.name} vars.{name} 不得自引用"
+                assert f"{name}|default" not in compact, f"{path.name} vars.{name} 不得自引用"
+
+
+def test_run_ansible_job_injects_path_into_runner_envvars(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class _Stream:
+        def read(self):
+            return "ok"
+
+    class _Result:
+        rc = 0
+        status = "successful"
+        stdout = _Stream()
+        stderr = _Stream()
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setenv("PATH", "/opt/ansible/bin:/usr/bin")
+    monkeypatch.setattr("app.integrations.ansible.real.runner_importable", lambda: True)
+    import sys
+    import types
+
+    sys.modules["ansible_runner"] = types.SimpleNamespace(run=fake_run)
+    play = tmp_path / "ACT-ROLLING-RESTART.yml"
+    play.write_text("- hosts: devops\n  tasks: []\n", encoding="utf-8")
+    result = run_ansible_job(
+        playbook_path=play,
+        inventory_text="localhost ansible_connection=local",
+        extravars={"batch_size": 1},
+        timeout=30,
+        check=True,
+        private_data_dir=str(tmp_path / "pd"),
+    )
+    assert result["rc"] == 0
+    envvars = captured.get("envvars") or {}
+    assert envvars.get("PATH")
+    assert "/opt/ansible/bin" in envvars["PATH"]

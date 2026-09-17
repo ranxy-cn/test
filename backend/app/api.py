@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.auth import authenticate
 from app.config import get_settings
 from app.database import get_db
 from app.domain.catalog import dump_catalog
@@ -21,7 +22,7 @@ from app.models import (
     TicketStatus,
     utcnow,
 )
-from app.schemas import ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
+from app.schemas import ApprovalIn, LoginIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services.audit import add_audit, add_event
 from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
@@ -99,14 +100,25 @@ def list_assets(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/api/v1/auth/login")
+def login(body: LoginIn):
+    token, ttl, username = authenticate(body.username, body.password)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": ttl,
+        "username": username,
+    }
+
+
 def _check_webhook_secret(
     x_webhook_secret: str | None = Header(default=None),
     x_zabbix_token: str | None = Header(default=None, alias="X-Zabbix-Token"),
     authorization: str | None = Header(default=None),
 ) -> None:
-    provided = x_webhook_secret or x_zabbix_token or ""
-    if authorization and authorization.lower().startswith("bearer "):
-        provided = authorization.split(" ", 1)[1]
+    provided = (x_webhook_secret or x_zabbix_token or "").strip()
+    if not provided and authorization and authorization.lower().startswith("bearer "):
+        provided = authorization.split(" ", 1)[1].strip()
     expected = get_settings().webhook_secret
     if not provided or not hmac.compare_digest(provided, expected):
         raise HTTPException(401, "Webhook 鉴权失败")

@@ -57,11 +57,7 @@ def run_ansible_job(
         project.mkdir(exist_ok=True)
         dest_play = project / playbook_path.name
         dest_play.write_text(playbook_path.read_text(encoding="utf-8"), encoding="utf-8")
-        envvars = {
-            "ANSIBLE_STDOUT_CALLBACK": "default",
-            "ANSIBLE_HOST_KEY_CHECKING": "True" if host_key_checking else "False",
-            "ANSIBLE_RETRY_FILES_ENABLED": "False",
-        }
+        envvars = _runner_envvars(host_key_checking=host_key_checking)
         if roles_path:
             envvars["ANSIBLE_ROLES_PATH"] = roles_path
         if ssh_key_file:
@@ -91,6 +87,24 @@ def run_ansible_job(
         )
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _runner_envvars(*, host_key_checking: bool) -> dict[str, str]:
+    """ansible-runner 用 envvars 覆盖子进程环境，必须带上 PATH 才能找到 ansible-playbook。"""
+    import os
+
+    path = os.environ.get("PATH") or "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    envvars = {
+        "PATH": path,
+        "ANSIBLE_STDOUT_CALLBACK": "default",
+        "ANSIBLE_HOST_KEY_CHECKING": "True" if host_key_checking else "False",
+        "ANSIBLE_RETRY_FILES_ENABLED": "False",
+    }
+    for key in ("HOME", "LANG", "LC_ALL", "USER", "TMPDIR"):
+        value = os.environ.get(key)
+        if value:
+            envvars[key] = value
+    return envvars
 
 
 def _run_with_runner(

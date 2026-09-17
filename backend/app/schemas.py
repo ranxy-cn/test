@@ -316,6 +316,11 @@ class ApprovalIn(BaseModel):
     comment: str = ""
 
 
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
 class PolicyResult(BaseModel):
     light: Literal["green", "yellow", "red"]
     reasons: list[str]

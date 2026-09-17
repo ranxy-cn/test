@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
+from app.auth import BearerAuthMiddleware
 from app.routers.ops import router as ops_router
 from app import database as dbmod
 from app.seed import seed_if_empty
@@ -27,6 +28,7 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+app.add_middleware(BearerAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

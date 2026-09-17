@@ -46,6 +46,7 @@ body {
   border-bottom: 1px solid var(--line);
   background: rgba(255,255,255,.9);
 }
+.header-actions { display: flex; align-items: center; gap: 10px; }
 .slogan { font-size: 13px; color: var(--muted); }
 .main { padding: 18px 22px 28px; }
 .status-green { color: #047857; }
@@ -75,3 +76,15 @@ body {
 .light-green { background: #10b981; }
 .light-yellow { background: #f59e0b; }
 .light-red { background: #ef4444; }
+.login-page {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #1e1b4b 0%, #312e81 50%, #0e3a5c 100%);
+}
+.login-card { width: 380px; }
+.login-brand { margin-bottom: 8px; }
+.login-brand h1 { margin: 0; font-size: 22px; color: var(--brand); }
+.login-brand p { margin: 6px 0 12px; color: var(--muted); font-size: 13px; }
+.login-hint { margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }

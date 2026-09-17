@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./devops_agent.db"
     redis_url: str = "redis://localhost:6379/0"
     webhook_secret: str = "dev-webhook-secret"
+    admin_username: str = "admin"
+    admin_password: str = "admin"
+    auth_token_secret: str = "dev-auth-token-secret"
+    auth_token_ttl_seconds: int = 86400
+    auth_token_algorithm: str = "HS256"
     use_celery: bool = False
     demo_mode: bool = True
 

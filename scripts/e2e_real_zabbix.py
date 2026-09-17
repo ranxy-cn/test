@@ -167,12 +167,12 @@ def pick_mapped_asset(assets: list[dict[str, Any]], hostid: str, host: str, host
     return None
 
 
-def wait_terminal(base: str, ticket_id: int, timeout: int) -> dict[str, Any]:
+def wait_terminal(base: str, ticket_id: int, timeout: int, headers: dict[str, str] | None = None) -> dict[str, Any]:
     deadline = time.time() + timeout
     last: dict[str, Any] = {}
     seen: list[str] = []
     while time.time() < deadline:
-        last = _http_json("GET", f"{base}/api/v1/tickets/{ticket_id}", timeout=20)
+        last = _http_json("GET", f"{base}/api/v1/tickets/{ticket_id}", headers=headers, timeout=20)
         status = (last.get("ticket") or {}).get("status") or ""
         if not seen or seen[-1] != status:
             seen.append(status)
@@ -188,6 +188,21 @@ def wait_terminal(base: str, ticket_id: int, timeout: int) -> dict[str, Any]:
 def print_json(title: str, payload: Any) -> None:
     print(f"--- {title} ---")
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+
+def workbench_login(base: str) -> dict[str, str]:
+    user = env_get("ADMIN_USERNAME") or "admin"
+    password = env_get("ADMIN_PASSWORD") or "admin"
+    body = _http_json(
+        "POST",
+        f"{base}/api/v1/auth/login",
+        payload={"username": user, "password": password},
+        timeout=15,
+    )
+    token = (body or {}).get("access_token") or ""
+    if not token:
+        raise RuntimeError("工作台登录失败（检查 ADMIN_USERNAME / ADMIN_PASSWORD）")
+    return {"Authorization": f"Bearer {token}"}
 
 
 def main() -> int:
@@ -303,7 +318,13 @@ def main() -> int:
         return 1
     print_json("devops health", health_api)
     try:
-        status = _http_json("GET", f"{base}/api/v1/status")
+        workbench = workbench_login(base)
+    except Exception as exc:  # noqa: BLE001
+        print(f"工作台登录失败: {exc}")
+        print("请确认 ADMIN_USERNAME / ADMIN_PASSWORD（演示默认见 .env.example）。")
+        return 1
+    try:
+        status = _http_json("GET", f"{base}/api/v1/status", headers=workbench)
         print_json("devops integrations", (status.get("integrations") or {}).get("zabbix") or status)
     except Exception as exc:  # noqa: BLE001
         print(f"读取 /api/v1/status 失败: {exc}")
@@ -311,7 +332,7 @@ def main() -> int:
 
     assets = []
     try:
-        assets = (_http_json("GET", f"{base}/api/v1/assets") or {}).get("items") or []
+        assets = (_http_json("GET", f"{base}/api/v1/assets", headers=workbench) or {}).get("items") or []
     except Exception as exc:  # noqa: BLE001
         print(f"读取资产列表失败: {exc}")
 
@@ -355,7 +376,7 @@ def main() -> int:
     print(f"已立案 ticket_id={ticket_id} number={ticket.get('number')} status={ticket.get('status')}")
 
     try:
-        detail = wait_terminal(base, int(ticket_id), timeout)
+        detail = wait_terminal(base, int(ticket_id), timeout, headers=workbench)
     except TimeoutError as exc:
         print(str(exc))
         return 1

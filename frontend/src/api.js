@@ -1,9 +1,44 @@
 import axios from 'axios'
 
+export const TOKEN_KEY = 'devops_agent_token'
+
 const http = axios.create({
   baseURL: '/api/v1',
   timeout: 30000,
 })
+
+http.interceptors.request.use((config) => {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (token) {
+    config.headers = config.headers || {}
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+http.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error.response?.status
+    const url = String(error.config?.url || '')
+    if (status === 401 && !url.includes('/auth/login') && !url.includes('/webhooks/')) {
+      localStorage.removeItem(TOKEN_KEY)
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+        window.location.assign(`/login?redirect=${redirect}`)
+      }
+    }
+    return Promise.reject(error)
+  },
+)
+
+export const login = (username, password) => http.post('/auth/login', { username, password })
+export const setToken = (token) => {
+  if (token) localStorage.setItem(TOKEN_KEY, token)
+  else localStorage.removeItem(TOKEN_KEY)
+}
+export const getToken = () => localStorage.getItem(TOKEN_KEY)
+export const logout = () => localStorage.removeItem(TOKEN_KEY)
 
 export const fetchTickets = (status) => http.get('/tickets', { params: status ? { status } : {} })
 export const fetchTicket = (id) => http.get(`/tickets/${id}`)

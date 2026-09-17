@@ -3,8 +3,16 @@
 set -euo pipefail
 BASE="${BASE:-http://127.0.0.1:8000}"
 SECRET="${WEBHOOK_SECRET:-dev-webhook-secret}"
+ADMIN_USER="${ADMIN_USERNAME:-admin}"
+ADMIN_PASS="${ADMIN_PASSWORD:-admin}"
 
 json() { curl -sS -H "Content-Type: application/json" -H "X-Webhook-Secret: $SECRET" "$@"; }
+
+echo "== 工作台登录 =="
+LOGIN=$(curl -sS -X POST "$BASE/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}")
+TOKEN=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['access_token'])" "$LOGIN")
+api() { curl -sS -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" "$@"; }
 
 wait_status() {
   local id="$1"
@@ -12,7 +20,7 @@ wait_status() {
   local n=0
   while [[ $n -lt 60 ]]; do
     local st
-    st=$(curl -sS "$BASE/api/v1/tickets/$id" | python3 -c "import sys,json; print(json.load(sys.stdin)['ticket']['status'])")
+    st=$(api "$BASE/api/v1/tickets/$id" | python3 -c "import sys,json; print(json.load(sys.stdin)['ticket']['status'])")
     echo "  ticket $id -> $st"
     if [[ "$st" == "$want" ]]; then return 0; fi
     if [[ "$st" == "escalated" && "$want" != "escalated" ]]; then return 1; fi
@@ -24,7 +32,7 @@ wait_status() {
 
 echo "== health / 集成模式 =="
 curl -sS "$BASE/health"; echo
-curl -sS "$BASE/api/v1/status"; echo
+api "$BASE/api/v1/status"; echo
 
 echo "== 绿灯：CPU 飙高 → 滚动重启 =="
 GREEN=$(json -X POST "$BASE/api/v1/webhooks/zabbix" -d '{
@@ -48,7 +56,7 @@ echo "$YELLOW"
 YID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['ticket']['id'])" "$YELLOW")
 wait_status "$YID" pending_approval
 echo "== 批准黄灯任务 =="
-curl -sS -X POST "$BASE/api/v1/tickets/$YID/approve" -H "Content-Type: application/json" \
+api -X POST "$BASE/api/v1/tickets/$YID/approve" \
   -d '{"approver":"王五","comment":"同意主备切换"}'
 echo
 wait_status "$YID" recovered
@@ -65,7 +73,7 @@ RID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['ticket']['id']
 wait_status "$RID" escalated
 
 echo "== 资源锁冲突：占用后绿灯任务排队 =="
-curl -sS -X POST "$BASE/api/v1/locks" -H "Content-Type: application/json" \
+api -X POST "$BASE/api/v1/locks" \
   -d '{"asset_id":"ast-order-gw-01","ttl_seconds":120}'
 echo
 LOCK=$(json -X POST "$BASE/api/v1/webhooks/zabbix" -d '{
@@ -78,14 +86,14 @@ echo "$LOCK"
 LID=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['ticket']['id'])" "$LOCK")
 wait_status "$LID" pending_execution
 echo "== 释放锁并重试执行 =="
-curl -sS -X DELETE "$BASE/api/v1/locks/ast-order-gw-01"; echo
-curl -sS -X POST "$BASE/api/v1/tickets/$LID/retry-execution"; echo
+api -X DELETE "$BASE/api/v1/locks/ast-order-gw-01"; echo
+api -X POST "$BASE/api/v1/tickets/$LID/retry-execution"; echo
 wait_status "$LID" recovered
 
 echo "== mock 备份：备份成功 ≠ 恢复验证 =="
-BACKUP=$(curl -sS -X POST "$BASE/api/v1/backups/bj-order-db-daily/run")
+BACKUP=$(api -X POST "$BASE/api/v1/backups/bj-order-db-daily/run")
 echo "$BACKUP"
 python3 -c "import json,sys; d=json.loads(sys.argv[1]); assert d['backup_ok'] is True and d['restore_verified'] is None" "$BACKUP"
-curl -sS "$BASE/api/v1/reports/daily"; echo
+api "$BASE/api/v1/reports/daily"; echo
 
 echo "演示完成。"

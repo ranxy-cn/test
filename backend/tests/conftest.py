@@ -15,6 +15,10 @@ os.environ["DEMO_MODE"] = "true"
 os.environ["OBSERVATION_SECONDS"] = "0"
 os.environ["PROBE_INTERVAL_SECONDS"] = "0"
 os.environ["WEBHOOK_SECRET"] = "dev-webhook-secret"
+os.environ["ADMIN_USERNAME"] = "admin"
+os.environ["ADMIN_PASSWORD"] = "admin"
+os.environ["AUTH_TOKEN_SECRET"] = "dev-auth-token-secret"
+os.environ["AUTH_TOKEN_TTL_SECONDS"] = "86400"
 os.environ["INTEGRATION_MODE"] = "mock"
 os.environ["ACTION_FAIL_COOLDOWN_SECONDS"] = "1800"
 os.environ["PLAYBOOKS_DIR"] = str(ROOT / "playbooks")
@@ -53,8 +57,16 @@ def _reset_db():
 
 
 @pytest.fixture
+def anon_client(_reset_db):
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
 def client(_reset_db):
     with TestClient(app) as c:
+        token = login_token(c)
+        c.headers.update({"Authorization": f"Bearer {token}"})
         yield c
 
 
@@ -65,6 +77,12 @@ def db(_reset_db) -> Session:
         yield session
     finally:
         session.close()
+
+
+def login_token(client: TestClient, username: str = "admin", password: str = "admin") -> str:
+    resp = client.post("/api/v1/auth/login", json={"username": username, "password": password})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["access_token"]
 
 
 def auth_headers(secret: str = "dev-webhook-secret") -> dict[str, str]:

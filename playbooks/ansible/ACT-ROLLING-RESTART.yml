@@ -3,20 +3,20 @@
   hosts: devops
   gather_facts: false
   vars:
-    service_name: "{{ service_name | default('order-app') }}"
-    batch_size: "{{ batch_size | default(1) }}"
+    app_service: "{{ service_name | default('order-app') }}"
+    restart_batch_size: "{{ batch_size | default(1) }}"
   tasks:
     - name: drain
       ansible.builtin.debug:
-        msg: "drain {{ inventory_hostname }} batch_size={{ batch_size }}"
+        msg: "drain {{ inventory_hostname }} batch_size={{ restart_batch_size }}"
     - name: restart application service
       ansible.builtin.service:
-        name: "{{ service_name }}"
+        name: "{{ app_service }}"
         state: restarted
       when: (ansible_connection | default('ssh')) != 'local'
     - name: skip live restart on local/demo
       ansible.builtin.debug:
-        msg: "local connection: skip service restart for {{ service_name }}"
+        msg: "local connection: skip service restart for {{ app_service }}"
       when: (ansible_connection | default('ssh')) == 'local'
     - name: health ping
       ansible.builtin.ping:
