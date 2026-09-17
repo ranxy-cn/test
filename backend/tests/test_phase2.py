@@ -158,9 +158,9 @@ def test_factory_real_with_creds_selects_http(monkeypatch):
         assert isinstance(get_zabbix_client(), HttpZabbixClient)
         assert isinstance(get_vault_client(), HttpVaultClient)
         if info["ansible"]["mode"] == "real":
-            from app.integrations.ansible.real import PlaceholderPlaybookRunner
+            from app.integrations.ansible.real import AnsiblePlaybookRunner
 
-            assert isinstance(get_playbook_runner(), PlaceholderPlaybookRunner)
+            assert isinstance(get_playbook_runner(), AnsiblePlaybookRunner)
         else:
             assert isinstance(get_playbook_runner(), MockPlaybookRunner)
             assert info["ansible"]["fallback_reason"]

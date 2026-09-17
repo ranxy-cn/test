@@ -5,7 +5,7 @@ from typing import Any
 
 from app.config import Settings, get_settings
 from app.integrations.ansible.mock import MockPlaybookRunner
-from app.integrations.ansible.real import PlaceholderPlaybookRunner
+from app.integrations.ansible.real import AnsiblePlaybookRunner, playbook_binary, runner_importable
 from app.integrations.protocols import PlaybookRunner, VaultClient, ZabbixClient
 from app.integrations.vault.http import HttpVaultClient
 from app.integrations.vault.mock import MockVaultClient
@@ -30,14 +30,26 @@ def _item_mode(settings: Settings, item: str) -> str:
     return "mock"
 
 
+def _ansible_enabled(settings: Settings) -> bool:
+    if settings.ansible_runner_enabled:
+        return True
+    override = (settings.ansible_mode or "").strip().lower()
+    return override in {"real", "auto"}
+
+
 def _ansible_ready(settings: Settings) -> tuple[bool, str]:
-    if not settings.ansible_runner_enabled:
+    if not _ansible_enabled(settings):
         return False, "ANSIBLE_RUNNER_ENABLED 未打开，保持 mock"
-    try:
-        import ansible_runner  # type: ignore  # noqa: F401
-    except Exception:
-        return False, "未安装 ansible-runner，回退 mock（SSH/Runner 占位未启用）"
-    return True, ""
+    requested = _item_mode(settings, "ansible")
+    has_runner = runner_importable()
+    binary = playbook_binary()
+    if requested == "auto":
+        if has_runner:
+            return True, ""
+        return False, "auto 需要可导入 ansible-runner，回退 mock"
+    if has_runner or binary:
+        return True, ""
+    return False, "未安装 ansible-runner / ansible-playbook，回退 mock"
 
 
 def _zabbix_has_creds(settings: Settings) -> bool:
@@ -93,7 +105,7 @@ def describe_integrations(settings: Settings | None = None) -> dict[str, Any]:
                     reason = probe.get("last_error") or probe.get("detail") or "Zabbix 健康探测失败，回退 mock"
             else:
                 effective = "real"
-        elif requested == "real":
+        elif requested in {"real", "auto"}:
             effective = "real" if ready else "mock"
             if not ready:
                 reason = missing
@@ -106,8 +118,11 @@ def describe_integrations(settings: Settings | None = None) -> dict[str, Any]:
             "fallback_reason": reason,
             "version": (probe or {}).get("version") if name == "zabbix" else None,
             "latency_ms": (probe or {}).get("latency_ms") if name == "zabbix" else None,
-            "last_error": (probe or {}).get("last_error") if name == "zabbix" else None,
+            "last_error": (probe or {}).get("last_error") if name == "zabbix" else reason,
         }
+    if items.get("ansible"):
+        items["ansible"]["runner_importable"] = runner_importable()
+        items["ansible"]["playbook_bin"] = playbook_binary()
     return {
         "integration_mode": (settings.integration_mode or "mock").lower(),
         "notify_webhook": bool(settings.notify_webhook_url),
@@ -134,7 +149,7 @@ def get_playbook_runner(vault: VaultClient | None = None) -> PlaybookRunner:
     info = describe_integrations()["ansible"]
     vault = vault or get_vault_client()
     if info["mode"] == "real":
-        return PlaceholderPlaybookRunner(vault=vault)
+        return AnsiblePlaybookRunner(vault=vault)
     return MockPlaybookRunner(vault=vault)
 
 
@@ -150,4 +165,8 @@ def integration_health() -> dict[str, Any]:
     zabbix_desc["version"] = zabbix_probe.get("version") or zabbix_desc.get("version")
     zabbix_desc["latency_ms"] = zabbix_probe.get("latency_ms") if zabbix_probe.get("latency_ms") is not None else zabbix_desc.get("latency_ms")
     zabbix_desc["last_error"] = zabbix_probe.get("last_error") or zabbix_desc.get("last_error")
+    ansible_desc = desc["ansible"]
+    ansible_probe = clients["ansible"]
+    ansible_desc["last_error"] = ansible_probe.get("last_error") or ansible_desc.get("fallback_reason") or ansible_desc.get("last_error")
+    ansible_desc["version"] = ansible_probe.get("runner") or ("ansible-runner" if ansible_probe.get("runner_importable") else ansible_probe.get("playbook_bin"))
     return {"ok": True, "integrations": desc, "probes": clients}

@@ -246,14 +246,39 @@ python3 scripts/zabbix_ping.py
 
 ### Ansible（Playbook Runner）
 
+默认 **mock**。`ANSIBLE_MODE=real`（或 `INTEGRATION_MODE=real` 且 `ANSIBLE_RUNNER_ENABLED=true`）时，白名单动作走真实 Ansible：`ACT-ROLLING-RESTART` / `ACT-CLEAN-TMPLOG` / `ACT-RESTART-PROBE`（以及已审批的 `ACT-DB-FAILOVER`）。只跑 `playbooks/ansible/{action_id}.yml`，拒绝任意 ad-hoc shell；LLM 不能发明命令。
+
 ```bash
-ANSIBLE_RUNNER_ENABLED=true
-ANSIBLE_MODE=real
-ANSIBLE_PRIVATE_DATA_DIR=/tmp/ansible-runner
-# 镜像内需 pip install ansible-runner；未安装则回退 mock
+# 安装 runner（任选其一）
+pip install ansible-runner
+# 或系统包：ansible / ansible-playbook
+
+export ANSIBLE_MODE=real
+export ANSIBLE_RUNNER_ENABLED=true
+export ANSIBLE_PRIVATE_DATA_DIR=/tmp/ansible-runner
+# 可选固定 inventory；否则从 CMDB 资产生成临时 inventory
+export ANSIBLE_INVENTORY=/path/to/inventory.ini
+export ANSIBLE_ROLES_PATH=/path/to/roles
+# 私钥只给路径，不要写入仓库
+export ANSIBLE_SSH_PRIVATE_KEY_FILE=/path/to/id_ed25519
+export ANSIBLE_SSH_USER=devops
+# 无远端主机：check / dry-run
+export ANSIBLE_CHECK_MODE=true
+python3 scripts/ansible_ping.py
+# 或 ./scripts/ansible_ping.sh
 ```
 
-真实路径当前是 **ansible-runner / SSH 占位**：仍只跑白名单 YAML，拒绝自由命令。未接完整 inventory，不会在未配置时对主机下手。
+- `mock`：内存模拟步骤，demo 不需要 Ansible。
+- `real`：已启用且能导入 `ansible-runner`（或 PATH 上有 `ansible-playbook`）才注入真实执行器；否则回退 mock 并在集成状态写 `last_error`。
+- `auto`：启用 **且可导入 ansible-runner** 才 real，否则 mock。
+
+**最小 inventory**：复制 `inventory/demo.ini.example` 为 `inventory/demo.ini`（已 gitignore），主机用 `ansible_connection=local`。无 SSH 私钥、也没有资产 IP 时，执行器会改用该示例并强制 `--check`，不会对未知主机下手。有真实 IP 但缺 `ANSIBLE_SSH_PRIVATE_KEY_FILE`（或 Vault 短凭证路径）会失败并升级，不循环重启。
+
+凭证优先 Vault adapter 短凭证（审计只记 `lease_id`）；否则 `ANSIBLE_SSH_PRIVATE_KEY_FILE`。密钥不得进入 LLM / 审计明文。超时 `ANSIBLE_TIMEOUT_SECONDS`（默认 120），日志截断并脱敏。
+
+工作台 **集成状态** 显示 ansible requested / effective / last_error；任务单证据 `evidence.execution` 含 playbook 名、rc、摘要日志。
+
+与 Zabbix real e2e 联调：先按上文 export `ZABBIX_*` 与 `ANSIBLE_MODE=real`，无远端主机时加 `ANSIBLE_CHECK_MODE=true`，再 `./scripts/e2e_real_zabbix.sh`。绿灯终态仍可能是 `recovered`，但执行摘要会标明 `runner=ansible-runner` 且 `mode=check`。不想跑真实 Ansible 时保持默认 mock 即可。
 
 ### Vault（短期凭据）
 
@@ -288,7 +313,7 @@ NOTIFY_WEBHOOK_URL=https://hooks.example.com/devops
 cd backend && pytest -q
 ```
 
-覆盖：Webhook 鉴权与去重、状态机、策略引擎、诊断 schema、拒绝任意命令、绿灯/黄灯/红灯闭环、适配工厂切换、资源锁互斥与过期抢占、通知触发、备份状态字段、失败冷却禁止循环。
+覆盖：Webhook 鉴权与去重、状态机、策略引擎、诊断 schema、拒绝任意命令、绿灯/黄灯/红灯闭环、适配工厂切换、资源锁互斥与过期抢占、通知触发、备份状态字段、失败冷却禁止循环、Ansible 白名单与 real 路径选择。
 
 ## 一期 Mock vs 二期真实接入
 
@@ -298,7 +323,7 @@ cd backend && pytest -q
 | 排查工具 | 并行 Mock 指标/日志/发版/依赖 | 指标走 ZabbixClient 工厂 |
 | RAG | 关键词命中手册 | 仍为关键词；预留 pgvector |
 | LLM | 无 Key 时确定性 Mock | 不变 |
-| 执行 | Mock Ansible Runner | PlaybookRunner 工厂；真实为 ansible-runner/SSH 占位 |
+| 执行 | Mock Ansible Runner | 白名单 `playbooks/ansible/*.yml` + ansible-runner；缺 runner/inventory 回退 mock 或升级 |
 | 密钥 | Mock Vault 30 分钟租约 | VaultClient 工厂；可选 HTTP |
 | 备份 | 日报「未检查」 | BackupJob/Run 骨架，成功 ≠ 恢复验证 |
 | 锁 / 通知 | 无 | 资源锁 + Notifier（日志/Webhook/工作台） |
@@ -317,13 +342,16 @@ scripts/demo.sh            三色路径 + 锁冲突 + mock 备份
 scripts/zabbix_ping.py     有实例时只读连通性自测
 scripts/e2e_real_zabbix.sh 真实 Zabbix 告警 → 工单终态（凭据走环境变量）
 scripts/zabbix_webhook.example.json  Zabbix 5.0 媒体类型真实形态 payload
+scripts/ansible_ping.sh    检测 ansible-runner / ansible-playbook 是否可用
+inventory/demo.ini.example 无远端主机时的 local inventory 样例
+playbooks/ansible/         真实 Ansible 白名单 YAML
 ```
 
 ## 仍未做的范围
 
 - 不要求提供真实生产密钥才能跑通 demo（缺凭据一律 mock）。
 - 不接 Kubernetes、不训练模型、不做完整 restic/灾备编排。
-- 真实 Ansible inventory / SSH 批量执行、HashiCorp Vault 动态库完整策略、企业 IAM、pgvector RAG：均未做。
+- HashiCorp Vault 动态库完整策略、企业 IAM、pgvector RAG、跨集群 Ansible inventory 批量：均未做。真实 Ansible 仅白名单 play + 单资产 inventory/SSH。
 - 不实现 Zabbix 自动应答、远程命令或改监控配置（只读白名单强制）。
 - 备份仅为任务/运行记录骨架，**备份成功 ≠ 可恢复**，隔离恢复也只是 mock 标记。
 

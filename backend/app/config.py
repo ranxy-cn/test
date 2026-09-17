@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     vault_token: str = ""
     ansible_runner_enabled: bool = False
     ansible_private_data_dir: str = "/tmp/ansible-runner"
+    ansible_inventory: str = ""
+    ansible_roles_path: str = ""
+    ansible_ssh_private_key_file: str = ""
+    ansible_ssh_user: str = "devops"
+    ansible_ssh_port: int = 22
+    ansible_check_mode: bool = False
+    ansible_timeout_seconds: int = 120
+    ansible_host_key_checking: bool = True
     notify_webhook_url: str = ""
 
     openai_api_key: str = ""

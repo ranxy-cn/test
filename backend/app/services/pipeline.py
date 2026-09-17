@@ -271,12 +271,39 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
             tenant_id=ticket.tenant_id,
             asset_tenant_id=asset.tenant_id,
             on_step=on_step,
+            asset=asset,
         )
+        from app.domain.safety import never_give_secrets_to_llm
+        from app.integrations.ansible.safety import sanitize_execution_result
+
+        safe_result = sanitize_execution_result(never_give_secrets_to_llm(result))
+        evidence = dict(ticket.evidence or {})
+        evidence["execution"] = {
+            "ok": safe_result.get("ok"),
+            "runner": safe_result.get("runner") or runner.name,
+            "playbook": safe_result.get("playbook_file") or pb.id,
+            "playbook_id": pb.id,
+            "rc": safe_result.get("rc"),
+            "stdout_excerpt": safe_result.get("stdout_excerpt"),
+            "mode": safe_result.get("mode"),
+            "inventory_source": safe_result.get("inventory_source"),
+            "steps": safe_result.get("steps"),
+        }
+        ticket.evidence = evidence
         add_audit(
             db,
             ticket_id=ticket.id,
             event_type="execution",
-            result={"ok": result["ok"], "steps": result["steps"], "lease_id": result.get("lease_id")},
+            result={
+                "ok": safe_result.get("ok"),
+                "steps": safe_result.get("steps"),
+                "lease_id": safe_result.get("lease_id"),
+                "playbook": safe_result.get("playbook_file") or pb.id,
+                "rc": safe_result.get("rc"),
+                "stdout_excerpt": safe_result.get("stdout_excerpt"),
+                "runner": safe_result.get("runner") or runner.name,
+                "mode": safe_result.get("mode"),
+            },
             playbook_version=pb.version,
             params_digest=ticket.params_digest,
             policy_version=get_settings().policy_version,

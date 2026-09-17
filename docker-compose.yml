@@ -19,6 +19,13 @@ x-backend-env: &backend-env
   VAULT_TOKEN: ${VAULT_TOKEN:-}
   ANSIBLE_RUNNER_ENABLED: ${ANSIBLE_RUNNER_ENABLED:-false}
   ANSIBLE_PRIVATE_DATA_DIR: ${ANSIBLE_PRIVATE_DATA_DIR:-/tmp/ansible-runner}
+  ANSIBLE_INVENTORY: ${ANSIBLE_INVENTORY:-}
+  ANSIBLE_ROLES_PATH: ${ANSIBLE_ROLES_PATH:-}
+  ANSIBLE_SSH_PRIVATE_KEY_FILE: ${ANSIBLE_SSH_PRIVATE_KEY_FILE:-}
+  ANSIBLE_SSH_USER: ${ANSIBLE_SSH_USER:-devops}
+  ANSIBLE_CHECK_MODE: ${ANSIBLE_CHECK_MODE:-false}
+  ANSIBLE_TIMEOUT_SECONDS: ${ANSIBLE_TIMEOUT_SECONDS:-120}
+  ANSIBLE_HOST_KEY_CHECKING: ${ANSIBLE_HOST_KEY_CHECKING:-true}
   NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
   ACTION_FAIL_COOLDOWN_SECONDS: ${ACTION_FAIL_COOLDOWN_SECONDS:-1800}
   LOCK_TTL_SECONDS: ${LOCK_TTL_SECONDS:-120}
@@ -77,6 +84,7 @@ services:
     volumes:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
+      - ./inventory:/app/inventory:ro
 
   worker:
     build:
@@ -93,6 +101,7 @@ services:
     volumes:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
+      - ./inventory:/app/inventory:ro
 
   beat:
     build:
@@ -109,6 +118,7 @@ services:
     volumes:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
+      - ./inventory:/app/inventory:ro
 
   frontend:
     build:

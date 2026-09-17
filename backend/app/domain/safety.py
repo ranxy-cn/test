@@ -74,7 +74,7 @@ def validate_tool_call(
 
 def never_give_secrets_to_llm(payload: dict[str, Any]) -> dict[str, Any]:
     """Strip any credential-like keys before model context is built."""
-    blocked = {"password", "secret", "token", "credential", "lease", "private_key"}
+    blocked = {"password", "secret", "token", "credential", "lease", "private_key", "private_key_file", "identity", "ssh_key"}
     cleaned = {}
     for k, v in payload.items():
         if k.lower() in blocked or any(b in k.lower() for b in blocked):

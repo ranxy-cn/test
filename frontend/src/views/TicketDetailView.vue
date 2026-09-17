@@ -44,6 +44,9 @@
             <el-tab-pane label="手册 RAG">
               <pre>{{ pretty(ticket.evidence.rag) }}</pre>
             </el-tab-pane>
+            <el-tab-pane v-if="ticket.evidence.execution" label="执行">
+              <pre>{{ pretty(ticket.evidence.execution) }}</pre>
+            </el-tab-pane>
           </el-tabs>
         </el-card>
 

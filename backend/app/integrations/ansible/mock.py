@@ -19,7 +19,35 @@ class MockPlaybookRunner:
         self.vault = vault or MockVaultClient()
 
     def health(self) -> dict[str, Any]:
-        return {"ok": True, "mode": "mock", "detail": "模拟 drain/restart/health 步骤"}
+        return {"ok": True, "mode": "mock", "detail": "模拟 drain/restart/health 步骤", "last_error": None}
+
+    def run_playbook(
+        self,
+        action_id: str,
+        asset: Any,
+        params: dict[str, Any] | None = None,
+        credential: dict[str, Any] | None = None,
+        on_step: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        _ = (asset, credential)
+        from app.domain.catalog import get_playbook
+
+        pb = get_playbook(action_id)
+        if pb is None:
+            raise UnsafeExecutionError(f"action_id 不在预案白名单: {action_id}")
+        dummy_id = "ast-order-app-01"
+        if isinstance(asset, dict):
+            dummy_id = asset.get("id") or dummy_id
+        elif asset is not None:
+            dummy_id = getattr(asset, "id", None) or dummy_id
+        dummy = ToolCall(asset_id=dummy_id, action_id=action_id, params=params or {})
+        return self.run(
+            call=dummy,
+            playbook=pb,
+            tenant_id="tenant-default",
+            asset_tenant_id="tenant-default",
+            on_step=on_step,
+        )
 
     def run(
         self,
@@ -30,7 +58,9 @@ class MockPlaybookRunner:
         asset_tenant_id: str,
         fail_step: str | None = None,
         on_step: Callable[[dict[str, Any]], None] | None = None,
+        asset: Any = None,
     ) -> dict[str, Any]:
+        _ = asset
         validate_tool_call(
             asset_id=call.asset_id,
             action_id=call.action_id,

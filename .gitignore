@@ -20,6 +20,14 @@ frontend/dist/
 .env
 .env.local
 *.pem
+*.key
+id_rsa
+id_ed25519
+
+# Ansible runtime inventory (keep *.example)
+inventory/*.ini
+inventory/*.cfg
+!inventory/*.example
 
 # IDE / OS
 .idea/

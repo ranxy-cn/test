@@ -13,7 +13,7 @@
       </el-table>
       <el-alert
         style="margin-top: 14px"
-        title="无真实凭据或探测失败时保持 mock，demo 可跑。Zabbix 只读：ZABBIX_MODE=auto 时有 URL+Token 且 health 通过才用 real。"
+        title="无真实凭据或探测失败时保持 mock。Zabbix 只读；Ansible 仅跑 playbooks/ansible 白名单，缺 runner/inventory 会回退 mock 或升级。"
         type="info"
         :closable="false"
       />
