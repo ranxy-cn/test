@@ -173,23 +173,38 @@ python3 scripts/zabbix_ping.py
 
 工作台 **集成状态** 展示：请求模式、生效模式、版本、延迟、最近错误。
 
-主机映射：CMDB `external_id`（Zabbix hostid）/ `zabbix_host` / `hostname` 对齐 webhook 的 `hostid`/`host`。对不上时证据 `mapped=false` 并注明降级。
+主机映射：CMDB `external_id`（Zabbix hostid）/ `zabbix_host` / `hostname` 对齐 webhook 的 `hostid`/`host`。种子数据含默认主机 `Zabbix server`（hostid `10084` → `ast-zabbix-server`）。对不上时证据 `mapped=false` 并注明降级。
 
-Webhook 同时接受演示字段与 Zabbix 宏：
+Webhook 同时接受演示字段与 **Zabbix 5.0 媒体类型**常见宏（点号键亦可）：`{EVENT.ID}` `{HOST.NAME}` `{HOST.HOST}` `{HOST.ID}` `{TRIGGER.NAME}` `{EVENT.SEVERITY}` `{EVENT.NSEVERITY}` `{EVENT.NAME}` `{EVENT.VALUE}`。
 
-```json
-{
-  "eventid": "{EVENT.ID}",
-  "host": "{HOST.HOST}",
-  "hostname": "{HOST.NAME}",
-  "hostid": "{HOST.ID}",
-  "trigger": "{TRIGGER.NAME}",
-  "triggerid": "{TRIGGER.ID}",
-  "severity": "high"
-}
+媒体类型模板可用宏；运行时展开后的真实形态见 `scripts/zabbix_webhook.example.json`。仍可继续用 `asset_id` + `event_id` + `trigger_name` 跑 demo。
+
+### 真实告警 e2e
+
+与 `scripts/demo.sh`（纯 mock 三色路径，不访问 Zabbix）不同：本脚本用 **真实 Zabbix 5.0** 只读 API 取当前问题（若无打开的 problem，则注入一条 5.0 webhook 宏兼容载荷），由 DevOpsAgent **立案 → 调查/诊断 → 策略引擎 → 自动修复或待审批/升级**，证据须带 real API 的 host/items/problems。
+
+```bash
+export ZABBIX_URL=http://124.221.251.186:8081/api_jsonrpc.php
+export ZABBIX_USER=Admin
+export ZABBIX_PASSWORD='***'    # 本地填写，禁止写入仓库 / .env 提交
+export ZABBIX_MODE=real
+docker compose up --build -d
+./scripts/e2e_real_zabbix.sh
 ```
 
-完整样例见 `scripts/zabbix_webhook.example.json`。仍可继续用 `asset_id` + `event_id` + `trigger_name` 跑 demo。
+**期望终态**（任一即可，超时非 0）：
+
+| 终态 | 含义 |
+| --- | --- |
+| `recovered` | 绿灯，已自动执行白名单 Playbook 并探测通过 |
+| `pending_approval`（脚本打印为 `waiting_approval`） | 黄灯，等待人工审批 |
+| `escalated` | 红灯或验证失败，已升级且不循环重启 |
+
+脚本打印 ticket id、状态流转、证据是否来自 real Zabbix、策略结果。成功退出码 0。
+
+**缺凭据**：未设置 `ZABBIX_URL` 或 `ZABBIX_MODE=real` 时脚本清晰失败（请改用 mock demo）。有 URL 但没有密码时，会对公开 `apiinfo.version` 做探测并注入 webhook，输出标明「未配置密码，采证未走 real login」。
+
+请把同一组 `ZABBIX_*` 传给 `docker compose` 的 api/worker，否则立案成功但采证仍会降级 mock。
 
 有实例时自测（不会写 Zabbix；5.0 用用户会话，6.x 可用 Token）：
 
@@ -272,7 +287,8 @@ knowledge/                 已审核操作手册
 frontend/                  Vue 3 + Element Plus（任务 / 通知 / 备份 / 集成状态）
 scripts/demo.sh            三色路径 + 锁冲突 + mock 备份
 scripts/zabbix_ping.py     有实例时只读连通性自测
-scripts/zabbix_webhook.example.json  Zabbix 媒体类型样例 payload
+scripts/e2e_real_zabbix.sh 真实 Zabbix 告警 → 工单终态（凭据走环境变量）
+scripts/zabbix_webhook.example.json  Zabbix 5.0 媒体类型真实形态 payload
 ```
 
 ## 仍未做的范围

@@ -14,6 +14,16 @@ from app.integrations.zabbix.mock import mock_metrics
 UNMAPPED_NOTE = "未映射，使用 mock/降级"
 
 
+def normalize_zabbix_jsonrpc_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    trimmed = raw.rstrip("/")
+    if trimmed.endswith("api_jsonrpc.php"):
+        return trimmed
+    return trimmed + "/api_jsonrpc.php"
+
+
 def _major_version(version: str | None) -> int | None:
     if not version:
         return None
@@ -45,7 +55,7 @@ class HttpZabbixClient:
         retries: int = 2,
         verify_ssl: bool = True,
     ):
-        self.url = (url or "").rstrip("/")
+        self.url = normalize_zabbix_jsonrpc_url(url)
         self.token = token or ""
         self.username = username or ""
         self.password = password or ""
@@ -147,11 +157,15 @@ class HttpZabbixClient:
                 pass
         self._session = None
 
+    def api_version(self) -> str:
+        version = str(self._rpc("apiinfo.version", {}, use_auth=False))
+        self.last_version = version
+        return version
+
     def health(self) -> dict[str, Any]:
         started = time.perf_counter()
         try:
-            version = self._rpc("apiinfo.version", {}, use_auth=False)
-            self.last_version = str(version)
+            version = self.api_version()
             self._ensure_session()
             self._rpc("host.get", {"output": ["hostid"], "limit": 1})
             latency = round((time.perf_counter() - started) * 1000, 1)
@@ -180,16 +194,18 @@ class HttpZabbixClient:
 
     def resolve_host(self, asset_id: str, host_hint: dict[str, Any] | None = None) -> dict[str, Any]:
         hint = dict(host_hint or {})
-        hostid = str(hint.get("external_id") or hint.get("webhook_hostid") or "").strip()
-        names = [
-            str(hint.get("zabbix_host") or "").strip(),
-            str(hint.get("webhook_host") or "").strip(),
-            str(hint.get("hostname") or "").strip(),
-            str(hint.get("webhook_hostname") or "").strip(),
-        ]
-        names = [n for n in names if n]
+        hostids: list[str] = []
+        for key in ("webhook_hostid", "external_id"):
+            value = str(hint.get(key) or "").strip()
+            if value and value not in hostids:
+                hostids.append(value)
+        names = []
+        for key in ("webhook_host", "webhook_hostname", "zabbix_host", "hostname"):
+            value = str(hint.get(key) or "").strip()
+            if value and value not in names:
+                names.append(value)
         self._ensure_session()
-        if hostid:
+        for hostid in hostids:
             rows = self._rpc("host.get", {"output": ["hostid", "host", "name", "status"], "hostids": [hostid]})
             if rows:
                 row = rows[0]
@@ -270,6 +286,7 @@ class HttpZabbixClient:
                 "asset_id": asset_id,
                 "window_minutes": window_minutes,
                 "mapped": True,
+                "real": True,
                 "host": host,
                 "cpu_pct": cpu_pct,
                 "mem_pct": mem_pct,
@@ -323,17 +340,18 @@ class HttpZabbixClient:
                     "items": [],
                 }
             hostid = host["hostid"]
-            problems = self._rpc(
-                "problem.get",
-                {
-                    "output": ["eventid", "name", "severity", "clock", "objectid"],
-                    "hostids": [hostid],
-                    "recent": True,
-                    "sortfield": "eventid",
-                    "sortorder": "DESC",
-                    "limit": limit,
-                },
-            )
+            problem_params: dict[str, Any] = {
+                "output": ["eventid", "name", "severity", "clock", "objectid"],
+                "recent": True,
+                "sortfield": "eventid",
+                "sortorder": "DESC",
+                "limit": limit,
+            }
+            if event_id:
+                problem_params["eventids"] = [str(event_id)]
+            else:
+                problem_params["hostids"] = [hostid]
+            problems = self._rpc("problem.get", problem_params)
             event_params: dict[str, Any] = {
                 "output": ["eventid", "name", "severity", "clock", "value", "objectid"],
                 "hostids": [hostid],
@@ -361,6 +379,7 @@ class HttpZabbixClient:
                 "source": "zabbix-http",
                 "asset_id": asset_id,
                 "mapped": True,
+                "real": True,
                 "host": host,
                 "event_id": event_id or None,
                 "problems": problems or [],
@@ -394,7 +413,7 @@ class HttpZabbixClient:
         rows = self._rpc(
             "problem.get",
             {
-                "output": ["eventid", "name", "severity", "clock"],
+                "output": ["eventid", "name", "severity", "clock", "objectid"],
                 "recent": True,
                 "sortfield": "eventid",
                 "sortorder": "DESC",
@@ -402,6 +421,41 @@ class HttpZabbixClient:
             },
         )
         return rows if isinstance(rows, list) else []
+
+    def list_problem_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        """problem.get + event.get(selectHosts)，拼出 5.0 webhook 可用的主机字段。"""
+        problems = self.list_problems(limit=limit)
+        if not problems:
+            return []
+        eventids = [str(row.get("eventid")) for row in problems if row.get("eventid")]
+        events = self._rpc(
+            "event.get",
+            {
+                "output": ["eventid", "name", "severity", "clock", "value", "objectid"],
+                "eventids": eventids,
+                "selectHosts": ["hostid", "host", "name"],
+            },
+        )
+        by_id = {str(row.get("eventid")): row for row in (events or [])}
+        out: list[dict[str, Any]] = []
+        for problem in problems:
+            event = by_id.get(str(problem.get("eventid")), {})
+            hosts = event.get("hosts") if isinstance(event.get("hosts"), list) else []
+            host = hosts[0] if hosts else {}
+            out.append(
+                {
+                    "eventid": str(problem.get("eventid") or event.get("eventid") or ""),
+                    "name": problem.get("name") or event.get("name") or "",
+                    "severity": str(problem.get("severity") if problem.get("severity") is not None else event.get("severity") or ""),
+                    "clock": problem.get("clock") or event.get("clock"),
+                    "objectid": str(problem.get("objectid") or event.get("objectid") or ""),
+                    "value": event.get("value") or "1",
+                    "hostid": str(host.get("hostid") or ""),
+                    "host": host.get("host") or "",
+                    "hostname": host.get("name") or host.get("host") or "",
+                }
+            )
+        return out
 
 
 def _pick_item(items: list[dict[str, Any]], keys: tuple[str, ...]) -> dict[str, Any] | None:

@@ -116,6 +116,16 @@ def seed_if_empty(db: Session) -> None:
             tenant_id="tenant-default",
         ),
         Asset(
+            id="ast-zabbix-server",
+            hostname="Zabbix server",
+            zabbix_host="Zabbix server",
+            external_id="10084",
+            app="监控",
+            role="monitor",
+            owner="张三",
+            tenant_id="tenant-default",
+        ),
+        Asset(
             id="ast-order-unreachable",
             hostname="order-app-down",
             zabbix_host="order-app-down",

@@ -288,3 +288,127 @@ def test_zabbix_50_user_login_session_auth():
     assert methods[0] == "apiinfo.version"
     assert "user.login" in methods
     assert "user.logout" in methods
+
+
+def _zabbix_server_router():
+    host = {"hostid": "10084", "host": "Zabbix server", "name": "Zabbix server", "status": "0"}
+
+    def handler(request):
+        body = json.loads(request.content)
+        method = body["method"]
+        params = body.get("params") or {}
+        if method == "apiinfo.version":
+            return _rpc_ok("5.0.41", body.get("id"))
+        if method == "host.get":
+            hostids = [str(x) for x in (params.get("hostids") or [])]
+            if hostids and "10084" not in hostids:
+                return _rpc_ok([], body.get("id"))
+            return _rpc_ok([host], body.get("id"))
+        if method == "item.get":
+            return _rpc_ok(
+                [
+                    {
+                        "itemid": "23300",
+                        "name": "CPU utilization",
+                        "key_": "system.cpu.util",
+                        "lastvalue": "88.2",
+                        "lastclock": "1710000000",
+                        "units": "%",
+                        "value_type": "0",
+                    }
+                ],
+                body.get("id"),
+            )
+        if method == "history.get":
+            return _rpc_ok([{"clock": "1710000000", "value": "88.2"}], body.get("id"))
+        if method == "problem.get":
+            return _rpc_ok(
+                [{"eventid": "90042", "name": "CPU usage too high", "severity": "4", "objectid": "13553"}],
+                body.get("id"),
+            )
+        if method == "event.get":
+            return _rpc_ok(
+                [
+                    {
+                        "eventid": "90042",
+                        "name": "CPU usage too high",
+                        "clock": "1710000000",
+                        "severity": "4",
+                        "hosts": [host],
+                    }
+                ],
+                body.get("id"),
+            )
+        if method == "trigger.get":
+            return _rpc_ok([{"triggerid": "13553", "description": "CPU usage too high", "value": "1"}], body.get("id"))
+        return Response(400, json={"jsonrpc": "2.0", "error": {"message": f"unexpected {method}"}, "id": 1})
+
+    return handler
+
+
+@respx.mock
+def test_real_mode_ticket_evidence_includes_host_items_problems(client, monkeypatch):
+    monkeypatch.setenv("ZABBIX_MODE", "real")
+    monkeypatch.setenv("ZABBIX_URL", ZABBIX_URL)
+    monkeypatch.setenv("ZABBIX_TOKEN", "tok")
+    get_settings.cache_clear()
+    from app.integrations import clear_integration_probe_cache
+
+    clear_integration_probe_cache()
+    respx.post(ZABBIX_URL).mock(side_effect=_zabbix_server_router())
+    try:
+        resp = client.post(
+            "/api/v1/webhooks/zabbix",
+            json={
+                "EVENT.ID": "90042",
+                "HOST.NAME": "Zabbix server",
+                "HOST.HOST": "Zabbix server",
+                "HOST.ID": "10084",
+                "TRIGGER.NAME": "CPU usage too high",
+                "EVENT.SEVERITY": "High",
+                "EVENT.NSEVERITY": "4",
+                "EVENT.VALUE": "1",
+            },
+            headers=auth_headers(),
+        )
+        assert resp.status_code == 200
+        ticket_id = resp.json()["ticket"]["id"]
+        detail = client.get(f"/api/v1/tickets/{ticket_id}").json()
+        ticket = detail["ticket"]
+        metrics = ticket["evidence"]["metrics"]
+        events = ticket["evidence"]["events"]
+        assert metrics["source"] == "zabbix-http"
+        assert metrics["mapped"] is True
+        assert metrics["host"]["hostid"] == "10084"
+        assert metrics["items_preview"]
+        assert events["source"] == "zabbix-http"
+        assert events["mapped"] is True
+        assert events["problems"]
+        assert ticket["status"] in {"recovered", "pending_approval", "escalated"}
+        assert any(row["event_type"] == "policy" for row in detail["audit"])
+    finally:
+        monkeypatch.setenv("ZABBIX_MODE", "")
+        monkeypatch.delenv("ZABBIX_URL", raising=False)
+        monkeypatch.delenv("ZABBIX_TOKEN", raising=False)
+        get_settings.cache_clear()
+        clear_integration_probe_cache()
+
+
+@respx.mock
+def test_list_problem_events_includes_host():
+    respx.post(ZABBIX_URL).mock(side_effect=_zabbix_server_router())
+    client = HttpZabbixClient(ZABBIX_URL, "tok")
+    rows = client.list_problem_events()
+    assert rows[0]["hostid"] == "10084"
+    assert rows[0]["host"] == "Zabbix server"
+    assert client.api_version() == "5.0.41"
+
+
+def test_normalize_jsonrpc_url():
+    from app.integrations.zabbix.http import normalize_zabbix_jsonrpc_url
+
+    assert normalize_zabbix_jsonrpc_url("http://zabbix.example:8081") == "http://zabbix.example:8081/api_jsonrpc.php"
+    assert (
+        normalize_zabbix_jsonrpc_url("http://zabbix.example:8081/api_jsonrpc.php")
+        == "http://zabbix.example:8081/api_jsonrpc.php"
+    )

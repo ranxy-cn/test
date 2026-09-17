@@ -103,10 +103,123 @@ class Diagnosis(BaseModel):
         return self
 
 
-class ZabbixWebhookIn(BaseModel):
-    """兼容演示字段与 Zabbix 原生宏：eventid/host/hostid/trigger。"""
+_NSEVERITY_MAP = {
+    "0": "not_classified",
+    "1": "information",
+    "2": "warning",
+    "3": "average",
+    "4": "high",
+    "5": "disaster",
+}
+_SEVERITY_TEXT_MAP = {
+    "not classified": "not_classified",
+    "not_classified": "not_classified",
+    "information": "information",
+    "info": "information",
+    "warning": "warning",
+    "average": "average",
+    "high": "high",
+    "disaster": "disaster",
+    "critical": "disaster",
+}
 
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+def _is_unexpanded_macro(value: Any) -> bool:
+    text = str(value or "").strip()
+    return text.startswith("{") and text.endswith("}") and "." in text
+
+
+def _pick_webhook_value(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        if key not in data or data[key] is None:
+            continue
+        text = str(data[key]).strip()
+        if not text or _is_unexpanded_macro(text):
+            continue
+        return text
+    return ""
+
+
+def flatten_zabbix50_webhook(data: dict[str, Any]) -> dict[str, Any]:
+    """把 Zabbix 5.0 媒体类型常见字段（含 EVENT.ID / HOST.NAME 点号键）归一成内部字段。"""
+    out = dict(data)
+    event_id = _pick_webhook_value(out, "event_id", "eventid", "eventId", "EVENT.ID", "{EVENT.ID}")
+    trigger_name = _pick_webhook_value(
+        out, "trigger_name", "trigger", "TRIGGER.NAME", "{TRIGGER.NAME}", "EVENT.NAME", "{EVENT.NAME}"
+    )
+    host = _pick_webhook_value(out, "host", "HOST.HOST", "{HOST.HOST}", "hostname", "HOST.NAME", "{HOST.NAME}")
+    hostname = _pick_webhook_value(out, "hostname", "HOST.NAME", "{HOST.NAME}", "host", "HOST.HOST")
+    hostid = _pick_webhook_value(out, "hostid", "HOST.ID", "{HOST.ID}")
+    triggerid = _pick_webhook_value(out, "triggerid", "TRIGGER.ID", "{TRIGGER.ID}")
+    message = _pick_webhook_value(out, "message", "EVENT.NAME", "{EVENT.NAME}", "ALERT.SUBJECT", "{ALERT.SUBJECT}")
+    nseverity = _pick_webhook_value(out, "nseverity", "EVENT.NSEVERITY", "{EVENT.NSEVERITY}", "TRIGGER.NSEVERITY")
+    severity_raw = _pick_webhook_value(
+        out, "severity", "EVENT.SEVERITY", "{EVENT.SEVERITY}", "TRIGGER.SEVERITY", "{TRIGGER.SEVERITY}"
+    )
+    if not severity_raw and nseverity:
+        severity_raw = nseverity
+    severity_key = severity_raw.lower()
+    severity = _SEVERITY_TEXT_MAP.get(severity_key) or _NSEVERITY_MAP.get(severity_raw) or severity_raw or "high"
+    value_raw = _pick_webhook_value(out, "value", "EVENT.VALUE", "{EVENT.VALUE}", "EVENT.STATUS", "{EVENT.STATUS}")
+    if value_raw in {"1", "PROBLEM", "problem"}:
+        value = "PROBLEM"
+    elif value_raw in {"0", "OK", "ok", "RESOLVED", "resolved"}:
+        value = "OK"
+    else:
+        value = value_raw or "PROBLEM"
+    clock = _pick_webhook_value(out, "clock")
+    if not clock:
+        event_date = _pick_webhook_value(out, "EVENT.DATE", "{EVENT.DATE}")
+        event_time = _pick_webhook_value(out, "EVENT.TIME", "{EVENT.TIME}")
+        clock = " ".join(part for part in (event_date, event_time) if part)
+    ip = _pick_webhook_value(out, "ip", "HOST.IP", "{HOST.IP}")
+    item_name = _pick_webhook_value(out, "item_name", "ITEM.NAME", "{ITEM.NAME}")
+    item_key = _pick_webhook_value(out, "item_key", "ITEM.KEY", "{ITEM.KEY}")
+    item_value = _pick_webhook_value(out, "item_value", "ITEM.VALUE", "{ITEM.VALUE}")
+    if event_id:
+        out["event_id"] = event_id
+        out["eventid"] = event_id
+    if trigger_name:
+        out["trigger_name"] = trigger_name
+        out["trigger"] = trigger_name
+    if host:
+        out["host"] = host
+    elif hostname:
+        out["host"] = hostname
+    if hostname:
+        out["hostname"] = hostname
+    if hostid:
+        out["hostid"] = hostid
+    if triggerid:
+        out["triggerid"] = triggerid
+    if message:
+        out["message"] = message
+    if severity:
+        out["severity"] = severity
+    if nseverity:
+        out["nseverity"] = nseverity
+    if value:
+        out["value"] = value
+        out["action_type"] = out.get("action_type") or value
+    if clock:
+        out["clock"] = clock
+    if ip:
+        out["ip"] = ip
+    if item_name:
+        out["item_name"] = item_name
+    if item_key:
+        out["item_key"] = item_key
+    if item_value:
+        out["item_value"] = item_value
+    if not out.get("asset_id"):
+        out["asset_id"] = None
+    return out
+
+
+class ZabbixWebhookIn(BaseModel):
+    """兼容演示字段与 Zabbix 5.0 媒体类型宏：EVENT.ID / HOST.NAME / TRIGGER.NAME / EVENT.SEVERITY。"""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     event_id: str = ""
     eventid: str | None = None
@@ -115,12 +228,17 @@ class ZabbixWebhookIn(BaseModel):
     trigger: str | None = None
     triggerid: str | None = None
     severity: str = "high"
+    nseverity: str | None = None
     action_type: str = "PROBLEM"
     job_version: str = "v1"
     message: str = ""
     host: str | None = None
     hostname: str | None = None
     hostid: str | None = None
+    ip: str | None = None
+    item_name: str | None = None
+    item_key: str | None = None
+    item_value: str | None = None
     value: str = "PROBLEM"
     clock: str | int | None = None
     demo_scenario: str | None = None
@@ -130,16 +248,7 @@ class ZabbixWebhookIn(BaseModel):
     def accept_zabbix_macros(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        out = dict(data)
-        if not out.get("event_id"):
-            out["event_id"] = str(out.get("eventid") or out.get("eventId") or "")
-        if not out.get("trigger_name"):
-            out["trigger_name"] = str(out.get("trigger") or out.get("trigger_name") or "")
-        if not out.get("host") and out.get("hostname"):
-            out["host"] = out.get("hostname")
-        if not out.get("asset_id"):
-            out["asset_id"] = None
-        return out
+        return flatten_zabbix50_webhook(data)
 
     @model_validator(mode="after")
     def require_event_and_trigger(self) -> "ZabbixWebhookIn":

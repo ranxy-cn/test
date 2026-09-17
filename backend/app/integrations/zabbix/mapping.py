@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Asset
@@ -58,8 +58,9 @@ def find_asset_by_zabbix(
     for name in (host, hostname):
         if not name:
             continue
-        clauses.append(Asset.zabbix_host == name)
-        clauses.append(Asset.hostname == name)
+        lowered = name.lower()
+        clauses.append(func.lower(Asset.zabbix_host) == lowered)
+        clauses.append(func.lower(Asset.hostname) == lowered)
     if not clauses:
         return None
     return db.scalar(select(Asset).where(or_(*clauses)))
