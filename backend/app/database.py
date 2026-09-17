@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -34,6 +34,28 @@ def get_db() -> Generator[Session, None, None]:
         raise
     finally:
         db.close()
+
+
+def ensure_schema() -> None:
+    """create_all + 增量列（已有 docker volume 不会自动 ALTER）。"""
+    Base.metadata.create_all(bind=engine)
+    try:
+        insp = inspect(engine)
+        if "assets" not in insp.get_table_names():
+            return
+        cols = {c["name"] for c in insp.get_columns("assets")}
+    except Exception:
+        return
+    stmts = []
+    if "external_id" not in cols:
+        stmts.append("ALTER TABLE assets ADD COLUMN external_id VARCHAR(64) DEFAULT ''")
+    if "zabbix_host" not in cols:
+        stmts.append("ALTER TABLE assets ADD COLUMN zabbix_host VARCHAR(128) DEFAULT ''")
+    if not stmts:
+        return
+    with engine.begin() as conn:
+        for stmt in stmts:
+            conn.execute(text(stmt))
 
 
 def init_engine(url: str | None = None):

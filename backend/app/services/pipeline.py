@@ -13,7 +13,8 @@ from app.domain.safety import UnsafeExecutionError, parse_diagnosis, validate_to
 from app.domain.state_machine import transition
 from app.executor.verifier import BusinessProbeVerifier
 from app.integrations import get_playbook_runner
-from app.models import Approval, Asset, MaintenanceWindow, Ticket, TicketStatus, utcnow
+from app.integrations.zabbix.mapping import mapping_from_asset
+from app.models import AlertEvent, Approval, Asset, MaintenanceWindow, Ticket, TicketStatus, utcnow
 from app.schemas import params_digest
 from app.services.audit import add_audit, add_event
 from app.services.cooldowns import last_action_failure, record_action_failure
@@ -97,6 +98,12 @@ def run_pipeline(ticket_id: int) -> None:
             "message": ticket.title,
             "demo_scenario": ticket.demo_scenario,
         }
+        alert_row = db.scalar(select(AlertEvent).where(AlertEvent.ticket_id == ticket.id))
+        webhook_payload = (alert_row.payload if alert_row else None) or {}
+        if webhook_payload.get("host"):
+            alert["host"] = webhook_payload.get("host")
+        if webhook_payload.get("hostid"):
+            alert["hostid"] = webhook_payload.get("hostid")
         state = run_investigation(
             {
                 "ticket_id": ticket.id,
@@ -105,6 +112,8 @@ def run_pipeline(ticket_id: int) -> None:
                 "asset_tenant_id": asset.tenant_id,
                 "db_ok": asset.db_ok,
                 "alert": alert,
+                "host_hint": mapping_from_asset(asset, webhook_payload),
+                "event_id": ticket.event_id,
             }
         )
         evidence = state.get("evidence") or {}

@@ -29,6 +29,9 @@
             <el-tab-pane label="指标">
               <pre>{{ pretty(ticket.evidence.metrics) }}</pre>
             </el-tab-pane>
+            <el-tab-pane label="事件">
+              <pre>{{ pretty(ticket.evidence.events) }}</pre>
+            </el-tab-pane>
             <el-tab-pane label="脱敏日志">
               <div class="evidence"><pre>{{ (ticket.evidence.logs?.lines || []).join('\n') }}</pre></div>
             </el-tab-pane>

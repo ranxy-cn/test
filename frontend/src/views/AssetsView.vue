@@ -3,6 +3,8 @@
     <el-table :data="items">
       <el-table-column prop="id" label="asset_id" width="200" />
       <el-table-column prop="hostname" label="主机" />
+      <el-table-column prop="zabbix_host" label="Zabbix host" width="160" />
+      <el-table-column prop="external_id" label="hostid" width="90" />
       <el-table-column prop="role" label="角色" width="100" />
       <el-table-column prop="owner" label="负责人" width="100" />
       <el-table-column prop="env" label="环境" width="80" />

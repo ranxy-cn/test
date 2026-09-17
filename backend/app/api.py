@@ -26,6 +26,7 @@ from app.services.audit import add_audit, add_event
 from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
 from app.services.tickets import make_idempotency_key, next_ticket_number
+from app.integrations.zabbix.mapping import find_asset_by_zabbix
 
 router = APIRouter()
 
@@ -90,6 +91,8 @@ def list_assets(db: Session = Depends(get_db)):
                 "tenant_id": a.tenant_id,
                 "reachable": a.reachable,
                 "db_ok": a.db_ok,
+                "external_id": a.external_id,
+                "zabbix_host": a.zabbix_host,
             }
             for a in rows
         ]
@@ -115,13 +118,19 @@ def zabbix_webhook(
     db: Session = Depends(get_db),
     _: None = Depends(_check_webhook_secret),
 ):
-    asset = db.get(Asset, body.asset_id)
+    asset = find_asset_by_zabbix(
+        db,
+        asset_id=body.asset_id,
+        host=body.host,
+        hostname=body.hostname,
+        hostid=body.hostid,
+    )
     if asset is None:
-        raise HTTPException(404, f"未知资产 {body.asset_id}")
+        raise HTTPException(404, f"未知资产 {body.asset_id or body.host or body.hostid}")
     if asset.tenant_id != get_settings().tenant_id:
         raise HTTPException(403, "拒绝跨租户目标")
 
-    key = make_idempotency_key(body.event_id, body.asset_id, body.job_version, body.action_type)
+    key = make_idempotency_key(body.event_id, asset.id, body.job_version, body.action_type)
     existing = db.scalar(select(Ticket).where(Ticket.idempotency_key == key))
     if existing is not None:
         add_event(db, ticket_id=existing.id, kind="dedup_merged", message=f"重复告警已合并 event_id={body.event_id}")
@@ -135,7 +144,7 @@ def zabbix_webhook(
     alert = AlertEvent(
         idempotency_key=key,
         event_id=body.event_id,
-        asset_id=body.asset_id,
+        asset_id=asset.id,
         payload=body.model_dump(),
         skipped=bool(skipped),
         skip_reason="maintenance_window" if skipped else None,

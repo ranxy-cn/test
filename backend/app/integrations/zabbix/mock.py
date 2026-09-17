@@ -18,6 +18,7 @@ def mock_metrics(asset_id: str, scenario: str, trigger: str, window_minutes: int
         "source": "mock",
         "asset_id": asset_id,
         "window_minutes": window_minutes,
+        "mapped": True,
         "cpu_pct": cpu,
         "mem_pct": 71.2,
         "disk_pct": 91.0 if scenario == "disk" or "disk" in trigger.lower() else 38.0,
@@ -34,7 +35,14 @@ class MockZabbixClient:
     name = "zabbix-mock"
 
     def health(self) -> dict[str, Any]:
-        return {"ok": True, "mode": "mock", "detail": "内存模拟指标/事件"}
+        return {
+            "ok": True,
+            "mode": "mock",
+            "detail": "内存模拟指标/事件",
+            "version": None,
+            "latency_ms": 0,
+            "last_error": None,
+        }
 
     def query_metrics(
         self,
@@ -43,14 +51,27 @@ class MockZabbixClient:
         *,
         scenario: str = "",
         trigger: str = "",
+        host_hint: dict[str, Any] | None = None,
+        event_id: str = "",
     ) -> dict[str, Any]:
+        _ = (host_hint, event_id)
         return mock_metrics(asset_id, scenario, trigger, window_minutes)
 
-    def query_events(self, asset_id: str, limit: int = 20) -> dict[str, Any]:
+    def query_events(
+        self,
+        asset_id: str,
+        limit: int = 20,
+        *,
+        host_hint: dict[str, Any] | None = None,
+        event_id: str = "",
+    ) -> dict[str, Any]:
+        _ = (host_hint, limit)
         return {
             "source": "mock",
             "asset_id": asset_id,
-            "items": [{"event_id": "mock-1", "name": "CPU usage too high", "severity": "high"}],
+            "mapped": True,
+            "event_id": event_id or None,
+            "items": [{"event_id": event_id or "mock-1", "name": "CPU usage too high", "severity": "high"}],
         }
 
 

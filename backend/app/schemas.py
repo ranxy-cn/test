@@ -104,21 +104,58 @@ class Diagnosis(BaseModel):
 
 
 class ZabbixWebhookIn(BaseModel):
-    event_id: str
-    asset_id: str
-    trigger_name: str
+    """兼容演示字段与 Zabbix 原生宏：eventid/host/hostid/trigger。"""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    event_id: str = ""
+    eventid: str | None = None
+    asset_id: str | None = None
+    trigger_name: str = ""
+    trigger: str | None = None
+    triggerid: str | None = None
     severity: str = "high"
     action_type: str = "PROBLEM"
     job_version: str = "v1"
     message: str = ""
     host: str | None = None
+    hostname: str | None = None
+    hostid: str | None = None
     value: str = "PROBLEM"
-    clock: int | None = None
+    clock: str | int | None = None
     demo_scenario: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_zabbix_macros(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if not out.get("event_id"):
+            out["event_id"] = str(out.get("eventid") or out.get("eventId") or "")
+        if not out.get("trigger_name"):
+            out["trigger_name"] = str(out.get("trigger") or out.get("trigger_name") or "")
+        if not out.get("host") and out.get("hostname"):
+            out["host"] = out.get("hostname")
+        if not out.get("asset_id"):
+            out["asset_id"] = None
+        return out
+
+    @model_validator(mode="after")
+    def require_event_and_trigger(self) -> "ZabbixWebhookIn":
+        if not (self.event_id or "").strip():
+            raise ValueError("缺少 event_id / eventid")
+        if not (self.trigger_name or "").strip():
+            raise ValueError("缺少 trigger_name / trigger")
+        if self.asset_id == "":
+            self.asset_id = None
+        return self
 
     @field_validator("asset_id")
     @classmethod
-    def asset_shape(cls, v: str) -> str:
+    def asset_shape(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
         if not ASSET_ID_RE.match(v):
             raise ValueError("asset_id 非法")
         return v

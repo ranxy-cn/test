@@ -19,9 +19,18 @@ class ZabbixClient(Protocol):
         *,
         scenario: str = "",
         trigger: str = "",
+        host_hint: dict[str, Any] | None = None,
+        event_id: str = "",
     ) -> dict[str, Any]: ...
 
-    def query_events(self, asset_id: str, limit: int = 20) -> dict[str, Any]: ...
+    def query_events(
+        self,
+        asset_id: str,
+        limit: int = 20,
+        *,
+        host_hint: dict[str, Any] | None = None,
+        event_id: str = "",
+    ) -> dict[str, Any]: ...
 
 
 @runtime_checkable

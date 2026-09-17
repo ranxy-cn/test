@@ -59,6 +59,8 @@ class Asset(Base):
     reachable: Mapped[bool] = mapped_column(Boolean, default=True)
     db_ok: Mapped[bool] = mapped_column(Boolean, default=True)
     last_restart_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    external_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    zabbix_host: Mapped[str] = mapped_column(String(128), default="")
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
 
 

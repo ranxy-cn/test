@@ -1,0 +1,12 @@
+{
+  "eventid": "{EVENT.ID}",
+  "host": "{HOST.HOST}",
+  "hostname": "{HOST.NAME}",
+  "hostid": "{HOST.ID}",
+  "trigger": "{TRIGGER.NAME}",
+  "triggerid": "{TRIGGER.ID}",
+  "severity": "{EVENT.NSEVERITY}",
+  "value": "{EVENT.VALUE}",
+  "clock": "{EVENT.DATE} {EVENT.TIME}",
+  "message": "{EVENT.NAME}"
+}

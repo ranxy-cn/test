@@ -22,6 +22,8 @@ def test_green_cpu_auto_recover(client):
     assert ticket["execution_count"] == 1
     kinds = [e["kind"] for e in detail["events"]]
     assert "evidence_gathered" in kinds
+    assert "events" in ticket["evidence"]
+    assert ticket["evidence"]["metrics"]["source"] in {"mock", "zabbix-http", "zabbix-http-degraded"}
     assert "diagnosis_completed" in kinds
     assert "playbook_step" in kinds
     assert "recovered" in kinds

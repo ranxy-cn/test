@@ -36,6 +36,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-app-01",
             hostname="order-app-01",
+            zabbix_host="order-app-01",
+            external_id="10001",
             app="订单系统",
             role="app",
             owner="张三",
@@ -46,6 +48,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-app-02",
             hostname="order-app-02",
+            zabbix_host="order-app-02",
+            external_id="10002",
             app="订单系统",
             role="app",
             owner="张三",
@@ -54,6 +58,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-app-03",
             hostname="order-app-03",
+            zabbix_host="order-app-03",
+            external_id="10003",
             app="订单系统",
             role="app",
             owner="张三",
@@ -62,6 +68,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-gw-01",
             hostname="order-gateway-01",
+            zabbix_host="order-gateway-01",
+            external_id="10011",
             app="订单系统",
             role="gateway",
             owner="李四",
@@ -70,6 +78,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-db-01",
             hostname="order-db-01",
+            zabbix_host="order-db-01",
+            external_id="10021",
             app="订单系统",
             role="mysql",
             owner="王五",
@@ -78,6 +88,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-redis-01",
             hostname="order-redis-01",
+            zabbix_host="order-redis-01",
+            external_id="10031",
             app="订单系统",
             role="redis",
             owner="李四",
@@ -86,6 +98,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-lb-01",
             hostname="order-lb-01",
+            zabbix_host="order-lb-01",
+            external_id="10041",
             app="订单系统",
             role="lb",
             owner="李四",
@@ -94,6 +108,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-job-01",
             hostname="order-job-01",
+            zabbix_host="order-job-01",
+            external_id="10051",
             app="订单系统",
             role="job",
             owner="张三",
@@ -102,6 +118,8 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-unreachable",
             hostname="order-app-down",
+            zabbix_host="order-app-down",
+            external_id="",
             app="订单系统",
             role="app",
             owner="张三",
@@ -112,6 +130,9 @@ def seed_if_empty(db: Session) -> None:
     for asset in assets:
         if db.get(Asset, asset.id) is None:
             db.add(asset)
+    for row in db.scalars(select(Asset)).all():
+        if not row.zabbix_host:
+            row.zabbix_host = row.hostname
 
     existing_mw = db.scalar(select(MaintenanceWindow).limit(1))
     if existing_mw is None:

@@ -132,17 +132,53 @@ ANSIBLE_MODE=mock
 VAULT_MODE=real
 ```
 
-### Zabbix（只读 Metrics / Events）
+### 连接真实 Zabbix（只读）
 
-Webhook 接入已存在。真实 JSON-RPC 客户端需要：
+排查链路的指标 / 事件 / 主机解析走 `integrations/zabbix/` 适配层，**不写监控配置、不应答告警、不执行远程脚本**。JSON-RPC 方法名有白名单，`script.execute` / `configuration.*` / `event.acknowledge` 等会直接拒绝。
+
+**权限**：API Token（或只读用户）只需能调用 `host.get`、`item.get`、`history.get`/`trend.get`、`event.get`、`problem.get`、`trigger.get`、`apiinfo.version`。不要授予 Admin / 可执行脚本的角色。
 
 ```bash
 ZABBIX_URL=https://zabbix.example.com/api_jsonrpc.php
-ZABBIX_TOKEN=xxxxxxxx
-ZABBIX_MODE=real          # 或 INTEGRATION_MODE=real
+ZABBIX_TOKEN=xxxxxxxx          # 优先 API token；或改用 ZABBIX_USER / ZABBIX_PASSWORD
+ZABBIX_MODE=auto               # mock | real | auto（推荐 auto）
+ZABBIX_VERIFY_SSL=true
+ZABBIX_TIMEOUT_SECONDS=8
+ZABBIX_RETRIES=2
 ```
 
-缺少 URL/Token 时工厂回退 `MockZabbixClient`，并在 `/api/v1/status` 写出 `fallback_reason`。
+- `mock`（默认）：内存模拟，demo 不需要实例。
+- `real`：有 URL+凭据则注入 HTTP 客户端；调用失败时该次采证降级 mock 并在证据里标注「未映射，使用 mock/降级」。
+- `auto`：有 URL+Token（或 user/password）**且** `apiinfo.version` + 轻量 `host.get` 通过才用 real，否则 mock。
+
+工作台 **集成状态** 展示：请求模式、生效模式、版本、延迟、最近错误。
+
+主机映射：CMDB `external_id`（Zabbix hostid）/ `zabbix_host` / `hostname` 对齐 webhook 的 `hostid`/`host`。对不上时证据 `mapped=false` 并注明降级。
+
+Webhook 同时接受演示字段与 Zabbix 宏：
+
+```json
+{
+  "eventid": "{EVENT.ID}",
+  "host": "{HOST.HOST}",
+  "hostname": "{HOST.NAME}",
+  "hostid": "{HOST.ID}",
+  "trigger": "{TRIGGER.NAME}",
+  "triggerid": "{TRIGGER.ID}",
+  "severity": "high"
+}
+```
+
+完整样例见 `scripts/zabbix_webhook.example.json`。仍可继续用 `asset_id` + `event_id` + `trigger_name` 跑 demo。
+
+有实例时自测（不会写 Zabbix）：
+
+```bash
+export ZABBIX_URL=... ZABBIX_TOKEN=...
+python3 scripts/zabbix_ping.py
+```
+
+排错：Token 无效 → 生效仍可能回退 mock；TLS 证书问题设 `ZABBIX_VERIFY_SSL=false`（仅实验）；方法被拒说明代码白名单生效，不要试图开写权限。
 
 ### Ansible（Playbook Runner）
 
@@ -194,7 +230,7 @@ cd backend && pytest -q
 
 | 模块 | 一期 | 二期（本仓库） |
 | --- | --- | --- |
-| 监控 | Mock Zabbix Webhook | Webhook + 只读 Metrics/Events 适配；可选真实 HTTP |
+| 监控 | Mock Zabbix Webhook | Webhook 宏对齐 + 只读 JSON-RPC（host/item/history/problem）；auto 探测失败回退 mock |
 | 排查工具 | 并行 Mock 指标/日志/发版/依赖 | 指标走 ZabbixClient 工厂 |
 | RAG | 关键词命中手册 | 仍为关键词；预留 pgvector |
 | LLM | 无 Key 时确定性 Mock | 不变 |
@@ -214,13 +250,16 @@ playbooks/                 版本化预案白名单（含清理日志、重启�
 knowledge/                 已审核操作手册
 frontend/                  Vue 3 + Element Plus（任务 / 通知 / 备份 / 集成状态）
 scripts/demo.sh            三色路径 + 锁冲突 + mock 备份
+scripts/zabbix_ping.py     有实例时只读连通性自测
+scripts/zabbix_webhook.example.json  Zabbix 媒体类型样例 payload
 ```
 
 ## 仍未做的范围
 
 - 不要求提供真实生产密钥才能跑通 demo（缺凭据一律 mock）。
 - 不接 Kubernetes、不训练模型、不做完整 restic/灾备编排。
-- 真实 Ansible inventory / SSH 批量执行、HashiCorp Vault 动态库完整策略、Zabbix 主机 ID 映射、企业 IAM、pgvector RAG：均未做。
+- 真实 Ansible inventory / SSH 批量执行、HashiCorp Vault 动态库完整策略、企业 IAM、pgvector RAG：均未做。
+- 不实现 Zabbix 自动应答、远程命令或改监控配置（只读白名单强制）。
 - 备份仅为任务/运行记录骨架，**备份成功 ≠ 可恢复**，隔离恢复也只是 mock 标记。
 
 本仓库原先为 ERC4907 沙箱示例，已替换为 DevOpsAgent 工程。

@@ -33,6 +33,9 @@ from app.main import app  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_db():
     get_settings.cache_clear()
+    from app.integrations import clear_integration_probe_cache
+
+    clear_integration_probe_cache()
     from app.domain.catalog import load_catalog
 
     load_catalog.cache_clear()

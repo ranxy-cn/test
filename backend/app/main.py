@@ -11,7 +11,7 @@ from app.seed import seed_if_empty
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    dbmod.Base.metadata.create_all(bind=dbmod.engine)
+    dbmod.ensure_schema()
     db = dbmod.SessionLocal()
     try:
         seed_if_empty(db)

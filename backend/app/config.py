@@ -27,6 +27,11 @@ class Settings(BaseSettings):
 
     zabbix_url: str = ""
     zabbix_token: str = ""
+    zabbix_user: str = ""
+    zabbix_password: str = ""
+    zabbix_verify_ssl: bool = True
+    zabbix_timeout_seconds: float = 8.0
+    zabbix_retries: int = 2
     vault_addr: str = ""
     vault_token: str = ""
     ansible_runner_enabled: bool = False

@@ -17,6 +17,8 @@ class InvestigationState(TypedDict, total=False):
     asset_tenant_id: str
     db_ok: bool
     alert: dict[str, Any]
+    host_hint: dict[str, Any]
+    event_id: str
     rag_hits: list[dict[str, Any]]
     evidence: dict[str, Any]
     diagnosis: dict[str, Any]
@@ -40,6 +42,8 @@ def _gather_node(state: InvestigationState) -> InvestigationState:
         trigger=alert.get("trigger_name") or "",
         db_ok=state.get("db_ok", True),
         rag_hits=state.get("rag_hits") or [],
+        host_hint=state.get("host_hint") or {},
+        event_id=state.get("event_id") or alert.get("event_id") or "",
     )
     return {"evidence": evidence}
 
