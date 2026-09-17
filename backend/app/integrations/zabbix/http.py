@@ -30,7 +30,7 @@ def _legacy_session_auth(version: str | None) -> bool:
 
 
 class HttpZabbixClient:
-    """Zabbix 6.0/7.0 JSON-RPC 只读客户端。方法名白名单，禁止写操作。"""
+    """Zabbix 5.0 / 6.x / 7.x JSON-RPC 只读客户端。方法名白名单，禁止写操作。"""
 
     name = "zabbix-http"
 
