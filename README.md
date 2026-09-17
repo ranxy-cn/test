@@ -183,6 +183,8 @@ Webhook 同时接受演示字段与 **Zabbix 5.0 媒体类型**常见宏（点�
 
 与 `scripts/demo.sh`（纯 mock 三色路径，不访问 Zabbix）不同：本脚本用 **真实 Zabbix 5.0** 只读 API 取当前问题（若无打开的 problem，则注入一条 5.0 webhook 宏兼容载荷），由 DevOpsAgent **立案 → 调查/诊断 → 策略引擎 → 自动修复或待审批/升级**，证据须带 real API 的 host/items/problems。
 
+Linux / macOS / Git Bash：
+
 ```bash
 export ZABBIX_URL=http://124.221.251.186:8081/api_jsonrpc.php
 export ZABBIX_USER=Admin
@@ -191,6 +193,32 @@ export ZABBIX_MODE=real
 docker compose up --build -d
 ./scripts/e2e_real_zabbix.sh
 ```
+
+Windows PowerShell：
+
+```powershell
+$env:ZABBIX_URL="http://124.221.251.186:8081/api_jsonrpc.php"
+$env:ZABBIX_USER="Admin"
+$env:ZABBIX_PASSWORD="***"      # 本地填写，禁止写入仓库
+$env:ZABBIX_MODE="real"
+docker compose up --build -d
+python scripts\e2e_real_zabbix.py
+```
+
+Windows cmd：
+
+```bat
+set ZABBIX_URL=http://124.221.251.186:8081/api_jsonrpc.php
+set ZABBIX_USER=Admin
+set ZABBIX_PASSWORD=***
+set ZABBIX_MODE=real
+docker compose up --build -d
+python scripts\e2e_real_zabbix.py
+```
+
+可选：`BASE` / `DEVOPS_API_BASE`（默认 `http://127.0.0.1:8000`）、`WEBHOOK_SECRET`（默认 `dev-webhook-secret`）。
+
+**Webhook 路径**：`POST /api/v1/webhooks/zabbix`（完整 URL 一般为 `http://127.0.0.1:8000/api/v1/webhooks/zabbix`），头 `X-Webhook-Secret` 或 `X-Zabbix-Token`。Zabbix 5.0 媒体类型把宏展开后 POST 到该地址即可；e2e 脚本在无打开 problem 时也会打同一路径。样例载荷：`scripts/zabbix_webhook.example.json`。
 
 **期望终态**（任一即可，超时非 0）：
 
