@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.database import Base
+
+# 北京时间（UTC+8），用于面向用户的日期展示口径
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def utcnow() -> datetime:

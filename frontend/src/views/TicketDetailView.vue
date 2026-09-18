@@ -52,7 +52,7 @@
 
         <el-card header="时间线" style="margin-top: 16px">
           <el-timeline>
-            <el-timeline-item v-for="ev in detail.events" :key="ev.id" :timestamp="ev.created_at">
+            <el-timeline-item v-for="ev in detail.events" :key="ev.id" :timestamp="fmtTime(ev.created_at)">
               <b>{{ ev.kind }}</b> · {{ ev.actor }}<br />{{ ev.message }}
             </el-timeline-item>
           </el-timeline>
@@ -80,7 +80,7 @@
           <p class="mono" style="margin-top: 8px; color: #64748b">params_digest: {{ ticket.params_digest || '-' }}</p>
         </el-card>
         <el-card header="资源锁" style="margin-top: 16px">
-          <p v-if="detail.lock">资产 {{ detail.lock.asset_id }} 由任务 {{ detail.lock.ticket_id }} 持有，过期 {{ detail.lock.expires_at }}</p>
+          <p v-if="detail.lock">资产 {{ detail.lock.asset_id }} 由任务 {{ detail.lock.ticket_id }} 持有，过期 {{ fmtTime(detail.lock.expires_at) }}</p>
           <p v-else>当前无锁</p>
           <el-button
             v-if="ticket.status === 'pending_execution'"
@@ -106,6 +106,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { approveTicket, fetchTicket, rejectTicket, retryExecution } from '../api'
+import { fmtTime } from '../time'
 
 const props = defineProps({ id: { type: String, required: true } })
 const detail = ref(null)

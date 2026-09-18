@@ -30,7 +30,7 @@
         </template>
       </el-table-column>
       <el-table-column prop="candidate_action_id" label="预案" width="190" />
-      <el-table-column prop="created_at" label="创建时间" width="190" />
+      <el-table-column prop="created_at" label="创建时间" width="190" :formatter="fmtTimeCol('created_at')" />
     </el-table>
 
     <el-dialog v-model="demoVisible" title="模拟 Zabbix 告警" width="520px">
@@ -57,6 +57,7 @@ import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { fetchTickets, postWebhook } from '../api'
+import { fmtTimeCol } from '../time'
 
 const router = useRouter()
 const items = ref([])

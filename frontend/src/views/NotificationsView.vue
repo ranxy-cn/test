@@ -5,7 +5,7 @@
       <el-button @click="load">刷新</el-button>
     </el-space>
     <el-table :data="items">
-      <el-table-column prop="created_at" label="时间" width="190" />
+      <el-table-column prop="created_at" label="时间" width="190" :formatter="fmtTimeCol('created_at')" />
       <el-table-column prop="kind" label="类型" width="140" />
       <el-table-column prop="channel" label="通道" width="90" />
       <el-table-column prop="title" label="标题" width="140" />
@@ -23,6 +23,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { fetchNotifications, markNotificationRead } from '../api'
+import { fmtTimeCol } from '../time'
 
 const items = ref([])
 const unreadOnly = ref(false)

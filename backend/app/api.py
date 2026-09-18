@@ -14,12 +14,12 @@ from app.models import (
     AlertEvent,
     Asset,
     AuditLog,
+    BEIJING_TZ,
     DigitalEmployee,
     Notification,
     Ticket,
     TicketEvent,
     TicketStatus,
-    utcnow,
 )
 from app.schemas import ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services.audit import add_audit, add_event
@@ -352,14 +352,14 @@ def list_audit(ticket_id: int | None = None, db: Session = Depends(get_db)):
 
 @router.get("/api/v1/reports/daily")
 def daily_report(report_date: date | None = Query(default=None, alias="date"), db: Session = Depends(get_db)):
-    day = report_date or utcnow().date()
+    day = report_date or datetime.now(BEIJING_TZ).date()
 
     def day_of(dt: datetime | None):
         if dt is None:
             return None
-        if dt.tzinfo is not None:
-            dt = dt.astimezone(timezone.utc)
-        return dt.date()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(BEIJING_TZ).date()
 
     tickets = [t for t in db.scalars(select(Ticket)).all() if day_of(t.created_at) == day]
     by_status: dict[str, int] = {}

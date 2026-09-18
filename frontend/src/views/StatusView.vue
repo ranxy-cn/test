@@ -23,7 +23,7 @@
         <el-table-column prop="asset_id" label="资产" />
         <el-table-column prop="ticket_id" label="任务" width="90" />
         <el-table-column prop="holder" label="持有者" width="140" />
-        <el-table-column prop="expires_at" label="过期" />
+        <el-table-column prop="expires_at" label="过期" width="190" :formatter="fmtTimeCol('expires_at')" />
       </el-table>
     </el-card>
   </div>
@@ -32,6 +32,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { fetchLocks, fetchStatus } from '../api'
+import { fmtTimeCol } from '../time'
 
 const status = ref(null)
 const locks = ref([])
