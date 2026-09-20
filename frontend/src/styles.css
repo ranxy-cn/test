@@ -34,6 +34,10 @@ body {
 }
 .aside .el-menu { border-right: none; background: transparent; }
 .aside .el-menu-item { color: #e0e7ff; }
+/* 目录节点（el-sub-menu）标题与悬浮态，颜色跟随菜单项 */
+.aside .el-sub-menu__title { color: #e0e7ff; }
+.aside .el-sub-menu__title:hover { background: rgba(255,255,255,.08); }
+.aside .el-sub-menu .el-menu { background: transparent; }
 .aside .el-menu-item.is-active {
   background: rgba(255,255,255,.12);
   color: #fff;
