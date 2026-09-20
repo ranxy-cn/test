@@ -10,6 +10,11 @@
             <el-radio-button value="escalated">已升级</el-radio-button>
       </el-radio-group>
       <el-button v-perm="'tickets:operate'" type="primary" @click="openDemo">模拟告警</el-button>
+      <el-tooltip :disabled="stressEnabled" content="仅服务器开启 STRESS_TOOLS_ENABLED 后可用">
+        <span>
+          <el-button v-perm="'tools:operate'" type="warning" plain :disabled="!stressEnabled" @click="openStress">CPU 压测</el-button>
+        </span>
+      </el-tooltip>
       <el-button @click="load">刷新</el-button>
     </el-space>
 
@@ -94,6 +99,16 @@ const demoVisible = ref(false)
 const sending = ref(false)
 const demo = reactive({ scenario: 'green' })
 let timer
+
+// ===== CPU 压测状态 =====
+const stressVisible = ref(false)
+const stressEnabled = ref(false)
+const stressRunning = ref(false)
+const stressRemaining = ref(0)
+const stressCores = ref(0)
+const stressDuration = ref(420)
+const stressStarting = ref(false)
+let stressTimer
 
 const presets = {
   green: { asset_id: 'ast-order-app-01', trigger_name: 'CPU usage > 85% for 5 minutes' },
