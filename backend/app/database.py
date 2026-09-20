@@ -79,6 +79,8 @@ def run_migrations(url: str | None = None) -> None:
     """
     target = url or get_settings().database_url
     if target.startswith("sqlite"):
+        # 本地/测试：直接按模型建表（devops_local.db 等本地库首次启动即就绪）
+        Base.metadata.create_all(_create_engine_for(target))
         return
     from alembic import command
     from alembic.config import Config

@@ -1,5 +1,8 @@
 <template>
-  <el-container class="layout">
+  <!-- 登录等公开页：全屏裸布局，不渲染侧边栏与顶栏 -->
+  <router-view v-if="isPublicPage" />
+
+  <el-container v-else class="layout">
     <el-aside width="232px" class="aside">
       <div class="brand">
         <h1>DevOpsAgent</h1>
