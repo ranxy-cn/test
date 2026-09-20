@@ -9,6 +9,7 @@
 | --- | --- | --- | --- | --- |
 | 0001 | [0001_init_schema.py](versions/0001_init_schema.py) | [ddl/0001_init_schema.sql](ddl/0001_init_schema.sql) | 2026-09-20 | 初始 schema：20 张表（13 张业务表 + 7 张 RBAC 鉴权表） |
 | 0002 | [0002_sync_column_comments.py](versions/0002_sync_column_comments.py) | [ddl/0002_sync_column_comments.sql](ddl/0002_sync_column_comments.sql) | 2026-09-20 | 全量表/字段注释回填（COMMENT），无结构变化 |
+| 0003 | [0003_dynamic_menus.py](versions/0003_dynamic_menus.py) | [ddl/0003_dynamic_menus.sql](ddl/0003_dynamic_menus.sql) | 2026-09-20 | 动态菜单权限：新增 menus / role_menus 表，权限点 +2（roles:manage、menus:manage），菜单树种子与内置角色授权 |
 
 ## DDL 文档维护约定（强约束）
 

@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
+from app.routers.admin_perms import router as admin_perms_router
 from app.routers.admin_users import router as admin_users_router
 from app.routers.auth import router as auth_router
 from app.routers.ops import router as ops_router
@@ -53,3 +54,4 @@ app.include_router(router)
 app.include_router(ops_router)
 app.include_router(auth_router)
 app.include_router(admin_users_router)
+app.include_router(admin_perms_router)

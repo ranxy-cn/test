@@ -63,14 +63,25 @@ def list_users(db: Session = Depends(get_db)):
 
 @router.get("/roles", dependencies=[Depends(require_perm("users:manage"))])
 def list_roles(db: Session = Depends(get_db)):
+    from app.models import Menu, RoleMenu
+
     roles = db.scalars(select(Role).order_by(Role.id)).all()
+    # 每个角色已授权的菜单 code 集合
+    grants: dict[int, set[str]] = {}
+    for rm, menu in db.execute(
+        select(RoleMenu, Menu).join(Menu, Menu.id == RoleMenu.menu_id)
+    ).all():
+        grants.setdefault(rm.role_id, set()).add(menu.code)
     return {
         "items": [
             {
+                "id": r.id,
                 "code": r.code,
                 "name": r.name,
                 "description": r.description,
                 "permissions": sorted(p.code for p in r.permissions),
+                "menu_codes": sorted(grants.get(r.id, set())),
+                "locked": r.code == "admin",
             }
             for r in roles
         ]

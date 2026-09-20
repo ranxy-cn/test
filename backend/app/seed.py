@@ -25,6 +25,8 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("tools:read", "工具状态查看", "查看压测等工具状态"),
     ("tools:operate", "工具操作", "启动/停止压测等工具"),
     ("users:manage", "用户管理", "用户、角色与权限管理"),
+    ("roles:manage", "角色权限管理", "角色增删、菜单授权与权限点分配"),
+    ("menus:manage", "菜单管理", "菜单/路由/按钮资源树的维护"),
 ]
 
 READ_PERMS = [c for c, _, _ in PERMISSIONS if c.endswith(":read")]
@@ -60,6 +62,22 @@ def seed_rbac(db: Session) -> None:
             pid = perm_by_code[pc].id
             if pid not in existing:
                 db.add(RolePermission(role_id=role.id, permission_id=pid))
+    db.flush()
+
+    # 菜单/按钮资源树 + 角色菜单授权（仅当角色尚无任何菜单授权时初始化，
+    # 避免每次重启覆盖管理员在「角色权限」页的自定义分配）
+    from app.menus_seed import grant_tree_to_role, role_default_menu_codes, seed_menus
+    from app.models import RoleMenu
+
+    menus = seed_menus(db)
+    for code, name, _desc, _perms in ROLES:
+        role = role_by_code[code]
+        has_grants = (
+            db.scalar(select(RoleMenu.role_id).where(RoleMenu.role_id == role.id).limit(1))
+            is not None
+        )
+        if not has_grants:
+            grant_tree_to_role(db, role.id, menus, role_default_menu_codes(code))
     db.flush()
 
     # 初始管理员（仅当无任何用户时创建一次）

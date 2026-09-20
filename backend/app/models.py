@@ -105,6 +105,48 @@ class RolePermission(Base):
     )
 
 
+class Menu(Base):
+    """菜单/路由/按钮统一资源树。
+
+    type=dir 目录；type=menu 页面菜单（path 为前端路由，perm_code 为进入页面所需权限点）；
+    type=button 页面按钮（perm_code 为按钮所需权限点，前端 v-perm 依据）。
+    """
+
+    __tablename__ = "menus"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="自增主键")
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("menus.id", ondelete="CASCADE"), nullable=True, comment="父菜单 ID（空=顶级）"
+    )
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True, comment="资源唯一编码，如 menu:tickets / btn:ticket-approve")
+    name: Mapped[str] = mapped_column(String(64), comment="显示名称")
+    type: Mapped[str] = mapped_column(String(16), comment="类型：dir 目录 / menu 菜单 / button 按钮")
+    path: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="前端路由路径（menu 型必填）")
+    perm_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="所需权限点编码（关联 permissions.code）")
+    icon: Mapped[str] = mapped_column(String(64), default="", comment="图标名称（前端图标映射）")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, comment="排序值（小的在前）")
+    visible: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否在侧边栏显示：1 显示 / 0 隐藏")
+    status: Mapped[str] = mapped_column(String(16), default="enabled", comment="状态：enabled 启用 / disabled 停用")
+    remark: Mapped[str] = mapped_column(String(256), default="", comment="备注")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, comment="创建时间（UTC）")
+    updated_at: Mapped[datetime] = mapped_column(
+        TZDateTime, default=utcnow, onupdate=utcnow, comment="更新时间（UTC）"
+    )
+
+
+class RoleMenu(Base):
+    """角色-菜单授权关联（多对多）。"""
+
+    __tablename__ = "role_menus"
+
+    role_id: Mapped[int] = mapped_column(
+        ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True, comment="角色 ID（fk → roles.id，级联删除）"
+    )
+    menu_id: Mapped[int] = mapped_column(
+        ForeignKey("menus.id", ondelete="CASCADE"), primary_key=True, comment="菜单 ID（fk → menus.id，级联删除）"
+    )
+
+
 class UserToken(Base):
     """访问令牌白名单：JWT jti 落库，支持登出/改密后强制失效。"""
 

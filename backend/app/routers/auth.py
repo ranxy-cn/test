@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import LoginLog, User, UserToken, utcnow
+from app.models import LoginLog, Menu, RoleMenu, User, UserToken, utcnow
 from app.routers.deps import CurrentUser, get_current_user, get_request_ip
 from app.security import (
     create_access_token,
@@ -41,6 +41,56 @@ class ChangePasswordIn(BaseModel):
     new_password: str = Field(min_length=1, max_length=64)
 
 
+def _menu_tree(db: Session, user: User) -> list[dict]:
+    """用户可见菜单树：角色授权并集 ∩ 非按钮 ∩ 可见启用；父节点未授权时子节点提升为顶级。"""
+    role_ids = [r.id for r in user.roles]
+    if not role_ids:
+        return []
+    rows = db.scalars(
+        select(Menu)
+        .join(RoleMenu, RoleMenu.menu_id == Menu.id)
+        .where(
+            RoleMenu.role_id.in_(role_ids),
+            Menu.type != "button",
+            Menu.visible.is_(True),
+            Menu.status == "enabled",
+        )
+        .order_by(Menu.sort_order, Menu.id)
+    ).all()
+    by_id: dict[int, Menu] = {}
+    for m in rows:
+        by_id[m.id] = m
+
+    nodes = {
+        mid: {
+            "id": m.id,
+            "code": m.code,
+            "name": m.name,
+            "type": m.type,
+            "path": m.path,
+            "icon": m.icon,
+            "sort_order": m.sort_order,
+            "children": [],
+        }
+        for mid, m in by_id.items()
+    }
+    roots: list[dict] = []
+    for mid, m in by_id.items():
+        parent_node = nodes.get(m.parent_id) if m.parent_id else None
+        if parent_node is not None:
+            parent_node["children"].append(nodes[mid])
+        else:
+            roots.append(nodes[mid])
+
+    def _sort(items: list[dict]) -> None:
+        items.sort(key=lambda x: (x["sort_order"], x["id"]))
+        for item in items:
+            _sort(item["children"])
+
+    _sort(roots)
+    return roots
+
+
 def _user_payload(db: Session, user: User) -> dict:
     perms: set[str] = set()
     for role in user.roles:
@@ -52,6 +102,7 @@ def _user_payload(db: Session, user: User) -> dict:
         "email": user.email,
         "roles": user.role_codes,
         "permissions": sorted(perms),
+        "menus": _menu_tree(db, user),
     }
 
 
