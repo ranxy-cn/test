@@ -30,7 +30,7 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="170" fixed="right">
+      <el-table-column label="操作" width="195" fixed="right" class-name="op-col">
         <template #default="{ row }">
           <el-button size="small" @click="openCreate(row)" v-if="row.type !== 'button'">加子项</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
@@ -245,5 +245,10 @@ onMounted(load)
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+}
+/* 操作列按钮单行排列，所有行左对齐 */
+:deep(.op-col .cell) {
+  white-space: nowrap;
+  overflow: visible;
 }
 </style>
