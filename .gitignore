@@ -19,6 +19,7 @@ frontend/dist/
 # Env & secrets
 .env
 .env.local
+.agent/
 *.pem
 *.key
 id_rsa
