@@ -1,15 +1,13 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bullseye
 
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
-        libpq5 \
-    && rm -rf /var/lib/apt/lists/*
-
+# bullseye 基础镜像兼容老版 Docker；bullseye 已过 LTS（security 源不稳定），
+# 故不安装系统包：psycopg2-binary 自带 libpq，运行时也无需 curl
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 

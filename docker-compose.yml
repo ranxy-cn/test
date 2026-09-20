@@ -42,15 +42,15 @@ x-backend-env: &backend-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # 用 Debian 版而非 alpine：老内核 (CentOS 7) + 老 Docker 上 alpine 镜像会因新系统调用被 seccomp 拦截而无法启动
+    image: postgres:13-bullseye
     environment:
       POSTGRES_USER: devops
       POSTGRES_PASSWORD: devops
       POSTGRES_DB: devops_agent
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # 不映射宿主机端口：仅容器网络内访问，避免公网暴露与端口冲突
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U devops -d devops_agent"]
       interval: 5s
@@ -59,8 +59,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # 不映射宿主机端口：仅容器网络内访问，避免公网暴露与端口冲突
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
