@@ -1,10 +1,51 @@
 import axios from 'axios'
 
-const http = axios.create({
+// 登录态 401 时由 auth.js 注入的回调触发跳转，避免循环依赖
+let onUnauthorized = () => {}
+export function setUnauthorizedHandler(fn) {
+  onUnauthorized = fn
+}
+
+export const http = axios.create({
   baseURL: '/api/v1',
   timeout: 30000,
 })
 
+// 请求拦截：自动附带 Bearer token
+http.interceptors.request.use((config) => {
+  const token = localStorage.getItem('devops_token')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+// 响应拦截：401 → 清理登录态并跳转登录页
+http.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      localStorage.removeItem('devops_token')
+      localStorage.removeItem('devops_user')
+      onUnauthorized()
+    }
+    return Promise.reject(error)
+  },
+)
+
+// ===== 认证 =====
+export const login = (username, password) => http.post('/auth/login', { username, password })
+export const logout = () => http.post('/auth/logout')
+export const fetchMe = () => http.get('/auth/me')
+export const changePassword = (oldPassword, newPassword) =>
+  http.post('/auth/change-password', { old_password: oldPassword, new_password: newPassword })
+
+// ===== 用户管理（admin） =====
+export const fetchUsers = () => http.get('/admin/users')
+export const fetchRoles = () => http.get('/admin/roles')
+export const createUser = (payload) => http.post('/admin/users', payload)
+export const patchUser = (id, payload) => http.patch(`/admin/users/${id}`, payload)
+export const unlockUser = (id) => http.post(`/admin/users/${id}/unlock`)
+
+// ===== 业务 =====
 export const fetchTickets = (status) => http.get('/tickets', { params: status ? { status } : {} })
 export const fetchTicket = (id) => http.get(`/tickets/${id}`)
 export const approveTicket = (id, payload) => http.post(`/tickets/${id}/approve`, payload)

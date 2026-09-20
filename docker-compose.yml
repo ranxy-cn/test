@@ -1,9 +1,15 @@
 x-backend-env: &backend-env
-  DATABASE_URL: postgresql+psycopg2://devops:devops@postgres:5432/devops_agent
+  # MySQL：默认指向 compose 内置 mysql 服务（profiles: bundled-db）；
+  # 生产/独立 MySQL 时在 .env 覆盖 DATABASE_URL 即可（密码中的 @ 需 URL 编码为 %40）
+  DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://devops_agent:devops_agent@mysql:3306/devops_agent?charset=utf8mb4}
   REDIS_URL: redis://redis:6379/0
   WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
   USE_CELERY: "true"
   DEMO_MODE: "true"
+  # ===== 登录鉴权（生产必须覆盖 JWT_SECRET / ADMIN_INITIAL_PASSWORD）=====
+  JWT_SECRET: ${JWT_SECRET:-}
+  ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
+  ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
   INTEGRATION_MODE: ${INTEGRATION_MODE:-mock}
   ZABBIX_MODE: ${ZABBIX_MODE:-}
   ANSIBLE_MODE: ${ANSIBLE_MODE:-}
@@ -43,21 +49,26 @@ x-backend-env: &backend-env
   EMPLOYEE_ID: DE-OPS-001
 
 services:
-  postgres:
-    # 用 Debian 版而非 alpine：老内核 (CentOS 7) + 老 Docker 上 alpine 镜像会因新系统调用被 seccomp 拦截而无法启动
-    image: postgres:13-bullseye
+  # 可选内置 MySQL（后期整体容器化部署用）：
+  #   COMPOSE_PROFILES=bundled-db docker-compose up -d
+  # 当前生产使用宿主机已有 MySQL（124.221.251.186:3306，.env 覆盖 DATABASE_URL），不启动本服务。
+  mysql:
+    image: mysql:8.0
+    profiles: ["bundled-db"]
     environment:
-      POSTGRES_USER: devops
-      POSTGRES_PASSWORD: devops
-      POSTGRES_DB: devops_agent
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-devops_root_change_me}
+      MYSQL_DATABASE: devops_agent
+      MYSQL_USER: devops_agent
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-devops_agent}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    # 不映射宿主机端口：仅容器网络内访问，避免公网暴露与端口冲突
+      - mysql_data:/var/lib/mysql
+    # 不映射宿主机端口：仅容器网络内访问，避免与宿主机 MySQL(3306) 冲突及公网暴露
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U devops -d devops_agent"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   redis:
     image: redis:7-alpine
@@ -72,16 +83,16 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # 启动前先执行 Alembic 数据库迁移
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
       <<: *backend-env
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    restart: on-failure
     volumes:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
@@ -95,10 +106,9 @@ services:
     environment:
       <<: *backend-env
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    restart: on-failure
     volumes:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
@@ -112,10 +122,9 @@ services:
     environment:
       <<: *backend-env
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    restart: on-failure
     volumes:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
@@ -131,4 +140,4 @@ services:
       - api
 
 volumes:
-  pgdata:
+  mysql_data:

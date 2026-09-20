@@ -5,11 +5,80 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Asset, DigitalEmployee, MaintenanceWindow, utcnow
+from app.config import get_settings
+from app.models import Asset, DigitalEmployee, MaintenanceWindow, Permission, Role, RolePermission, User, UserRole, utcnow
+from app.security import hash_password
 from app.services.backups import seed_backup_jobs
+
+# 权限点目录：模块:动作
+PERMISSIONS: list[tuple[str, str, str]] = [
+    ("tickets:read", "任务单查看", "查看任务单列表与详情"),
+    ("tickets:operate", "任务单操作", "审批、驳回、重试执行"),
+    ("catalog:read", "预案目录查看", "查看预案目录与数字员工档案"),
+    ("assets:read", "资产查看", "查看资产台账"),
+    ("backups:read", "备份查看", "查看备份任务与运行记录"),
+    ("backups:operate", "备份操作", "触发备份与恢复演练"),
+    ("notifications:read", "通知查看", "查看与标记通知"),
+    ("reports:read", "日报查看", "查看运维日报"),
+    ("audit:read", "审计查看", "查看操作审计链"),
+    ("status:read", "集成状态查看", "查看集成与适配层状态"),
+    ("tools:read", "工具状态查看", "查看压测等工具状态"),
+    ("tools:operate", "工具操作", "启动/停止压测等工具"),
+    ("users:manage", "用户管理", "用户、角色与权限管理"),
+]
+
+READ_PERMS = [c for c, _, _ in PERMISSIONS if c.endswith(":read")]
+OPERATE_PERMS = [c for c, _, _ in PERMISSIONS if c.endswith(":operate")]
+
+ROLES: list[tuple[str, str, str, list[str]]] = [
+    ("viewer", "只读用户", "仅查看各类页面", READ_PERMS),
+    ("operator", "运维操作员", "查看 + 审批/工具/备份操作", READ_PERMS + OPERATE_PERMS),
+    ("admin", "管理员", "全部权限，含用户管理", [c for c, _, _ in PERMISSIONS]),
+]
+
+
+def seed_rbac(db: Session) -> None:
+    perm_by_code = {p.code: p for p in db.scalars(select(Permission)).all()}
+    for code, name, desc in PERMISSIONS:
+        if code not in perm_by_code:
+            perm_by_code[code] = Permission(code=code, name=name, description=desc)
+            db.add(perm_by_code[code])
+    db.flush()
+
+    role_by_code = {r.code: r for r in db.scalars(select(Role)).all()}
+    for code, name, desc, perms in ROLES:
+        role = role_by_code.get(code)
+        if role is None:
+            role = Role(code=code, name=name, description=desc)
+            db.add(role)
+            db.flush()
+            role_by_code[code] = role
+        existing = {rp.permission_id for rp in db.scalars(
+            select(RolePermission).where(RolePermission.role_id == role.id)
+        ).all()}
+        for pc in perms:
+            pid = perm_by_code[pc].id
+            if pid not in existing:
+                db.add(RolePermission(role_id=role.id, permission_id=pid))
+    db.flush()
+
+    # 初始管理员（仅当无任何用户时创建一次）
+    if db.scalar(select(User.id).limit(1)) is None:
+        settings = get_settings()
+        admin = User(
+            username="admin",
+            password_hash=hash_password(settings.admin_initial_password),
+            display_name="管理员",
+            is_active=True,
+        )
+        db.add(admin)
+        db.flush()
+        db.add(UserRole(user_id=admin.id, role_id=role_by_code["admin"].id))
 
 
 def seed_if_empty(db: Session) -> None:
+    seed_rbac(db)
+
     if db.get(DigitalEmployee, "DE-OPS-001") is None:
         db.add(
             DigitalEmployee(

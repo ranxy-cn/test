@@ -7,11 +7,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "sqlite:///./devops_agent.db"
+    database_url: str = "mysql+pymysql://devops_agent:devops_agent@127.0.0.1:3306/devops_agent?charset=utf8mb4"
     redis_url: str = "redis://localhost:6379/0"
     webhook_secret: str = "dev-webhook-secret"
     use_celery: bool = False
     demo_mode: bool = True
+
+    # ===== 登录鉴权 / RBAC =====
+    # JWT 签名密钥：生产必须通过环境变量设置（>=32 字符随机串）；
+    # 未设置时每次进程启动随机生成（重启后所有 token 失效，并打印告警）。
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 720
+    # 登录防爆破：连续失败 lockout_max_attempts 次后锁定 lockout_minutes 分钟
+    lockout_max_attempts: int = 5
+    lockout_minutes: int = 15
+    # 同一 IP 窗口期内最大失败次数（超过返回 429）
+    ip_fail_window_minutes: int = 10
+    ip_fail_max: int = 30
+    # 初始管理员密码（首次 seed 时使用），生产必须通过环境变量覆盖
+    admin_initial_password: str = "Admin@123456"
 
     observation_seconds: float = 10.0
     probe_required_passes: int = 3

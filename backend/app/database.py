@@ -1,8 +1,13 @@
-from collections.abc import Generator
+from __future__ import annotations
 
-from sqlalchemy import create_engine, inspect, text
+from collections.abc import Generator
+from datetime import datetime, timezone
+from pathlib import Path
+
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.types import DateTime, TypeDecorator
 
 from app.config import get_settings
 
@@ -11,17 +16,48 @@ class Base(DeclarativeBase):
     pass
 
 
-def _engine_kwargs(url: str) -> dict:
+class TZDateTime(TypeDecorator):
+    """带时区语义的 DateTime。
+
+    MySQL 的 DATETIME 不存时区：写入时统一转换为 UTC 去掉 tzinfo，
+    读取时统一补回 UTC tzinfo。这样 Python 侧始终保持 aware datetime，
+    比较运算与 JSON 序列化（+00:00）行为与 PostgreSQL 一致。
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _create_engine_for(url: str) -> Engine:
     kwargs: dict = {"future": True, "pool_pre_ping": True}
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
-        if ":memory:" in url:
+        # 内存库必须全线程共享同一连接，否则测试里建表后应用线程看到的是空库
+        if ":memory:" in url or url == "sqlite://":
+            from sqlalchemy.pool import StaticPool
+
             kwargs["poolclass"] = StaticPool
-    return kwargs
+    elif url.startswith("mysql"):
+        kwargs.update(pool_size=10, max_overflow=20, pool_recycle=1800, pool_timeout=30)
+    return create_engine(url, **kwargs)
 
 
 settings = get_settings()
-engine = create_engine(settings.database_url, **_engine_kwargs(settings.database_url))
+engine = _create_engine_for(settings.database_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
@@ -36,32 +72,31 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def ensure_schema() -> None:
-    """create_all + 增量列（已有 docker volume 不会自动 ALTER）。"""
-    Base.metadata.create_all(bind=engine)
-    try:
-        insp = inspect(engine)
-        if "assets" not in insp.get_table_names():
-            return
-        cols = {c["name"] for c in insp.get_columns("assets")}
-    except Exception:
+def run_migrations(url: str | None = None) -> None:
+    """执行 Alembic 迁移到最新版本（生产 MySQL 启动时调用）。
+
+    sqlite 仅用于本地/测试（create_all 建表），不走迁移。
+    """
+    target = url or get_settings().database_url
+    if target.startswith("sqlite"):
         return
-    stmts = []
-    if "external_id" not in cols:
-        stmts.append("ALTER TABLE assets ADD COLUMN external_id VARCHAR(64) DEFAULT ''")
-    if "zabbix_host" not in cols:
-        stmts.append("ALTER TABLE assets ADD COLUMN zabbix_host VARCHAR(128) DEFAULT ''")
-    if not stmts:
-        return
-    with engine.begin() as conn:
-        for stmt in stmts:
-            conn.execute(text(stmt))
+    from alembic import command
+    from alembic.config import Config
+
+    root = Path(__file__).resolve().parents[1]  # backend/
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", target)
+    command.upgrade(cfg, "head")
 
 
 def init_engine(url: str | None = None):
     """Rebind engine (used by tests)."""
     global engine, SessionLocal
     target = url or get_settings().database_url
-    engine = create_engine(target, **_engine_kwargs(target))
+    kwargs: dict = {"future": True, "pool_pre_ping": True}
+    if target.startswith("sqlite"):
+        kwargs["connect_args"] = {"check_same_thread": False}
+    engine = create_engine(target, **kwargs)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     return engine

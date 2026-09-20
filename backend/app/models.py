@@ -3,11 +3,11 @@ from __future__ import annotations
 import enum
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
-from app.database import Base
+from app.database import TZDateTime, Base
 
 # 北京时间（UTC+8），用于面向用户的日期展示口径
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -32,6 +32,109 @@ class TicketSource(str, enum.Enum):
     alert = "alert"
     schedule = "schedule"
     assign = "assign"
+
+
+# ===== 登录鉴权 / RBAC =====
+
+
+class User(Base):
+    """平台登录用户。"""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(128))
+    display_name: Mapped[str] = mapped_column(String(64), default="")
+    email: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 登录防爆破
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    last_login_ip: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+
+    roles: Mapped[list[Role]] = relationship(secondary="user_roles", lazy="selectin")
+
+    @property
+    def role_codes(self) -> list[str]:
+        return sorted(r.code for r in self.roles)
+
+
+class Role(Base):
+    """角色（admin / operator / viewer）。"""
+
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+
+    permissions: Mapped[list[Permission]] = relationship(secondary="role_permissions", lazy="selectin")
+
+
+class Permission(Base):
+    """权限点（模块:动作），如 tickets:operate。"""
+
+    __tablename__ = "permissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True)
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True)
+    permission_id: Mapped[int] = mapped_column(
+        ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class UserToken(Base):
+    """访问令牌白名单：JWT jti 落库，支持登出/改密后强制失效。"""
+
+    __tablename__ = "user_tokens"
+
+    jti: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    issued_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(255), default="")
+
+
+class LoginLog(Base):
+    """登录审计（成功/失败/锁定原因）。"""
+
+    __tablename__ = "login_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), default="")
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=False)
+    fail_reason: Mapped[str] = mapped_column(String(64), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="", index=True)
+    user_agent: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)
+
+
+# ===== 业务表 =====
 
 
 class DigitalEmployee(Base):
@@ -61,7 +164,7 @@ class Asset(Base):
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
     reachable: Mapped[bool] = mapped_column(Boolean, default=True)
     db_ok: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_restart_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_restart_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     external_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     zabbix_host: Mapped[str] = mapped_column(String(128), default="")
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -73,8 +176,8 @@ class MaintenanceWindow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"), index=True)
     reason: Mapped[str] = mapped_column(String(256))
-    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    starts_at: Mapped[datetime] = mapped_column(TZDateTime)
+    ends_at: Mapped[datetime] = mapped_column(TZDateTime)
 
 
 class Ticket(Base):
@@ -107,11 +210,11 @@ class Ticket(Base):
     demo_scenario: Mapped[str] = mapped_column(String(32), default="green")
     execution_count: Mapped[int] = mapped_column(Integer, default=0)
     human_wait_seconds: Mapped[float] = mapped_column(Float, default=0.0)
-    approval_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approval_requested_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     escalate_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
 
     asset: Mapped[Asset] = relationship()
     events: Mapped[list[TicketEvent]] = relationship(back_populates="ticket", cascade="all, delete-orphan")
@@ -127,7 +230,7 @@ class TicketEvent(Base):
     actor: Mapped[str] = mapped_column(String(64))
     message: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
     ticket: Mapped[Ticket] = relationship(back_populates="events")
 
@@ -144,9 +247,9 @@ class Approval(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")
     approver: Mapped[str | None] = mapped_column(String(64), nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
 
     ticket: Mapped[Ticket] = relationship(back_populates="approvals")
 
@@ -165,7 +268,7 @@ class AuditLog(Base):
     approver: Mapped[str | None] = mapped_column(String(64), nullable=True)
     params_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
 class AlertEvent(Base):
@@ -180,7 +283,7 @@ class AlertEvent(Base):
     skipped: Mapped[bool] = mapped_column(Boolean, default=False)
     skip_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ticket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
 class ResourceLock(Base):
@@ -190,9 +293,9 @@ class ResourceLock(Base):
     ticket_id: Mapped[int] = mapped_column(Integer, index=True)
     holder: Mapped[str] = mapped_column(String(64), default="DE-OPS-001")
     token: Mapped[str] = mapped_column(String(64))
-    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    acquired_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    heartbeat_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime)
 
 
 class ActionFailure(Base):
@@ -201,7 +304,7 @@ class ActionFailure(Base):
     asset_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     reason: Mapped[str] = mapped_column(Text, default="")
-    failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    failed_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
 class Notification(Base):
@@ -215,7 +318,7 @@ class Notification(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     read: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
 class BackupJob(Base):
@@ -226,7 +329,7 @@ class BackupJob(Base):
     asset_id: Mapped[str] = mapped_column(String(64), index=True)
     schedule: Mapped[str] = mapped_column(String(64), default="daily")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     last_backup_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     last_restore_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
@@ -241,5 +344,5 @@ class BackupRun(Base):
     restore_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="running")
     note: Mapped[str] = mapped_column(Text, default="")
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)

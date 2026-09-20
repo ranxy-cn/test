@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.integrations import integration_health
 from app.models import BackupJob, BackupRun, Ticket, TicketStatus
+from app.routers.deps import require_perm
 from app.services import stress
 from app.services.backups import backup_report, run_backup, verify_restore
 from app.services.locks import hold_demo_lock, list_locks, release_asset_lock
@@ -55,12 +56,12 @@ def api_stress_stop():
     return stress.stop()
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_perm("status:read"))])
 def integration_status():
     return integration_health()
 
 
-@router.get("/locks")
+@router.get("/locks", dependencies=[Depends(require_perm("tickets:read"))])
 def api_list_locks(db: Session = Depends(get_db)):
     rows = list_locks(db)
     db.commit()
@@ -78,14 +79,14 @@ def api_list_locks(db: Session = Depends(get_db)):
     }
 
 
-@router.post("/locks")
+@router.post("/locks", dependencies=[Depends(require_perm("tickets:operate"))])
 def api_hold_lock(body: LockIn, db: Session = Depends(get_db)):
     lock = hold_demo_lock(db, body.asset_id, body.ttl_seconds)
     db.commit()
     return {"asset_id": lock.asset_id, "ticket_id": lock.ticket_id, "expires_at": lock.expires_at, "holder": lock.holder}
 
 
-@router.delete("/locks/{asset_id}")
+@router.delete("/locks/{asset_id}", dependencies=[Depends(require_perm("tickets:operate"))])
 def api_release_lock(asset_id: str, db: Session = Depends(get_db)):
     release_asset_lock(db, asset_id)
     db.commit()
@@ -104,12 +105,12 @@ def api_retry(ticket_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "ticket_id": ticket.id}
 
 
-@router.post("/locks/retry-queued")
+@router.post("/locks/retry-queued", dependencies=[Depends(require_perm("tickets:operate"))])
 def api_retry_queued():
     return {"retried": retry_queued_executions()}
 
 
-@router.get("/notifications")
+@router.get("/notifications", dependencies=[Depends(require_perm("notifications:read"))])
 def api_notifications(unread: bool = False, ticket_id: int | None = None, db: Session = Depends(get_db)):
     rows = list_notifications(db, unread_only=unread, ticket_id=ticket_id)
     return {
@@ -129,7 +130,7 @@ def api_notifications(unread: bool = False, ticket_id: int | None = None, db: Se
     }
 
 
-@router.post("/notifications/{notif_id}/read")
+@router.post("/notifications/{notif_id}/read", dependencies=[Depends(require_perm("notifications:read"))])
 def api_mark_read(notif_id: int, db: Session = Depends(get_db)):
     row = mark_read(db, notif_id)
     if row is None:
@@ -143,7 +144,7 @@ def api_backups(db: Session = Depends(get_db)):
     return backup_report(db)
 
 
-@router.get("/backups/runs")
+@router.get("/backups/runs", dependencies=[Depends(require_perm("backups:read"))])
 def api_backup_runs(db: Session = Depends(get_db)):
     rows = db.scalars(select(BackupRun).order_by(BackupRun.id.desc()).limit(50)).all()
     return {
@@ -180,7 +181,7 @@ def api_run_backup(job_id: str, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/backups/{job_id}/verify-restore")
+@router.post("/backups/{job_id}/verify-restore", dependencies=[Depends(require_perm("backups:operate"))])
 def api_verify_restore(job_id: str, db: Session = Depends(get_db)):
     job = db.get(BackupJob, job_id)
     if job is None:
@@ -197,7 +198,7 @@ def api_verify_restore(job_id: str, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/backups/run-due")
+@router.post("/backups/run-due", dependencies=[Depends(require_perm("backups:operate"))])
 def api_run_due(db: Session = Depends(get_db)):
     jobs = db.scalars(select(BackupJob).where(BackupJob.enabled.is_(True))).all()
     runs = []

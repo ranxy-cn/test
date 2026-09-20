@@ -21,6 +21,7 @@ from app.models import (
     TicketEvent,
     TicketStatus,
 )
+from app.routers.deps import CurrentUser, require_perm
 from app.schemas import ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services.audit import add_audit, add_event
 from app.services.notify import notify_ticket
@@ -76,7 +77,7 @@ def employee_profile(employee_id: str, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/api/v1/assets")
+@router.get("/api/v1/assets", dependencies=[Depends(require_perm("assets:read"))])
 def list_assets(db: Session = Depends(get_db)):
     rows = db.scalars(select(Asset).order_by(Asset.id)).all()
     return {
@@ -105,7 +106,8 @@ def _check_webhook_secret(
     authorization: str | None = Header(default=None),
 ) -> None:
     provided = x_webhook_secret or x_zabbix_token or ""
-    if authorization and authorization.lower().startswith("bearer "):
+    # 仅当未提供专用密钥头时才回退到 Authorization: Bearer（显式密钥优先）
+    if not provided and authorization and authorization.lower().startswith("bearer "):
         provided = authorization.split(" ", 1)[1]
     expected = get_settings().webhook_secret
     if not provided or not hmac.compare_digest(provided, expected):
@@ -212,7 +214,7 @@ def _infer_scenario(trigger: str) -> str:
     return "green"
 
 
-@router.get("/api/v1/tickets")
+@router.get("/api/v1/tickets", dependencies=[Depends(require_perm("tickets:read"))])
 def list_tickets(status: str | None = None, db: Session = Depends(get_db)):
     stmt = select(Ticket).order_by(Ticket.id.desc())
     if status:
@@ -221,7 +223,7 @@ def list_tickets(status: str | None = None, db: Session = Depends(get_db)):
     return {"items": [TicketOut.model_validate(t) for t in rows]}
 
 
-@router.get("/api/v1/tickets/{ticket_id}")
+@router.get("/api/v1/tickets/{ticket_id}", dependencies=[Depends(require_perm("tickets:read"))])
 def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
     ticket = db.scalar(
         select(Ticket).options(selectinload(Ticket.approvals)).where(Ticket.id == ticket_id)
@@ -297,33 +299,43 @@ def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/api/v1/tickets/{ticket_id}/approve")
-def api_approve(ticket_id: int, body: ApprovalIn, db: Session = Depends(get_db)):
+@router.post("/api/v1/tickets/{ticket_id}/approve", dependencies=[Depends(require_perm("tickets:operate"))])
+def api_approve(
+    ticket_id: int,
+    body: ApprovalIn,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(require_perm("tickets:operate")),
+):
     ticket = db.get(Ticket, ticket_id)
     if ticket is None:
         raise HTTPException(404, "任务单不存在")
     try:
-        approve_ticket(db, ticket, body.approver, body.comment)
+        approve_ticket(db, ticket, body.approver or current.display_name, body.comment)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     db.refresh(ticket)
     return {"ticket": TicketOut.model_validate(ticket)}
 
 
-@router.post("/api/v1/tickets/{ticket_id}/reject")
-def api_reject(ticket_id: int, body: ApprovalIn, db: Session = Depends(get_db)):
+@router.post("/api/v1/tickets/{ticket_id}/reject", dependencies=[Depends(require_perm("tickets:operate"))])
+def api_reject(
+    ticket_id: int,
+    body: ApprovalIn,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(require_perm("tickets:operate")),
+):
     ticket = db.get(Ticket, ticket_id)
     if ticket is None:
         raise HTTPException(404, "任务单不存在")
     try:
-        reject_ticket(db, ticket, body.approver, body.comment)
+        reject_ticket(db, ticket, body.approver or current.display_name, body.comment)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     db.refresh(ticket)
     return {"ticket": TicketOut.model_validate(ticket)}
 
 
-@router.get("/api/v1/audit")
+@router.get("/api/v1/audit", dependencies=[Depends(require_perm("audit:read"))])
 def list_audit(ticket_id: int | None = None, db: Session = Depends(get_db)):
     stmt = select(AuditLog).order_by(AuditLog.id.desc()).limit(200)
     if ticket_id is not None:
@@ -350,7 +362,7 @@ def list_audit(ticket_id: int | None = None, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/api/v1/reports/daily")
+@router.get("/api/v1/reports/daily", dependencies=[Depends(require_perm("reports:read"))])
 def daily_report(report_date: date | None = Query(default=None, alias="date"), db: Session = Depends(get_db)):
     day = report_date or datetime.now(BEIJING_TZ).date()
 
