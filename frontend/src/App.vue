@@ -8,15 +8,24 @@
         <h1>DevOpsAgent</h1>
         <p>智能运维数字员工 · 工作台</p>
       </div>
+      <!-- 动态菜单：由后端按角色授权返回（menus 表驱动） -->
       <el-menu :router="true" :default-active="$route.path" background-color="transparent">
-        <el-menu-item index="/tickets">任务单</el-menu-item>
-        <el-menu-item index="/employee">数字员工</el-menu-item>
-        <el-menu-item index="/assets">资产台账</el-menu-item>
-        <el-menu-item index="/backups">备份</el-menu-item>
-        <el-menu-item index="/notifications">通知</el-menu-item>
-        <el-menu-item index="/report">日报</el-menu-item>
-        <el-menu-item index="/status">集成状态</el-menu-item>
-        <el-menu-item v-if="auth.isAdmin()" index="/users">用户管理</el-menu-item>
+        <template v-for="item in menuItems" :key="item.code">
+          <el-sub-menu v-if="item.children && item.children.length" :index="item.code">
+            <template #title>
+              <el-icon><component :is="item.icon || 'Folder'" /></el-icon>
+              <span>{{ item.name }}</span>
+            </template>
+            <el-menu-item v-for="child in item.children" :key="child.code" :index="child.path">
+              <el-icon><component :is="child.icon || 'Menu'" /></el-icon>
+              <span>{{ child.name }}</span>
+            </el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else-if="item.path" :index="item.path">
+            <el-icon><component :is="item.icon || 'Menu'" /></el-icon>
+            <span>{{ item.name }}</span>
+          </el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
     <el-container>
@@ -74,6 +83,10 @@ import { changePassword } from './api'
 const route = useRoute()
 const router = useRouter()
 const isPublicPage = computed(() => Boolean(route.meta.public))
+
+// 动态菜单树（登录接口返回，来自 menus 表按角色授权过滤）
+const menuItems = computed(() => auth.user?.menus || [])
+
 const roleLabels = { admin: '管理员', operator: '操作员', viewer: '只读' }
 const roleLabel = computed(() => {
   const codes = auth.user?.roles || []

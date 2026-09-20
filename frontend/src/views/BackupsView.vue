@@ -9,8 +9,8 @@
       <el-table-column prop="restore_status" label="恢复验证" width="110" />
       <el-table-column label="操作" width="220">
         <template #default="{ row }">
-          <el-button size="small" type="primary" @click="doRun(row.id)">触发备份</el-button>
-          <el-button size="small" @click="doVerify(row.id)">标记恢复验证</el-button>
+          <el-button v-perm="'backups:operate'" size="small" type="primary" @click="doRun(row.id)">触发备份</el-button>
+          <el-button v-perm="'backups:operate'" size="small" @click="doVerify(row.id)">标记恢复验证</el-button>
         </template>
       </el-table-column>
     </el-table>

@@ -66,8 +66,8 @@
           <el-input v-model="approver" placeholder="审批人" style="margin: 8px 0" />
           <el-input v-model="comment" type="textarea" placeholder="意见" />
           <el-space style="margin-top: 12px">
-            <el-button type="primary" @click="doApprove">批准并执行</el-button>
-            <el-button type="danger" @click="doReject">驳回升级</el-button>
+            <el-button v-perm="'tickets:operate'" type="primary" @click="doApprove">批准并执行</el-button>
+            <el-button v-perm="'tickets:operate'" type="danger" @click="doReject">驳回升级</el-button>
           </el-space>
         </el-card>
         <el-card header="审计" style="margin-top: 16px">

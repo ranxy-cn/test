@@ -45,6 +45,19 @@ export const createUser = (payload) => http.post('/admin/users', payload)
 export const patchUser = (id, payload) => http.patch(`/admin/users/${id}`, payload)
 export const unlockUser = (id) => http.post(`/admin/users/${id}/unlock`)
 
+// ===== 菜单与角色权限管理 =====
+export const fetchMenuTree = () => http.get('/admin/menus')
+export const createMenu = (payload) => http.post('/admin/menus', payload)
+export const patchMenu = (id, payload) => http.patch(`/admin/menus/${id}`, payload)
+export const deleteMenu = (id) => http.delete(`/admin/menus/${id}`)
+export const fetchPermissions = () => http.get('/admin/permissions')
+export const createRole = (payload) => http.post('/admin/roles', payload)
+export const createPermission = (payload) => http.post('/admin/permissions', payload)
+export const assignRoleMenus = (roleId, menuCodes) =>
+  http.put(`/admin/roles/${roleId}/menus`, { menu_codes: menuCodes })
+export const assignRolePermissions = (roleId, permissionCodes) =>
+  http.put(`/admin/roles/${roleId}/permissions`, { permission_codes: permissionCodes })
+
 // ===== 业务 =====
 export const fetchTickets = (status) => http.get('/tickets', { params: status ? { status } : {} })
 export const fetchTicket = (id) => http.get(`/tickets/${id}`)

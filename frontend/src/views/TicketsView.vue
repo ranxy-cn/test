@@ -9,7 +9,7 @@
             <el-radio-button value="recovered">已恢复</el-radio-button>
             <el-radio-button value="escalated">已升级</el-radio-button>
       </el-radio-group>
-      <el-button type="primary" @click="openDemo">模拟告警</el-button>
+      <el-button v-perm="'tickets:operate'" type="primary" @click="openDemo">模拟告警</el-button>
       <el-button @click="load">刷新</el-button>
     </el-space>
 
@@ -72,8 +72,8 @@
         <el-tag type="danger">压测进行中 · {{ stressCores }} 核满载 · 剩余 {{ stressRemaining }} 秒</el-tag>
       </div>
       <template #footer>
-        <el-button v-if="stressRunning" type="danger" @click="doStopStress">停止压测</el-button>
-        <el-button v-else type="warning" :loading="stressStarting" @click="doStartStress">启动压测</el-button>
+        <el-button v-if="stressRunning" v-perm="'tools:operate'" type="danger" @click="doStopStress">停止压测</el-button>
+        <el-button v-else v-perm="'tools:operate'" type="warning" :loading="stressStarting" @click="doStartStress">启动压测</el-button>
         <el-button @click="stressVisible = false">关闭</el-button>
       </template>
     </el-dialog>
