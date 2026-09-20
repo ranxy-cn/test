@@ -63,12 +63,14 @@
 
 <script setup>
 import { computed, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auth } from './auth'
 import { changePassword } from './api'
 
+const route = useRoute()
 const router = useRouter()
+const isPublicPage = computed(() => Boolean(route.meta.public))
 const roleLabels = { admin: '管理员', operator: '操作员', viewer: '只读' }
 const roleLabel = computed(() => {
   const codes = auth.user?.roles || []
