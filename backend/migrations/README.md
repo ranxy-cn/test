@@ -5,9 +5,24 @@
 
 ## 迭代历史
 
-| 版本 | 文件 | 日期 | 内容 |
-| --- | --- | --- | --- |
-| 0001 | [0001_init_schema.py](versions/0001_init_schema.py) | 2026-09-20 | 初始 schema：20 张表（13 张业务表 + 7 张 RBAC 鉴权表） |
+| 版本 | 迁移文件 | DDL 文件 | 日期 | 内容 |
+| --- | --- | --- | --- | --- |
+| 0001 | [0001_init_schema.py](versions/0001_init_schema.py) | [ddl/0001_init_schema.sql](ddl/0001_init_schema.sql) | 2026-09-20 | 初始 schema：20 张表（13 张业务表 + 7 张 RBAC 鉴权表） |
+| 0002 | [0002_sync_column_comments.py](versions/0002_sync_column_comments.py) | [ddl/0002_sync_column_comments.sql](ddl/0002_sync_column_comments.sql) | 2026-09-20 | 全量表/字段注释回填（COMMENT），无结构变化 |
+
+## DDL 文档维护约定（强约束）
+
+DDL 权威文档位于 [ddl/](ddl/) 目录，按迁移版本编号一一对应（`0001_init_schema.sql` = 版本 0001 的完整表结构）。
+
+**任何涉及数据库结构的变更（新增表、新增/修改/删除字段、索引、注释），必须同步完成以下四步，缺一不可：**
+
+1. **改模型**：修改 `backend/app/models.py`，新增字段必须带 `comment=` 参数；
+2. **写迁移**：新增 alembic 迁移脚本（编号顺延，如 0003），人工核对生成的语句；
+3. **更新 DDL 文档**：在 `ddl/` 目录新增/更新对应版本编号的 SQL 文件——**每个字段必须包含 COMMENT 注释，每张表必须包含表级 COMMENT**；
+4. **登记历史**：在上表「迭代历史」中登记一行（版本号、迁移文件、DDL 文件、日期、内容说明）。
+
+> 字段注释要求写清楚：业务含义、取值枚举（如 `1 是 / 0 否`）、单位（如"秒"）、外键指向（如 `fk → assets.id`）、时区口径（UTC）。
+
 
 ## 0001 初始表结构一览
 
