@@ -39,13 +39,26 @@ jobs:
         run: npm run build
 
   deploy:
-    # 推送到 main 或手动触发时，先过 CI 再 SSH 到服务器执行 deploy.sh
+    # 推送到 main 或手动触发时，先过 CI，再打包上传代码到服务器并执行 deploy.sh
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [backend-tests, frontend-build]
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: SSH 部署
+      - uses: actions/checkout@v4
+      - name: 打包代码（排除本地产物与敏感文件）
+        run: tar czf /tmp/devops-agent-deploy.tgz --exclude .git --exclude .venv --exclude node_modules --exclude frontend/dist --exclude .agent --exclude .idea --exclude .env .
+      - name: 上传到服务器
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: /tmp/devops-agent-deploy.tgz
+          target: /tmp/
+          overwrite: true
+      - name: 服务器上解压并部署
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -53,5 +66,7 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script: |
+            mkdir -p ${{ secrets.DEPLOY_PATH }}
+            tar xzf /tmp/devops-agent-deploy.tgz -C ${{ secrets.DEPLOY_PATH }}
             cd ${{ secrets.DEPLOY_PATH }}
-            bash scripts/deploy.sh
+            bash scripts/deploy.sh .
