@@ -147,6 +147,25 @@ class RoleMenu(Base):
     )
 
 
+class DictEntry(Base):
+    """业务字典（枚举中文名映射）：告警标题 / 资产 / 预案等 code → 中文展示。"""
+
+    __tablename__ = "dict_entries"
+    __table_args__ = (UniqueConstraint("dict_type", "code", name="uq_dict_type_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, comment="自增主键")
+    dict_type: Mapped[str] = mapped_column(String(32), index=True, comment="字典类型：trigger 告警标题 / asset 资产 / action 预案")
+    code: Mapped[str] = mapped_column(String(128), comment="业务编码（原值，如 CPU usage > 85% for 5 minutes）")
+    label: Mapped[str] = mapped_column(String(128), comment="中文展示名")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, comment="排序值（小的在前）")
+    status: Mapped[str] = mapped_column(String(16), default="enabled", comment="状态：enabled 启用 / disabled 停用")
+    remark: Mapped[str] = mapped_column(String(256), default="", comment="备注")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, comment="创建时间（UTC）")
+    updated_at: Mapped[datetime] = mapped_column(
+        TZDateTime, default=utcnow, onupdate=utcnow, comment="更新时间（UTC）"
+    )
+
+
 class UserToken(Base):
     """访问令牌白名单：JWT jti 落库，支持登出/改密后强制失效。"""
 

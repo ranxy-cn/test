@@ -61,6 +61,7 @@ export const assignRolePermissions = (roleId, permissionCodes) =>
 // ===== 业务 =====
 export const fetchTickets = (status) => http.get('/tickets', { params: status ? { status } : {} })
 export const fetchTicket = (id) => http.get(`/tickets/${id}`)
+export const fetchDict = () => http.get('/dict')
 export const approveTicket = (id, payload) => http.post(`/tickets/${id}/approve`, payload)
 export const rejectTicket = (id, payload) => http.post(`/tickets/${id}/reject`, payload)
 export const fetchEmployee = (id = 'DE-OPS-001') => http.get(`/employee/${id}`)

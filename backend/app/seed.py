@@ -80,6 +80,12 @@ def seed_rbac(db: Session) -> None:
             grant_tree_to_role(db, role.id, menus, role_default_menu_codes(code))
     db.flush()
 
+    # 业务字典（告警标题/资产/预案中文名映射，只补缺失项）
+    from app.dict_seed import seed_dict
+
+    seed_dict(db)
+    db.flush()
+
     # 初始管理员（仅当无任何用户时创建一次）
     if db.scalar(select(User.id).limit(1)) is None:
         settings = get_settings()

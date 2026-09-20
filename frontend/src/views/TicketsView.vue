@@ -18,10 +18,18 @@
       <el-button @click="load">刷新</el-button>
     </el-space>
 
-    <el-table :data="items" stripe @row-click="go" style="width: 100%" empty-text="暂无任务单，可点击「模拟告警」走一遍绿灯路径">
+    <el-table :data="items" stripe style="width: 100%" empty-text="暂无任务单，可点击「模拟告警」走一遍绿灯路径">
       <el-table-column prop="number" label="编号" width="170" />
-      <el-table-column prop="title" label="标题" min-width="220" />
-      <el-table-column prop="asset_id" label="资产" width="170" />
+      <el-table-column label="标题" min-width="200" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :title="row.title">{{ triggerLabel(row) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="资产" width="170" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span :title="row.asset_id">{{ dictLabel('asset', row.asset_id) }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="owner" label="负责人" width="90" />
       <el-table-column label="状态" width="120">
         <template #default="{ row }">
@@ -34,8 +42,18 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column prop="candidate_action_id" label="预案" width="190" />
+      <el-table-column label="预案" width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.candidate_action_id" :title="row.candidate_action_id">{{ dictLabel('action', row.candidate_action_id) }}</span>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="created_at" label="创建时间" width="190" :formatter="fmtTimeCol('created_at')" />
+      <el-table-column label="操作" width="100" fixed="right">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="go(row)">查看详情</el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
     <el-dialog v-model="demoVisible" title="模拟 Zabbix 告警" width="520px">
@@ -89,7 +107,7 @@
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { fetchTickets, fetchStatus, fetchStressStatus, postWebhook, startCpuStress, stopCpuStress } from '../api'
+import { fetchTickets, fetchStatus, fetchStressStatus, fetchDict, postWebhook, startCpuStress, stopCpuStress } from '../api'
 import { fmtTimeCol } from '../time'
 
 const router = useRouter()
@@ -99,6 +117,29 @@ const demoVisible = ref(false)
 const sending = ref(false)
 const demo = reactive({ scenario: 'green' })
 let timer
+
+// ===== 业务字典（code → 中文名映射）=====
+const dictMaps = ref({ trigger: {}, asset: {}, action: {} })
+
+function loadDict() {
+  fetchDict()
+    .then(({ data }) => {
+      const maps = { trigger: {}, asset: {}, action: {} }
+      for (const it of data) {
+        if (maps[it.dict_type]) maps[it.dict_type][it.code] = it.label
+      }
+      dictMaps.value = maps
+    })
+    .catch(() => {})
+}
+
+function dictLabel(type, code) {
+  return (dictMaps.value[type] || {})[code] || code
+}
+
+function triggerLabel(row) {
+  return dictLabel('trigger', row.title || row.trigger_name)
+}
 
 // ===== CPU 压测状态 =====
 const stressVisible = ref(false)
@@ -221,6 +262,7 @@ async function doStopStress() {
 
 onMounted(async () => {
   load()
+  loadDict()
   loadStressState()
   fetchStatus().then(({ data }) => {
     stressEnabled.value = !!data.integrations?.stress_tools_enabled
