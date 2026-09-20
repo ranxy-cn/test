@@ -53,7 +53,7 @@
       <el-table-column prop="description" label="说明" min-width="220" />
       <el-table-column label="权限点" min-width="360">
         <template #default="{ row }">
-          <el-tag v-for="p in row.permissions" :key="p" size="small" type="info" style="margin: 2px">{{ p }}</el-tag>
+          <el-tag v-for="p in row.permissions" :key="p" size="small" type="info" style="margin: 2px">{{ permName(p) }}</el-tag>
         </template>
       </el-table-column>
     </el-table>
@@ -99,7 +99,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { fetchUsers, fetchRoles, createUser, patchUser, unlockUser } from '../api'
+import { fetchUsers, fetchRoles, fetchPermissions, createUser, patchUser, unlockUser } from '../api'
 import { auth } from '../auth'
 import { fmtTime } from '../time'
 
@@ -117,14 +117,19 @@ const form = reactive({ username: '', display_name: '', email: '', password: '',
 const roleLabels = { admin: '管理员', operator: '操作员', viewer: '只读' }
 const roleLabel = (c) => roleLabels[c] || c
 
+// 权限点 code → 中文名（/admin/permissions）
+const permMap = ref({})
+const permName = (code) => permMap.value[code] || code
+
 const locked = (row) => row.locked_until && new Date(row.locked_until).getTime() > Date.now()
 
 async function load() {
   loading.value = true
   try {
-    const [u, r] = await Promise.all([fetchUsers(), fetchRoles()])
+    const [u, r, p] = await Promise.all([fetchUsers(), fetchRoles(), fetchPermissions()])
     users.value = u.data.items
     roles.value = r.data.items
+    permMap.value = Object.fromEntries(p.data.items.map((x) => [x.code, x.name]))
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
   } finally {
