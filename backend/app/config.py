@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     ansible_timeout_seconds: int = 120
     ansible_host_key_checking: bool = True
     notify_webhook_url: str = ""
+    # 真实 CPU 压测工具：仅服务器部署（有真实 Zabbix）时打开
+    stress_tools_enabled: bool = False
+    stress_max_seconds: int = 1200
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"

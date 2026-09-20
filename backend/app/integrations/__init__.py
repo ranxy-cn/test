@@ -126,6 +126,7 @@ def describe_integrations(settings: Settings | None = None) -> dict[str, Any]:
     return {
         "integration_mode": (settings.integration_mode or "mock").lower(),
         "notify_webhook": bool(settings.notify_webhook_url),
+        "stress_tools_enabled": bool(settings.stress_tools_enabled),
         **items,
     }
 

@@ -5,9 +5,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import get_db
 from app.integrations import integration_health
 from app.models import BackupJob, BackupRun, Ticket, TicketStatus
+from app.services import stress
 from app.services.backups import backup_report, run_backup, verify_restore
 from app.services.locks import hold_demo_lock, list_locks, release_asset_lock
 from app.services.notify import list_notifications, mark_read
@@ -19,6 +21,38 @@ router = APIRouter(prefix="/api/v1")
 class LockIn(BaseModel):
     asset_id: str
     ttl_seconds: int = 60
+
+
+class StressIn(BaseModel):
+    duration_seconds: int = 420
+
+
+def _require_stress_enabled() -> None:
+    if not get_settings().stress_tools_enabled:
+        raise HTTPException(
+            403,
+            "CPU 压测工具未开启：仅服务器部署（有真实 Zabbix）设置 STRESS_TOOLS_ENABLED=true 后可用",
+        )
+
+
+@router.get("/tools/cpu-stress")
+def api_stress_status():
+    result = stress.status()
+    result["enabled"] = get_settings().stress_tools_enabled
+    result["max_seconds"] = get_settings().stress_max_seconds
+    return result
+
+
+@router.post("/tools/cpu-stress")
+def api_stress_start(body: StressIn):
+    _require_stress_enabled()
+    return stress.start(body.duration_seconds)
+
+
+@router.post("/tools/cpu-stress/stop")
+def api_stress_stop():
+    _require_stress_enabled()
+    return stress.stop()
 
 
 @router.get("/status")
