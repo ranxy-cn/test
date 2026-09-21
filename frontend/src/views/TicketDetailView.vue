@@ -3,7 +3,19 @@
     <el-page-header @back="$router.push('/tickets')" :content="ticket.number" />
     <div style="margin-top: 16px" class="card-grid">
       <el-card shadow="never"><b>状态</b><div style="margin-top:8px"><el-tag :type="statusType(ticket.status)">{{ statusLabel(ticket.status) }}</el-tag></div></el-card>
-      <el-card shadow="never"><b>策略灯</b><div style="margin-top:8px"><i class="light-dot" :class="'light-' + (ticket.policy_light || 'red')"></i>{{ lightLabel(ticket.policy_light) }}</div></el-card>
+      <el-card shadow="never">
+        <b>事件级别</b>
+        <el-tooltip placement="top" effect="dark">
+          <template #content>
+            策略引擎根据诊断结果给出的处置级别：<br />
+            绿灯：低风险、命中白名单预案且前置条件满足，自动执行修复<br />
+            黄灯：高风险操作（如数据库主备切换），挂起等待人工审批<br />
+            红灯：未命中预案 / 前置失败 / 维护窗口 / 失败冷却，升级人工处理
+          </template>
+          <el-icon style="margin-left: 4px; vertical-align: middle; color: #909399; cursor: help"><QuestionFilled /></el-icon>
+        </el-tooltip>
+        <div style="margin-top:8px"><i class="light-dot" :class="'light-' + (ticket.policy_light || 'red')"></i>{{ lightLabel(ticket.policy_light) }}</div>
+      </el-card>
       <el-card shadow="never"><b>预案</b><div class="mono" style="margin-top:8px">{{ ticket.candidate_action_id || '无' }} @ {{ ticket.playbook_version || '-' }}</div></el-card>
       <el-card shadow="never"><b>负责人</b><div style="margin-top:8px">{{ ticket.owner }} / {{ ticket.asset_id }}</div></el-card>
     </div>
