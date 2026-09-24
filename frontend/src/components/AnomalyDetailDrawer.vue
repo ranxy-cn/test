@@ -307,9 +307,9 @@ defineExpose({ open })
 }
 .snap-plain {
   margin: 0;
-  padding: 10px;
-  background: #f5f7fa;
-  border-radius: 4px;
+  padding: 12px 14px;
+  background: var(--el-fill-color-light);
+  border-radius: var(--r-sm);
   font-size: 12px;
   line-height: 1.6;
   max-height: 420px;

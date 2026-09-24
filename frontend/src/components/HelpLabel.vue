@@ -20,9 +20,13 @@ defineProps({
   align-items: center;
 }
 .help-icon {
-  color: #a8abb2;
+  color: #86868b;
   font-size: 13px;
   cursor: help;
   margin-left: 2px;
+  transition: color 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.help-icon:hover {
+  color: var(--brand, #0071e3);
 }
 </style>

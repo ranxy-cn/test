@@ -220,10 +220,6 @@
               <el-icon style="margin-right: 4px"><FolderAdd /></el-icon>
               新增分组
             </el-button>
-            <el-button v-perm="'assets:write'" type="primary" size="small" @click="openAddChild">
-              <el-icon style="margin-right: 4px"><Plus /></el-icon>
-              添加子机
-            </el-button>
           </div>
         </div>
 
@@ -253,8 +249,7 @@
               <el-icon v-perm="'assets:write'" class="group-op danger" title="删除分组" @click="doDeleteGroup(g.name)"><Delete /></el-icon>
             </template>
           </div>
-          <div v-if="!g.items.length" class="group-empty-tip">拖拽子机卡片到这里，归入「{{ g.name || '未分组' }}」</div>
-          <el-row v-else :gutter="12">
+          <el-row :gutter="12">
             <el-col v-for="c in g.items" :key="c.id" :xs="24" :sm="12" :md="8" :lg="6">
               <el-card
                 shadow="hover"
@@ -327,6 +322,15 @@
                 </div>
                 <div v-if="!c.reachable && c.unreachable_reason" class="node-err" :title="`${c.unreachable_reason}（检测于 ${fmtTime(c.last_check_at)}）`">
                   {{ c.unreachable_reason }}
+                </div>
+              </el-card>
+            </el-col>
+            <!-- 假卡片：点击新增子机，自动绑定当前分组 -->
+            <el-col v-perm="'assets:write'" :xs="24" :sm="12" :md="8" :lg="6">
+              <el-card shadow="never" class="node-card add-card" @click="openAddChild(g.name)">
+                <div class="add-card-inner">
+                  <el-icon :size="22"><Plus /></el-icon>
+                  <span>添加子机</span>
                 </div>
               </el-card>
             </el-col>
@@ -617,8 +621,8 @@
         <el-form-item label="上报间隔(秒)">
           <el-input-number
             v-model="addChildForm.agent_refresh_seconds"
-            :min="10"
-            :max="86400"
+            :min="60"
+            :max="3600"
             placeholder="留空用默认(120)"
             style="width: 200px"
           />
@@ -1319,8 +1323,8 @@ const childProvisioning = ref(false)
 const addChildForm = reactive({ display_name: '', ip: '', port: 22, username: 'root', password: '', app: '', group: '', owner: '', agent_refresh_seconds: null })
 let provisionTimer = null
 
-function openAddChild() {
-  Object.assign(addChildForm, { display_name: '', ip: '', port: 22, username: 'root', password: '', app: '', group: '', owner: '', agent_refresh_seconds: null })
+function openAddChild(groupName = '') {
+  Object.assign(addChildForm, { display_name: '', ip: '', port: 22, username: 'root', password: '', app: '', group: groupName || '', owner: '', agent_refresh_seconds: null })
   addChildVisible.value = true
 }
 
@@ -1690,10 +1694,10 @@ async function submitAlertPolicy() {
   overflow: auto;
   font-size: 12px;
   line-height: 1.6;
-  background: #14161a;
+  background: #0d0d10;
   color: #d5dbe3;
-  padding: 12px;
-  border-radius: 6px;
+  padding: 14px 16px;
+  border-radius: 10px;
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -1703,42 +1707,42 @@ async function submitAlertPolicy() {
   margin-top: 48px;
   text-align: center;
   padding: 56px 24px;
-  border: 1px dashed #dcdfe6;
-  border-radius: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-xl);
   background: linear-gradient(180deg, #fafcff 0%, #ffffff 70%);
 }
 .empty-icon {
   font-size: 52px;
-  color: #c0c4cc;
+  color: var(--faint);
 }
 .empty-title {
   margin-top: 14px;
   font-size: 17px;
   font-weight: 600;
-  color: #303133;
+  color: var(--ink);
 }
 .empty-desc {
   margin: 10px auto 18px;
   max-width: 460px;
-  color: #909399;
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.7;
 }
 
 /* ===== 母机记录列表（一台一条记录，不展示 CPU 等指标） ===== */
 .section-hint {
-  color: #c0c4cc;
+  color: var(--faint);
   font-size: 12px;
 }
 .mother-row {
   border-radius: 10px;
   margin-bottom: 10px;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.2s var(--ease-out, ease), box-shadow 0.2s var(--ease-out, ease);
 }
 .mother-row:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(64, 128, 255, 0.12);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.09);
 }
 .mother-row :deep(.el-card__body) {
   display: flex;
@@ -1760,7 +1764,7 @@ async function submitAlertPolicy() {
 }
 .row-sub {
   flex: 1 1 240px;
-  color: #909399;
+  color: var(--muted);
   font-size: 13px;
   display: flex;
   align-items: center;
@@ -1770,11 +1774,11 @@ async function submitAlertPolicy() {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #909399;
+  color: var(--muted);
   font-size: 13px;
 }
 .row-count b {
-  color: #409eff;
+  color: var(--brand);
   font-size: 15px;
 }
 /* 部署进度条（母机列表行 & 详情头部共用） */
@@ -1791,7 +1795,7 @@ async function submitAlertPolicy() {
 .row-progress .progress-label {
   flex-shrink: 0;
   font-size: 12px;
-  color: #e6a23c;
+  color: var(--warn);
 }
 
 /* ===== 母机详情头部 ===== */
@@ -1801,7 +1805,7 @@ async function submitAlertPolicy() {
   gap: 14px;
   flex-wrap: wrap;
   padding: 4px 0 10px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--line);
 }
 .detail-title {
   display: flex;
@@ -1816,7 +1820,7 @@ async function submitAlertPolicy() {
 .detail-sub {
   display: flex;
   align-items: center;
-  color: #909399;
+  color: var(--muted);
   font-size: 13px;
   margin: 8px 0 2px;
 }
@@ -1828,8 +1832,8 @@ async function submitAlertPolicy() {
   gap: 4px;
   margin-top: 10px;
   padding: 8px 6px;
-  background: #f7f9fc;
-  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  border-radius: 10px;
 }
 .nm {
   text-align: center;
@@ -1838,28 +1842,28 @@ async function submitAlertPolicy() {
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: #303133;
+  color: var(--ink);
 }
 .nm-v.warn {
-  color: #e6a23c;
+  color: var(--warn);
 }
 .nm-v.danger {
-  color: #f56c6c;
+  color: var(--danger);
 }
 .nm-v .nm-unit {
   font-size: 10px;
-  color: #909399;
+  color: var(--muted);
   margin-left: 1px;
   font-weight: 400;
 }
 .nm-l {
   margin-top: 1px;
   font-size: 11px;
-  color: #909399;
+  color: var(--muted);
 }
 .field-hint {
   margin-left: 10px;
-  color: #c0c4cc;
+  color: var(--faint);
   font-size: 12px;
 }
 
@@ -1871,12 +1875,12 @@ async function submitAlertPolicy() {
   flex: none;
 }
 .dot.ok {
-  background: #67c23a;
-  box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.18);
+  background: var(--ok-vivid);
+  box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.18);
 }
 .dot.down {
-  background: #f56c6c;
-  box-shadow: 0 0 0 3px rgba(245, 108, 108, 0.18);
+  background: var(--danger-vivid);
+  box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.18);
 }
 
 /* ===== 子机分组 ===== */
@@ -1900,25 +1904,25 @@ async function submitAlertPolicy() {
 .group-block {
   margin-bottom: 18px;
   background: #fff;
-  border: 1px solid #e4e7ed;
-  border-radius: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
   padding: 14px 16px 4px;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 .group-block.drop-target {
-  border-color: #409eff;
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.18);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.16);
 }
 .group-block.drop-target .group-name {
-  color: #409eff;
+  color: var(--brand);
 }
 .group-empty-tip {
-  color: #c0c4cc;
+  color: var(--faint);
   font-size: 13px;
   text-align: center;
   padding: 20px 0;
-  border: 1px dashed #dcdfe6;
-  border-radius: 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
   margin-bottom: 14px;
 }
 .group-header {
@@ -1928,7 +1932,7 @@ async function submitAlertPolicy() {
   margin-bottom: 10px;
 }
 .group-icon {
-  color: #e6a23c;
+  color: var(--warn);
 }
 .group-name {
   font-size: 14px;
@@ -1936,17 +1940,18 @@ async function submitAlertPolicy() {
 }
 .group-op {
   margin-left: auto;
-  color: #909399;
+  color: var(--muted);
   cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .group-op + .group-op {
   margin-left: 0;
 }
 .group-op:hover {
-  color: #409eff;
+  color: var(--brand);
 }
 .group-op.danger:hover {
-  color: #f56c6c;
+  color: var(--danger);
 }
 /* ===== 子机卡片：心电图在线指示 ===== */
 .ecg {
@@ -1956,16 +1961,16 @@ async function submitAlertPolicy() {
 }
 .ecg .ecg-line {
   fill: none;
-  stroke: #c0c4cc;
+  stroke: var(--faint);
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 .ecg.on .ecg-line {
-  stroke: #67c23a;
+  stroke: var(--ok-vivid);
   stroke-dasharray: 90 60;
   animation: ecg-flow 1.4s linear infinite;
-  filter: drop-shadow(0 0 2px rgba(103, 194, 58, 0.55));
+  filter: drop-shadow(0 0 2px rgba(52, 199, 89, 0.55));
 }
 .ecg.off .ecg-line {
   opacity: 0.45;
@@ -1979,10 +1984,43 @@ async function submitAlertPolicy() {
   }
 }
 .node-card {
-  border-radius: 8px;
+  border-radius: var(--r-lg);
   margin-bottom: 12px;
   position: relative;
   overflow: hidden;
+}
+.add-card {
+  /* 与同行真卡同高：撑满 el-col（flex 拉伸）并保留与真卡一致的底部间距 */
+  height: calc(100% - 12px);
+  min-height: 202px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  border: 1.5px dashed var(--el-border-color-darker);
+  background: var(--el-fill-color-lighter);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.add-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.add-card-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+.add-card:hover {
+  border-color: var(--el-color-primary);
+}
+.add-card:hover .add-card-inner {
+  color: var(--el-color-primary);
 }
 .node-card[draggable='true'] {
   cursor: grab;
@@ -1998,13 +2036,13 @@ async function submitAlertPolicy() {
   top: 0;
   bottom: 0;
   width: 3px;
-  background: #67c23a;
+  background: var(--ok-vivid);
 }
 .node-card.down::before {
-  background: #f56c6c;
+  background: var(--danger-vivid);
 }
 .node-card.down {
-  background: #fff8f8;
+  background: var(--el-color-danger-light-9);
 }
 .node-top {
   display: flex;
@@ -2018,17 +2056,18 @@ async function submitAlertPolicy() {
   top: 0;
   right: 0;
   z-index: 2;
-  background: #f56c6c;
+  background: var(--danger-vivid);
   color: #fff;
   font-size: 11px;
   line-height: 1;
   padding: 3px 8px;
-  border-radius: 0 8px 0 8px;
+  border-radius: 0 var(--r-sm) 0 var(--r-sm);
   cursor: pointer;
   font-weight: 600;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 .alarm-badge:hover {
-  background: #f78989;
+  background: #ff453a;
 }
 /* 卡片右上角操作按钮（跟随 node-top 行对齐，主机名过长自动省略避让） */
 .node-ops {
@@ -2040,14 +2079,15 @@ async function submitAlertPolicy() {
 }
 .node-op {
   cursor: pointer;
-  color: #909399;
+  color: var(--muted);
   font-size: 15px;
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .node-op:hover {
-  color: #409eff;
+  color: var(--brand);
 }
 .node-op.danger:hover {
-  color: #f56c6c;
+  color: var(--danger);
 }
 /* 「已纳管」标签可点击查看安装详情 */
 .prov-tag {
@@ -2056,18 +2096,18 @@ async function submitAlertPolicy() {
 /* 指标自动同步提示 */
 .sync-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--muted);
 }
 /* 安装详情弹窗里的完整安装日志 */
 .install-logs {
   max-height: 260px;
   overflow: auto;
-  background: #0d1b2a;
-  color: #d5e3f0;
+  background: #0d0d10;
+  color: #d5dbe3;
   font-size: 12px;
   line-height: 1.6;
-  padding: 10px 12px;
-  border-radius: 6px;
+  padding: 12px 14px;
+  border-radius: 10px;
   white-space: pre-wrap;
   word-break: break-all;
   margin: 0;
@@ -2081,16 +2121,17 @@ async function submitAlertPolicy() {
 }
 .node-more {
   cursor: pointer;
-  color: #909399;
+  color: var(--muted);
+  transition: color var(--dur-fast) var(--ease-out);
 }
 .node-more:hover {
-  color: #409eff;
+  color: var(--brand);
 }
 .node-ip {
-  color: #606266;
+  color: var(--muted);
   font-size: 13px;
   margin: 6px 0 8px;
-  font-family: monospace;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
 }
 .node-tags {
   display: flex;
@@ -2101,21 +2142,21 @@ async function submitAlertPolicy() {
   display: flex;
   justify-content: space-between;
   margin-top: 10px;
-  color: #909399;
+  color: var(--muted);
   font-size: 12px;
 }
 .node-foot .stale {
-  color: #f56c6c;
+  color: var(--danger);
 }
 .node-err {
   margin-top: 6px;
-  color: #f56c6c;
+  color: var(--danger);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .muted {
-  color: #c0c4cc;
+  color: var(--faint);
 }
 </style>

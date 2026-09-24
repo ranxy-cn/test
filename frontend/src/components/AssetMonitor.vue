@@ -413,7 +413,7 @@ const fmtKB = (kb) => {
   if (kb >= 1024 * 1024) return `${(kb / 1024 / 1024).toFixed(2)} GB`
   return `${Math.round(kb / 1024).toLocaleString()} MB`
 }
-const barColor = (pct) => (pct >= 90 ? '#f56c6c' : pct >= 75 ? '#e6a23c' : '#67c23a')
+const barColor = (pct) => (pct >= 90 ? '#ff3b30' : pct >= 75 ? '#ff9500' : '#34c759')
 
 const sysinfoCollectedAt = computed(() => {
   const t = sysinfo.value?.collected_at
@@ -471,7 +471,7 @@ const fmtNum = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).
 const healthCards = computed(() => {
   const l = metricsLatest.value || {}
   const pct = (v) => (v == null ? null : Math.max(0, Math.min(100, v)))
-  const color = (v) => (v == null ? '#dcdfe6' : v >= 90 ? '#f56c6c' : v >= 75 ? '#e6a23c' : '#67c23a')
+  const color = (v) => (v == null ? '#d2d2d7' : v >= 90 ? '#ff3b30' : v >= 75 ? '#ff9500' : '#34c759')
   const items = [
     { key: 'cpu', label: 'CPU 使用率', unit: '%', tip: '整机 CPU 使用率（Zabbix system.cpu.util）' },
     { key: 'mem', label: '内存使用率', unit: '%', tip: '物理内存已用百分比' },
@@ -653,10 +653,10 @@ function renderChart(series) {
     (arr || []).map((p) => [Number(p.t) * 1000, p[key] != null ? p[key] : p.v]).filter(([, v]) => v != null)
 
   const defs = [
-    { name: 'CPU %', arr: series.cpu, key: 'cpu', color: '#409eff', pct: true },
-    { name: '内存 %', arr: series.mem, key: 'mem', color: '#67c23a', pct: true },
-    { name: '磁盘 %', arr: series.disk, key: 'disk', color: '#e6a23c', pct: true },
-    { name: '负载', arr: series.load, key: 'load', color: '#f56c6c', pct: false },
+    { name: 'CPU %', arr: series.cpu, key: 'cpu', color: '#0a84ff', pct: true },
+    { name: '内存 %', arr: series.mem, key: 'mem', color: '#34c759', pct: true },
+    { name: '磁盘 %', arr: series.disk, key: 'disk', color: '#ff9500', pct: true },
+    { name: '负载', arr: series.load, key: 'load', color: '#ff3b30', pct: false },
   ]
   // 只展示有数据的系列，全部画进同一坐标系（负载走右侧独立轴）
   const hasData = defs.filter((d) => fmt(d.arr, d.key).length > 0)
@@ -686,20 +686,20 @@ function renderChart(series) {
       },
       legend: { top: 0, icon: 'roundRect', itemWidth: 14, itemHeight: 8 },
       grid: { left: 52, right: hasData.some((d) => !d.pct) ? 52 : 28, top: 36, bottom: 30 },
-      xAxis: { type: 'time', axisLine: { lineStyle: { color: '#dcdfe6' } } },
+      xAxis: { type: 'time', axisLine: { lineStyle: { color: '#d2d2d7' } } },
       yAxis: [
         {
           type: 'value',
           name: hasPct ? '%' : '',
           min: 0,
           max: hasPct ? 100 : null,
-          splitLine: { lineStyle: { color: '#f0f2f5' } },
+          splitLine: { lineStyle: { color: '#e8e8ed' } },
         },
         {
           type: 'value',
           name: 'load',
           splitLine: { show: false },
-          axisLabel: { color: '#909399' },
+          axisLabel: { color: '#6e6e73' },
         },
       ],
       series: hasData.map(mkSeries),
@@ -707,7 +707,7 @@ function renderChart(series) {
     true,
   )
   if (!hasData.length) {
-    chart.setOption({ graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无监控数据', fill: '#909399', fontSize: 14 } }] })
+    chart.setOption({ graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无监控数据', fill: '#86868b', fontSize: 14 } }] })
   } else {
     chart.setOption({ graphic: [] })
   }
@@ -759,7 +759,7 @@ watch(autoRefresh, (on) => {
   margin: 0 auto;
 }
 .metric-card {
-  border-radius: 8px;
+  border-radius: var(--r-lg);
 }
 .metric-card :deep(.el-card__body) {
   padding: 14px 18px;
@@ -768,7 +768,7 @@ watch(autoRefresh, (on) => {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: #909399;
+  color: var(--muted);
   font-size: 13px;
 }
 .metric-value {
@@ -779,14 +779,14 @@ watch(autoRefresh, (on) => {
 }
 .metric-value .metric-unit {
   font-size: 13px;
-  color: #909399;
+  color: var(--muted);
   margin-left: 2px;
 }
 .metric-value.danger {
-  color: #f56c6c;
+  color: var(--danger);
 }
 .metric-value.warn {
-  color: #e6a23c;
+  color: var(--warn);
 }
 .block {
   margin-top: 12px;
@@ -820,7 +820,7 @@ watch(autoRefresh, (on) => {
 .sub-title {
   font-size: 13px;
   font-weight: 600;
-  color: #606266;
+  color: var(--ink);
   margin: 10px 0 6px;
 }
 .sub-title:first-child {
@@ -833,14 +833,14 @@ watch(autoRefresh, (on) => {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: #909399;
+  color: var(--muted);
   margin-bottom: 4px;
 }
 .mono-box {
-  font-family: monospace;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 12px;
-  background: #f5f7fa;
-  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  border-radius: var(--r-sm);
   padding: 8px 10px;
   line-height: 1.7;
   word-break: break-all;
@@ -856,7 +856,7 @@ watch(autoRefresh, (on) => {
   justify-content: flex-end;
 }
 .err {
-  color: #f56c6c;
+  color: var(--danger);
 }
 .log-box {
   margin-top: 8px;

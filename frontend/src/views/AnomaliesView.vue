@@ -2,25 +2,25 @@
   <div class="anomalies">
     <!-- 顶部统计指标 -->
     <el-row :gutter="16" class="stat-row">
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-label">当前未恢复</div>
           <div class="stat-value" :class="{ danger: stats.current_abnormal > 0 }">{{ stats.current_abnormal ?? '-' }}</div>
         </el-card>
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-label">今日异常</div>
           <div class="stat-value">{{ stats.today_abnormal ?? '-' }}</div>
         </el-card>
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-label">本月异常</div>
           <div class="stat-value">{{ stats.month_abnormal ?? '-' }}</div>
         </el-card>
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card">
           <div class="stat-label">平均恢复时长</div>
           <div class="stat-value unit">{{ stats.avg_recover_minutes ?? '-' }}<span v-if="stats.avg_recover_minutes != null"> 分钟</span></div>
@@ -30,19 +30,19 @@
 
     <!-- 统计图形 -->
     <el-row :gutter="16" class="chart-row">
-      <el-col :span="8">
+      <el-col :xs="24" :md="8">
         <el-card shadow="never" class="chart-card">
           <template #header><span class="chart-title">严重级别分布</span></template>
           <div ref="sevEl" class="chart-box"></div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :md="8">
         <el-card shadow="never" class="chart-card">
           <template #header><span class="chart-title">母机异常分布</span></template>
           <div ref="motherEl" class="chart-box"></div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :md="8">
         <el-card shadow="never" class="chart-card">
           <template #header><span class="chart-title">近 7 天趋势</span></template>
           <div ref="trendEl" class="chart-box"></div>
@@ -296,12 +296,12 @@ const SEV_TAGS = {
   not_classified: 'info',
 }
 const SEV_COLORS = {
-  disaster: '#c45656',
-  high: '#f56c6c',
-  average: '#e6a23c',
-  warning: '#e6a23c',
-  information: '#409eff',
-  not_classified: '#909399',
+  disaster: '#d70015',
+  high: '#ff3b30',
+  average: '#ff9500',
+  warning: '#ffb340',
+  information: '#0a84ff',
+  not_classified: '#8e8e93',
 }
 
 const detailDrawer = ref(null)
@@ -367,7 +367,7 @@ function renderCharts(data) {
 function renderSevChart(dist) {
   if (!sevChart) return
   if (!dist.length) {
-    sevChart.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: '#909399', fontSize: 14 } } })
+    sevChart.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: '#86868b', fontSize: 14 } } })
     return
   }
   sevChart.setOption({
@@ -380,8 +380,8 @@ function renderSevChart(dist) {
         center: ['50%', '44%'],
         avoidLabelOverlap: true,
         itemStyle: { borderColor: '#fff', borderWidth: 2 },
-        label: { formatter: '{b}: {c}', color: '#606266' },
-        data: dist.map((d) => ({ name: d.label, value: d.count, itemStyle: { color: SEV_COLORS[d.severity] || '#909399' } })),
+        label: { formatter: '{b}: {c}', color: '#48484a' },
+        data: dist.map((d) => ({ name: d.label, value: d.count, itemStyle: { color: SEV_COLORS[d.severity] || '#8e8e93' } })),
       },
     ],
   })
@@ -390,23 +390,23 @@ function renderSevChart(dist) {
 function renderMotherChart(dist) {
   if (!motherChart) return
   if (!dist.length) {
-    motherChart.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: '#909399', fontSize: 14 } } })
+    motherChart.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: '#86868b', fontSize: 14 } } })
     return
   }
   motherChart.setOption({
     tooltip: { trigger: 'axis' },
     grid: { left: 8, right: 24, top: 24, bottom: 8, containLabel: true },
-    xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#f0f2f5' } } },
+    xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#e8e8ed' } } },
     yAxis: {
       type: 'category',
       data: dist.map((d) => d.mother),
-      axisLabel: { color: '#606266' },
+      axisLabel: { color: '#6e6e73' },
     },
     series: [
       {
         type: 'bar',
         barMaxWidth: 20,
-        itemStyle: { color: '#409eff', borderRadius: [0, 4, 4, 0] },
+        itemStyle: { color: '#0a84ff', borderRadius: [0, 6, 6, 0] },
         data: dist.map((d) => d.count),
       },
     ],
@@ -416,7 +416,7 @@ function renderMotherChart(dist) {
 function renderTrendChart(trend) {
   if (!trendChart) return
   if (!trend.length) {
-    trendChart.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: '#909399', fontSize: 14 } } })
+    trendChart.setOption({ title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: '#86868b', fontSize: 14 } } })
     return
   }
   trendChart.setOption({
@@ -426,18 +426,18 @@ function renderTrendChart(trend) {
     xAxis: {
       type: 'category',
       data: trend.map((d) => d.date.slice(5)),
-      axisLine: { lineStyle: { color: '#dcdfe6' } },
+      axisLine: { lineStyle: { color: '#d2d2d7' } },
     },
-    yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#f0f2f5' } } },
+    yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#e8e8ed' } } },
     series: [
       {
         name: '异常',
         type: 'line',
         smooth: true,
         symbolSize: 6,
-        lineStyle: { color: '#f56c6c', width: 2 },
-        itemStyle: { color: '#f56c6c' },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: '#f56c6c22' }, { offset: 1, color: '#f56c6c00' }]) },
+        lineStyle: { color: '#ff3b30', width: 2 },
+        itemStyle: { color: '#ff3b30' },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: '#ff3b3022' }, { offset: 1, color: '#ff3b3000' }]) },
         data: trend.map((d) => d.abnormal),
       },
       {
@@ -445,8 +445,8 @@ function renderTrendChart(trend) {
         type: 'line',
         smooth: true,
         symbolSize: 6,
-        lineStyle: { color: '#67c23a', width: 2 },
-        itemStyle: { color: '#67c23a' },
+        lineStyle: { color: '#34c759', width: 2 },
+        itemStyle: { color: '#34c759' },
         data: trend.map((d) => d.recovered),
       },
     ],
@@ -610,14 +610,22 @@ onBeforeUnmount(() => {
 .stat-card {
   text-align: center;
 }
+/* 统计卡入场：轻浮动浮现，节奏错落 */
+.stat-row .el-card { animation: rise-in 0.5s var(--ease-out, ease) both; }
+.stat-row .el-col:nth-child(2) .el-card { animation-delay: 0.06s; }
+.stat-row .el-col:nth-child(3) .el-card { animation-delay: 0.12s; }
+.stat-row .el-col:nth-child(4) .el-card { animation-delay: 0.18s; }
 .stat-label {
   font-size: 13px;
+  letter-spacing: 0.02em;
   color: var(--el-text-color-secondary);
   margin-bottom: 6px;
 }
 .stat-value {
-  font-size: 28px;
-  font-weight: 600;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
   color: var(--el-text-color-primary);
   line-height: 1.2;
 }

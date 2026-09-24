@@ -12,7 +12,7 @@
             黄灯：高风险操作（如数据库主备切换），挂起等待人工审批<br />
             红灯：未命中预案 / 前置失败 / 维护窗口 / 失败冷却，升级人工处理
           </template>
-          <el-icon style="margin-left: 4px; vertical-align: middle; color: #909399; cursor: help"><QuestionFilled /></el-icon>
+          <el-icon style="margin-left: 4px; vertical-align: middle; color: #86868b; cursor: help"><QuestionFilled /></el-icon>
         </el-tooltip>
         <div style="margin-top:8px"><i class="light-dot" :class="'light-' + (ticket.policy_light || 'red')"></i>{{ lightLabel(ticket.policy_light) }}</div>
       </el-card>

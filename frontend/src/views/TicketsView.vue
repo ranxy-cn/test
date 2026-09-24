@@ -347,7 +347,7 @@ onUnmounted(() => {
 }
 .filter-label {
   font-size: 13px;
-  color: #606266;
+  color: var(--muted);
   width: 36px;
   text-align: right;
   flex-shrink: 0;

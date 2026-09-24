@@ -241,7 +241,7 @@ const CopyBtn = {
 .sec-title {
   font-weight: 600;
   font-size: 13px;
-  color: #303133;
+  color: var(--ink);
   margin: 14px 0 8px;
 }
 .sec-title:first-of-type {
@@ -253,14 +253,14 @@ const CopyBtn = {
   word-break: break-all;
 }
 .link {
-  color: #409eff;
+  color: var(--brand);
   text-decoration: none;
   margin-right: 6px;
 }
 .copy-btn {
   border: none;
   background: none;
-  color: #409eff;
+  color: var(--brand);
   font-size: 12px;
   cursor: pointer;
   margin-left: 6px;
@@ -270,10 +270,10 @@ const CopyBtn = {
   text-decoration: underline;
 }
 .deploy-logs {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 12px;
-  border-radius: 6px;
+  background: #0d0d10;
+  color: #d5dbe3;
+  padding: 14px 16px;
+  border-radius: 10px;
   font-size: 12px;
   line-height: 1.6;
   max-height: 320px;
