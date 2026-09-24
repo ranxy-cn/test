@@ -1,0 +1,13 @@
+# 预案目录（白名单）。AI 只能引用 id，不能发明命令。
+policy_version: policy-v1.0.0
+playbooks:
+  - id: ACT-ROLLING-RESTART
+    file: ACT-ROLLING-RESTART.yaml
+  - id: ACT-DB-FAILOVER
+    file: ACT-DB-FAILOVER.yaml
+  - id: ACT-CLEAN-TMPLOG
+    file: ACT-CLEAN-TMPLOG.yaml
+  - id: ACT-RESTART-PROBE
+    file: ACT-RESTART-PROBE.yaml
+  - id: ACT-DEPLOY-ZABBIX-AGENT
+    file: ACT-DEPLOY-ZABBIX-AGENT.yaml

@@ -1,0 +1,21 @@
+---
+- name: Restart sidecar probe (whitelist ACT-RESTART-PROBE)
+  hosts: devops
+  gather_facts: false
+  vars:
+    probe_name: "{{ probe_name | default('biz-probe') }}"
+  tasks:
+    - name: stop note
+      ansible.builtin.debug:
+        msg: "restart probe {{ probe_name }} on {{ inventory_hostname }}"
+    - name: restart probe service
+      ansible.builtin.service:
+        name: "{{ probe_name }}"
+        state: restarted
+      when: (ansible_connection | default('ssh')) != 'local'
+    - name: skip live probe restart on local/demo
+      ansible.builtin.debug:
+        msg: "local connection: skip service restart for {{ probe_name }}"
+      when: (ansible_connection | default('ssh')) == 'local'
+    - name: health ping
+      ansible.builtin.ping:
