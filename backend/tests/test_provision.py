@@ -306,10 +306,10 @@ def test_install_agent_via_ssh_custom_refresh():
     )
     logs: list[str] = []
     hostname = prov_mod.install_agent_via_ssh(
-        ssh, password="pw", zabbix_server="1.2.3.4", refresh_seconds=30, logs=logs
+        ssh, password="pw", zabbix_server="1.2.3.4", refresh_seconds=60, logs=logs
     )
     assert hostname == "web-30"
-    assert ssh.chan.commands[1].endswith("bash /tmp/install-zabbix-agent-devops.sh 1.2.3.4 devops-auto 30")
+    assert ssh.chan.commands[1].endswith("bash /tmp/install-zabbix-agent-devops.sh 1.2.3.4 devops-auto 60")
 
 
 def test_provision_node_full_success_flow(db, monkeypatch):

@@ -1545,7 +1545,7 @@ class AssetProvisionIn(BaseModel):
     group: str = Field(default="", max_length=64)
     mother_id: str = Field(default="", max_length=64, description="归属母机；空=默认母机")
     agent_refresh_seconds: int | None = Field(
-        default=None, ge=10, le=86400, description="agent 上报间隔（RefreshActiveChecks，秒）；空=用全局默认"
+        default=None, ge=60, le=3600, description="agent 上报间隔（RefreshActiveChecks，秒，合法区间 60~3600）；空=用全局默认"
     )
 
 

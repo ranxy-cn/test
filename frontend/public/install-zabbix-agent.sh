@@ -22,6 +22,14 @@ ZBX_SERVER="${1:-124.221.251.186}"
 ZBX_META="${2:-devops-auto}"
 ZBX_REFRESH="${3:-120}"
 
+# RefreshActiveChecks 合法区间为 60~3600 秒（Zabbix agent 有硬校验，越界直接拒启）
+ZBX_REFRESH=$(printf '%s' "${ZBX_REFRESH}" | tr -cd '0-9')
+case "${ZBX_REFRESH}" in
+  ''|*[!0-9]*) ZBX_REFRESH=120 ;;
+esac
+if [ "${ZBX_REFRESH}" -lt 60 ]; then ZBX_REFRESH=60; fi
+if [ "${ZBX_REFRESH}" -gt 3600 ]; then ZBX_REFRESH=3600; fi
+
 # Server= 只接受 IP/主机名；ServerActive= 接受 IP:端口（缺省 10051）
 case "${ZBX_SERVER}" in
   *:*) ZBX_HOST="${ZBX_SERVER%%:*}"; ZBX_TRAP="${ZBX_SERVER##*:}" ;;
@@ -91,13 +99,25 @@ install_pkg() {
   fi
 }
 
+# 官方源 repo.zabbix.com 在国内网络偶发 TLS 中断（curl#35），失败时回退清华 TUNA 镜像
+switch_zabbix_mirror() {
+  log "repo.zabbix.com 不可达，切换清华 TUNA 镜像"
+  sed -i 's|https\?://repo\.zabbix\.com/zabbix/|https://mirrors.tuna.tsinghua.edu.cn/zabbix/zabbix/|g' \
+    /etc/yum.repos.d/zabbix.repo /etc/apt/sources.list.d/zabbix.list 2>/dev/null || true
+  if [ "$FAMILY" = rpm ]; then
+    yum clean all >/dev/null 2>&1 || true
+  else
+    apt-get update -y >/dev/null 2>&1 || true
+  fi
+}
+
 log "安装 zabbix-agent（5.0，与母机版本对齐）"
 if ! install_pkg; then
   if [ "${ID_LC}${VER}" = "centos7" ] && ! grep -q vault.centos.org /etc/yum.repos.d/CentOS-Base.repo 2>/dev/null; then
-    fix_centos7_vault; install_pkg
-  else
-    echo "!! 安装失败，请检查软件源连通性（repo.zabbix.com）"; exit 1
+    fix_centos7_vault
   fi
+  switch_zabbix_mirror
+  install_pkg || { echo "!! 安装失败：官方源与清华镜像均不可达，请检查网络"; exit 1; }
 fi
 
 # ---------- 3. 写配置 ----------
@@ -111,7 +131,7 @@ sed -i -e "s|^Server=.*|Server=${ZBX_HOST}|" \
        -e "s|^#\?RefreshActiveChecks=.*|RefreshActiveChecks=${ZBX_REFRESH}|" "$CONF"
 grep -q '^HostMetadata=' "$CONF" || echo "HostMetadata=${ZBX_META}" >> "$CONF"
 grep -q '^RefreshActiveChecks=' "$CONF" || echo "RefreshActiveChecks=${ZBX_REFRESH}" >> "$CONF"
-log "配置完成：Server=${ZBX_HOST}，ServerActive=${ZBX_HOST}:${ZBX_TRAP}，Hostname=$(hostname)，HostMetadata=${ZBX_META}，RefreshActiveChecks=${ZBX_REFRESH}s"
+log "配置完成：Server=${ZBX_HOST}，ServerActive=${ZBX_HOST}:${ZBX_TRAP}，Hostname=$(hostname)，HostMetadata=${ZBX_META}，RefreshActiveChecks=${ZBX_REFRESH}（秒）"
 
 # ---------- 4. 启动 ----------
 # 兼容无 systemd 的环境（Docker 容器等）：/proc/1/comm 为 systemd 才走 systemctl，
