@@ -614,6 +614,15 @@
             style="width: 240px"
           />
         </el-form-item>
+        <el-form-item label="上报间隔(秒)">
+          <el-input-number
+            v-model="addChildForm.agent_refresh_seconds"
+            :min="10"
+            :max="86400"
+            placeholder="留空用默认(120)"
+            style="width: 200px"
+          />
+        </el-form-item>
         <el-form-item label="应用">
           <el-input v-model="addChildForm.app" placeholder="如 订单系统" style="width: 240px" />
         </el-form-item>
@@ -1307,11 +1316,11 @@ function openInstallDetail(m) {
 // ===== 添加子机（SSH 纳管：装 Zabbix Agent + 自动注册） =====
 const addChildVisible = ref(false)
 const childProvisioning = ref(false)
-const addChildForm = reactive({ display_name: '', ip: '', port: 22, username: 'root', password: '', app: '', group: '', owner: '' })
+const addChildForm = reactive({ display_name: '', ip: '', port: 22, username: 'root', password: '', app: '', group: '', owner: '', agent_refresh_seconds: null })
 let provisionTimer = null
 
 function openAddChild() {
-  Object.assign(addChildForm, { display_name: '', ip: '', port: 22, username: 'root', password: '', app: '', group: '', owner: '' })
+  Object.assign(addChildForm, { display_name: '', ip: '', port: 22, username: 'root', password: '', app: '', group: '', owner: '', agent_refresh_seconds: null })
   addChildVisible.value = true
 }
 
@@ -1341,6 +1350,7 @@ async function submitAddChild() {
       group: addChildForm.group,
       owner: addChildForm.owner,
       mother_id: selectedMotherId.value,
+      agent_refresh_seconds: addChildForm.agent_refresh_seconds ?? null,
     })
     addChildVisible.value = false
     ElMessage.success('纳管任务已启动：正在安装 Zabbix Agent，完成后子机将自动接入（约 1~3 分钟）')

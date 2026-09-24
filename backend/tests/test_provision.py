@@ -264,7 +264,7 @@ def test_install_agent_via_ssh_as_root():
         ssh, password="pw", zabbix_server="124.221.251.186", logs=logs
     )
     assert hostname == "web-01"
-    assert ssh.chan.commands[1] == "bash /tmp/install-zabbix-agent-devops.sh 124.221.251.186 devops-auto"
+    assert ssh.chan.commands[1] == "bash /tmp/install-zabbix-agent-devops.sh 124.221.251.186 devops-auto 120"
     assert "pw" not in ssh.chan.commands[1]
     assert ssh.sftp.uploads and ssh.sftp.uploads[0][1] == "/tmp/install-zabbix-agent-devops.sh"
 
@@ -293,6 +293,23 @@ def test_install_agent_via_ssh_no_root_no_sudo():
     ssh = FakeSsh([("NOROOT\n", 0)])
     with pytest.raises(prov_mod.ProvisionError, match="sudo"):
         prov_mod.install_agent_via_ssh(ssh, password="pw", zabbix_server="1.2.3.4", logs=[])
+
+
+def test_install_agent_via_ssh_custom_refresh():
+    """自定义上报间隔（RefreshActiveChecks）透传到安装脚本第 3 个参数。"""
+    ssh = FakeSsh(
+        [
+            ("ROOT\n", 0),
+            ("==> 安装完成", 0),
+            ("web-30\n", 0),
+        ]
+    )
+    logs: list[str] = []
+    hostname = prov_mod.install_agent_via_ssh(
+        ssh, password="pw", zabbix_server="1.2.3.4", refresh_seconds=30, logs=logs
+    )
+    assert hostname == "web-30"
+    assert ssh.chan.commands[1].endswith("bash /tmp/install-zabbix-agent-devops.sh 1.2.3.4 devops-auto 30")
 
 
 def test_provision_node_full_success_flow(db, monkeypatch):
@@ -352,6 +369,22 @@ def test_uninstall_agent_via_ssh_reports_leftover():
     """卸载后仍检出二进制/进程 → 报错而不是静默成功。"""
     ssh = FakeSsh([("ROOT\n", 0), ("LEFT\n", 0)])
     with pytest.raises(prov_mod.ProvisionError, match="残留"):
+        prov_mod.uninstall_agent_via_ssh(ssh, password="pw", logs=[])
+
+
+def test_uninstall_agent_via_ssh_retries_on_link_drop():
+    """frp/NAT 链路中途断开（退出码 -1）→ 幂等重试一次后成功。"""
+    ssh = FakeSsh([("ROOT\n", 0), ("packet_write_wait: broken pipe", -1), ("GONE\n", 0)])
+    logs: list[str] = []
+    prov_mod.uninstall_agent_via_ssh(ssh, password="pw", logs=logs)
+    assert any("重试" in ln for ln in logs)
+    assert any("远端卸载完成" in ln for ln in logs)
+
+
+def test_uninstall_agent_via_ssh_fails_after_second_link_drop():
+    """两次都被断链 → 明确提示链路问题与替代路径，而不是裸 -1。"""
+    ssh = FakeSsh([("ROOT\n", 0), ("broken", -1), ("broken", -1)])
+    with pytest.raises(prov_mod.ProvisionError, match="链路"):
         prov_mod.uninstall_agent_via_ssh(ssh, password="pw", logs=[])
 
 

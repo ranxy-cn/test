@@ -1258,7 +1258,8 @@ def remove_asset(
             finally:
                 ssh.close()
         except provision_svc.ProvisionError as exc:
-            raise HTTPException(502, f"远程卸载失败：{exc}")
+            tail = "；".join(uninstall_logs[-2:])
+            raise HTTPException(502, f"远程卸载失败：{exc}" + (f"（最近日志：{tail}）" if tail else ""))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"SSH 连接失败（{ip}:{port}）：{exc}")
 
@@ -1543,6 +1544,9 @@ class AssetProvisionIn(BaseModel):
     owner: str = Field(default="", max_length=64)
     group: str = Field(default="", max_length=64)
     mother_id: str = Field(default="", max_length=64, description="归属母机；空=默认母机")
+    agent_refresh_seconds: int | None = Field(
+        default=None, ge=10, le=86400, description="agent 上报间隔（RefreshActiveChecks，秒）；空=用全局默认"
+    )
 
 
 @router.post("/api/v1/assets/provision")
@@ -1641,6 +1645,7 @@ def provision_asset(
             password=body.password,
             zabbix_server=zserver,
             requested_by=current.username,
+            refresh_seconds=body.agent_refresh_seconds,
         ),
         daemon=True,
         name=f"provision-{aid}",

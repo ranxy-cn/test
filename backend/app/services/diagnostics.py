@@ -135,7 +135,11 @@ def _resolve_target(db, anomaly: AnomalyEvent) -> dict[str, Any] | None:
 
 def _ssh_snapshot(ip: str, port: int, username: str, password: str, key_path: str = "") -> dict[str, Any]:
     """SSH 单次连接采集异常时刻快照，返回结构化 dict。任何失败抛异常，由调用方置 failed。"""
-    pkey = _load_private_key(key_path) if (key_path and not password) else None
+    # 私钥与密码同时交给 paramiko（先公钥、后密码，任一成功即可）。
+    # 回归：不能以"密码非空"为条件丢弃私钥——纳管子机密码不落库时会被
+    # 全局兜底密码填充（与本机无关的密码），挤掉私钥通道必然认证失败。
+    # 与 stress._connect 保持同一策略。
+    pkey = _load_private_key(key_path) if key_path else None
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:

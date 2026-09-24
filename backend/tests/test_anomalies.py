@@ -313,6 +313,35 @@ def test_snapshot_parsers():
     assert d[0]["pid"] == 777 and d[0]["stat"] == "D" and d[0]["comm"] == "dd"
 
 
+def test_snapshot_passes_both_key_and_password(monkeypatch):
+    """回归：密码非空（如全局兜底密码）时也必须保留私钥通道。
+
+    纳管子机密码即用即弃不落库，_resolve_target 会用全局 DIAG_SSH_PASSWORD 填充，
+    旧逻辑"密码非空就丢私钥"导致公钥免密的子机必然 Authentication failed。
+    """
+    captured: dict = {}
+
+    class _CapSSH:
+        def set_missing_host_key_policy(self, policy):  # noqa: ARG002
+            return None
+
+        def connect(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def exec_command(self, cmd, timeout=None):  # noqa: ARG002
+            return None, _SnapStream(), _SnapStream()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(diagnostics_svc.paramiko, "SSHClient", lambda: _CapSSH())
+    monkeypatch.setattr(diagnostics_svc, "_load_private_key", lambda path: "FAKE-KEY")
+
+    diagnostics_svc._ssh_snapshot("10.0.0.9", 1002, "root", "some-fallback-pwd", key_path="/app/keys/inspect_key")
+    assert captured["pkey"] == "FAKE-KEY"
+    assert captured["password"] == "some-fallback-pwd"
+
+
 def test_collect_for_anomaly_writes_snapshot(client, db, monkeypatch):
     """SSH 采集成功后把结构化进程快照写入 anomaly_events.diagnostics。"""
     _disable_auto_ticket(monkeypatch)

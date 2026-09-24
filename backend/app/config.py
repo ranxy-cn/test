@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # 资产页「新增节点」一键纳管：目标机 agent 指向的 Zabbix Server（IP/域名）。
     # 为空时自动从 ZABBIX_URL 解析 host；两者都没有则需在表单里手填
     provision_zabbix_server: str = ""
+    # agent 主动检查的上报间隔（RefreshActiveChecks，秒）。全局默认，纳管接口可用
+    # agent_refresh_seconds 覆盖。120 = 2 分钟（Zabbix 官方默认）。
+    zabbix_agent_refresh_seconds: int = 120
 
     observation_seconds: float = 10.0
     probe_required_passes: int = 3

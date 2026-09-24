@@ -270,13 +270,19 @@ def _connect(target: dict[str, Any]) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     password = target.get("password") or None
-    # 密码为空时回退到内置巡检私钥免密登录（与巡检/诊断一致，纳管时已下发公钥）
+    # 巡检私钥 + 密码都交给 paramiko（先公钥、后密码，任一成功即可）：
+    # 纳管子机密码“即用即弃”只有私钥可用；手动登记资产可能只有密码。
+    # 不能“密码为空才用私钥”——全局 DIAG_SSH_PASSWORD 兜底会让空密码资产
+    # 拿着无关密码去认证，反而挤掉私钥通道（表现为 Authentication failed）。
     pkey = None
     key_path = target.get("key_path") or ""
-    if not password and key_path:
+    if key_path:
         from app.services.inspector import _load_private_key
 
-        pkey = _load_private_key(key_path)
+        try:
+            pkey = _load_private_key(key_path)
+        except Exception:  # noqa: BLE001 私钥损坏/缺失时不阻塞密码认证
+            pkey = None
     try:
         client.connect(
             target["ip"],
@@ -295,7 +301,8 @@ def _connect(target: dict[str, Any]) -> paramiko.SSHClient:
             client.close()
         except Exception:  # noqa: BLE001
             pass
-        raise ValueError(f"SSH 连接失败 {target.get('username')}@{target.get('ip')}：{exc}") from exc
+        tried = "私钥+密码" if (pkey and password) else ("私钥" if pkey else ("密码" if password else "无可用凭据"))
+        raise ValueError(f"SSH 连接失败 {target.get('username')}@{target.get('ip')}：{exc}（已尝试{tried}认证）") from exc
     return client
 
 
@@ -342,9 +349,12 @@ def remote_cpu_start(asset: Asset, duration_seconds: int) -> dict[str, Any]:
         cores = int(out) if out.isdigit() and int(out) > 0 else 1
         # 先清掉该机上可能残留的旧压测进程
         _kill_markers(client)
-        # 每核一条后台自旋：无 $ 变量，shlex.quote 后不会被外层 shell 展开
-        spin = f"timeout {duration} sh -c 'while :; do :; done {_MARK_CPU}' >/dev/null 2>&1 &"
-        inner = "; ".join([spin] * cores) + " wait"
+        # 每核一条后台自旋进程，标记符作为 $0 放在脚本引号外（ps 可见，供 pkill 清理）。
+        # 两个历史静默失败点（stderr 均被 nohup 吞掉，表象是"启动成功"但什么都没跑）：
+        # 1) 各段以 & 结尾时不能用 "; " 拼接（产生非法的 "&;"，sh 直接语法报错）；
+        # 2) 标记符不能写在 done 之后（裸单词是语法错误，自旋进程瞬间退出）。
+        spin = f"timeout {duration} sh -c 'while :; do :; done' {_MARK_CPU} >/dev/null 2>&1 &"
+        inner = " ".join([spin] * cores) + " wait"
         _exec(client, f"nohup sh -c {shlex.quote(inner)} >/dev/null 2>&1 & sleep 0.5")
     finally:
         client.close()

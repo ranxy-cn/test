@@ -75,6 +75,8 @@ def _connect_ssh(ip: str, port: int, username: str, password: str):
         ) from exc
     except (paramiko.SSHException, OSError) as exc:
         raise ProvisionError(f"SSH 连接失败：无法连到 {ip}:{port}（{exc}）。请检查 IP/端口是否正确、网络是否可达") from exc
+    # 长命令（安装/卸载）期间发送 keepalive，防止 NAT/frp 等转发链路因空闲判定死亡而断连
+    ssh.get_transport().set_keepalive(30)
     return ssh
 
 
@@ -123,8 +125,13 @@ def _detect_sudo(ssh: Any, logs: list[str]) -> str:
     raise ProvisionError("SSH 账号既非 root 也无 sudo，请改用 root 账号")
 
 
-def install_agent_via_ssh(ssh: Any, *, password: str, zabbix_server: str, logs: list[str]) -> str:
-    """上传安装脚本并执行，返回新机主机名。"""
+def install_agent_via_ssh(
+    ssh: Any, *, password: str, zabbix_server: str, refresh_seconds: int = 120, logs: list[str]
+) -> str:
+    """上传安装脚本并执行，返回新机主机名。
+
+    refresh_seconds：写入 agent 的 RefreshActiveChecks（主动检查上报间隔，秒）。
+    """
     remote = "/tmp/install-zabbix-agent-devops.sh"
     sftp = ssh.open_sftp()
     try:
@@ -138,11 +145,13 @@ def install_agent_via_ssh(ssh: Any, *, password: str, zabbix_server: str, logs: 
     if sudo == "sudo":
         # sudo -S 从 stdin 读密码；herestring 不会回显到日志
         cmd = (
-            f"sudo -S -p '' bash {remote} {zabbix_server} {AUTOREG_META} <<'PW'\n{password}\nPW"
+            f"sudo -S -p '' bash {remote} {zabbix_server} {AUTOREG_META} {refresh_seconds} <<'PW'\n{password}\nPW"
         )
         code, _ = _run(ssh, cmd, INSTALL_TIMEOUT_SECONDS, logs, secret_hint="安装 zabbix-agent 超时")
     else:
-        code, _ = _run(ssh, f"bash {remote} {zabbix_server} {AUTOREG_META}", INSTALL_TIMEOUT_SECONDS, logs)
+        code, _ = _run(
+            ssh, f"bash {remote} {zabbix_server} {AUTOREG_META} {refresh_seconds}", INSTALL_TIMEOUT_SECONDS, logs
+        )
     if code != 0:
         raise ProvisionError(f"agent 安装失败（退出码 {code}），详见上方日志")
 
@@ -266,26 +275,40 @@ def uninstall_agent_via_ssh(ssh: Any, *, password: str, logs: list[str]) -> None
     """从目标机卸载 zabbix-agent：停服务 → 卸载软件包 → 删配置/日志/安装脚本。
 
     与 install_agent_via_ssh 对称；执行后校验二进制与进程均已清除。
+    yum/apt 阶段保持输出可见（维持链路流量）；经 frp/NAT 等转发的链路可能把
+    连接中途掐断（paramiko 表现为退出码 -1），此时幂等重试一次。
     """
-    sudo = _detect_sudo(ssh, logs)
     script = (
         "if [ -d /run/systemd/system ] && grep -qa systemd /proc/1/comm 2>/dev/null; then "
         "systemctl stop zabbix-agent 2>/dev/null || true; "
         "systemctl disable zabbix-agent 2>/dev/null || true; "
         "else pkill -f 'zabbix[_-]agentd' 2>/dev/null || true; fi; "
-        "if command -v yum >/dev/null 2>&1; then yum remove -y zabbix-agent >/dev/null 2>&1 || true; fi; "
+        "if command -v yum >/dev/null 2>&1; then echo '==> yum remove zabbix-agent ...'; yum remove -y zabbix-agent || true; fi; "
         "if command -v apt-get >/dev/null 2>&1; then "
-        "DEBIAN_FRONTEND=noninteractive apt-get purge -y zabbix-agent >/dev/null 2>&1 || true; fi; "
+        "echo '==> apt-get purge zabbix-agent ...'; "
+        "DEBIAN_FRONTEND=noninteractive apt-get purge -y zabbix-agent || true; fi; "
         "rm -rf /etc/zabbix /var/log/zabbix /tmp/install-zabbix-agent-devops.sh; "
         "if command -v zabbix_agentd >/dev/null 2>&1 || pidof zabbix_agentd >/dev/null 2>&1; then echo LEFT; "
         "else echo GONE; fi"
     )
-    if sudo:
-        cmd = f"sudo -S -p '' bash -s <<'EOS'\n{password}\n{script}\nEOS"
-    else:
-        cmd = f"bash -s <<'EOS'\n{script}\nEOS"
-    code, out = _run(ssh, cmd, 180, logs, secret_hint="卸载 zabbix-agent 超时")
-    if code != 0:
+    sudo = _detect_sudo(ssh, logs)
+    out = ""
+    for attempt in (1, 2):
+        if sudo:
+            cmd = f"sudo -S -p '' bash -s <<'EOS'\n{password}\n{script}\nEOS"
+        else:
+            cmd = f"bash -s <<'EOS'\n{script}\nEOS"
+        code, out = _run(ssh, cmd, 300, logs, secret_hint="卸载 zabbix-agent 超时")
+        if code == 0:
+            break
+        if code == -1 and attempt == 1:
+            logs.append("SSH 链路在卸载过程中断开（退出码 -1），幂等重试一次 ...")
+            continue
+        if code == -1:
+            raise ProvisionError(
+                "卸载失败：SSH 链路在卸载过程中断开（退出码 -1，常见于 frp/NAT 转发链路不稳），请重试；"
+                "或取消勾选「联动卸载」仅删除台账记录"
+            )
         raise ProvisionError(f"卸载失败（退出码 {code}），详见上方日志")
     if "GONE" not in out:
         raise ProvisionError("卸载后仍检测到 zabbix-agent 残留，请登录目标机手工检查")
@@ -329,15 +352,19 @@ def provision_node(
     password: str,
     zabbix_server: str,
     requested_by: str = "",
+    refresh_seconds: int | None = None,
 ) -> None:
     """后台任务：装 agent 并登记。全程把进度写入 assets.extra["provision"]。
 
     display_name：用户填的子机显示名（选填）。填写后资产列表用它展示，
     Zabbix 侧仍以真实主机名注册（agent 配置的 Hostname），两者通过 zabbix_host 字段关联。
+
+    refresh_seconds：agent 上报间隔（RefreshActiveChecks，秒）；为空时用全局默认值。
     """
     from app.database import SessionLocal
 
     display_name = display_name.strip()
+    refresh = refresh_seconds or get_settings().zabbix_agent_refresh_seconds
 
     logs: list[str] = []
     state: dict[str, Any] = {
@@ -386,7 +413,9 @@ def provision_node(
         ssh = _connect_ssh(ip, port, username, password)
         try:
             logs.append("[2/4] 安装 zabbix-agent（约 1 分钟）...")
-            hostname = install_agent_via_ssh(ssh, password=password, zabbix_server=zabbix_server, logs=logs)
+            hostname = install_agent_via_ssh(
+                ssh, password=password, zabbix_server=zabbix_server, refresh_seconds=refresh, logs=logs
+            )
             # 采集安装详情（版本/安装位置/运行方式等），资产卡「安装详情」展示
             try:
                 state["install_info"] = collect_install_info(ssh, password=password, logs=logs)

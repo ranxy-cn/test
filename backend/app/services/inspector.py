@@ -65,8 +65,9 @@ def _load_private_key(key_path: str):
 
 
 def inspect_host(ip: str, port: int, username: str, password: str, key_path: str = "") -> dict[str, Any]:
-    """SSH 采集并解析。password 为空时尝试内置密钥免密登录。任何失败抛异常，由 API 层转成错误响应。"""
-    pkey = _load_private_key(key_path) if (key_path and not password) else None
+    """SSH 采集并解析。私钥与密码同时提供（先公钥后密码，任一成功即可）。任何失败抛异常，由 API 层转成错误响应。"""
+    # 回归：不能因密码非空丢弃私钥——空密码会被全局兜底密码填充，挤掉私钥必然认证失败
+    pkey = _load_private_key(key_path) if key_path else None
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
@@ -389,7 +390,8 @@ def _parse_listen(block: str) -> list[dict[str, str]]:
 
 def collect_sysinfo(ip: str, port: int, username: str, password: str, key_path: str = "") -> dict[str, Any]:
     """SSH 一次性采集服务器全景信息（只读命令，失败段落留空不影响整体）。"""
-    pkey = _load_private_key(key_path) if (key_path and not password) else None
+    # 与 inspect_host 同策略：私钥与密码并行提供，任一成功即可
+    pkey = _load_private_key(key_path) if key_path else None
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:

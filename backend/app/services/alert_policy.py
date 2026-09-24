@@ -1,8 +1,9 @@
 """告警策略：模板级 CPU/内存/负载触发器的阈值与采集窗口。
 
-修改的是 Zabbix 监控模板（Template OS Linux by Zabbix agent 及其 link 的子模块）
+修改的是 Zabbix 监控模板（主动/被动两棵 Linux 模板树及其 link 的子模块）
 上的配置：阈值 = 模板用户宏，窗口 = 触发器表达式里的 min(Nm) 参数。
-母机与所有通过自动注册接入的子机共享这套模板，因此策略一次修改、全网统一生效。
+母机自带 agent 挂被动树；自动注册的子机（NAT/容器等无法被动访问）挂主动树，
+因此策略必须同时覆盖两棵树，一次修改、全网统一生效。
 """
 
 from __future__ import annotations
@@ -10,8 +11,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# 平台母机部署/自动注册统一挂的 Linux 监控模板（壳模板，触发器分布在 link 的子模块上）
-SHIM_TEMPLATE = "Template OS Linux by Zabbix agent"
+# 两棵 Linux 监控模板树（壳模板，触发器分布在 link 的子模块上）。
+# 顺序即宏挂载/读取的优先顺序；某棵树不存在时自动跳过。
+SHIM_TEMPLATES: tuple[str, ...] = (
+    "Template OS Linux by Zabbix agent",
+    "Template OS Linux by Zabbix agent active",
+)
+SHIM_TEMPLATE = SHIM_TEMPLATES[0]
 
 # 三个核心告警的定位信息：按宏名找阈值，按 item key + min 函数找窗口
 SPECS: list[dict[str, str]] = [
@@ -77,16 +83,27 @@ def normalize_policy(data: dict | None) -> dict:
     return policy
 
 
-def _template_ids(zc) -> list[str]:
-    """壳模板 + 它 link 的全部子模块模板 id。"""
-    rows = zc._rpc("template.get", {"output": ["templateid"], "filter": {"host": SHIM_TEMPLATE}})
-    if not rows:
-        raise RuntimeError(f"未找到监控模板 {SHIM_TEMPLATE}")
-    shim_id = str(rows[0]["templateid"])
-    row = zc._rpc(
-        "template.get", {"templateids": [shim_id], "output": ["templateid"], "selectParentTemplates": ["templateid"]}
-    )[0]
-    return [shim_id] + [str(t["templateid"]) for t in row.get("parentTemplates", [])]
+def _template_ids(zc) -> tuple[list[str], list[str]]:
+    """（挂宏用的壳模板 ids, 全部模板 ids 含子模块）。
+
+    覆盖主动/被动两棵模板树；某棵树不存在（如精简版 Zabbix）时跳过，两棵都缺才报错。
+    """
+    shim_ids: list[str] = []
+    all_ids: list[str] = []
+    for name in SHIM_TEMPLATES:
+        rows = zc._rpc("template.get", {"output": ["templateid"], "filter": {"host": name}})
+        if not rows:
+            continue
+        shim_id = str(rows[0]["templateid"])
+        row = zc._rpc(
+            "template.get", {"templateids": [shim_id], "output": ["templateid"], "selectParentTemplates": ["templateid"]}
+        )[0]
+        shim_ids.append(shim_id)
+        all_ids.append(shim_id)
+        all_ids.extend(str(t["templateid"]) for t in row.get("parentTemplates", []))
+    if not shim_ids:
+        raise RuntimeError(f"未找到监控模板 {SHIM_TEMPLATES}")
+    return shim_ids, all_ids
 
 
 def _template_hosts(zc, ids: list[str]) -> dict[str, str]:
@@ -95,17 +112,19 @@ def _template_hosts(zc, ids: list[str]) -> dict[str, str]:
     return {str(r["templateid"]): str(r["host"]) for r in rows}
 
 
-def _trigger_functions(zc, ids: list[str]) -> tuple[list[dict], dict[str, str]]:
+def _trigger_functions(zc, ids: list[str], skip_ids: set[str] | frozenset[str] = frozenset()) -> tuple[list[dict], dict[str, str]]:
     """子模块模板各自的触发器（tag _t_host = 物理所在模板技术名）与 itemid->key 映射。
 
     5.0 的 trigger.get 不返回所属模板字段，且模板 link 是实体克隆：壳模板上的触发器
     是继承副本，description/expression 等字段被继承锁定（改了会报 Cannot update ...），
-    只能改子模块上的原件，Zabbix 自动传播回克隆。因此跳过 ids[0]（壳模板），
+    只能改子模块上的原件，Zabbix 自动传播回克隆。因此跳过壳模板（skip_ids），
     只遍历子模块，并用该模板自己的技术名还原展开表达式。
     """
     host_by_id = _template_hosts(zc, ids)
     triggers: list[dict] = []
-    for tid in ids[1:]:
+    for tid in ids:
+        if tid in skip_ids:
+            continue
         rows = zc._rpc(
             "trigger.get",
             {"templateids": [tid], "output": ["triggerid", "expression"], "selectFunctions": "extend"},
@@ -120,12 +139,12 @@ def _trigger_functions(zc, ids: list[str]) -> tuple[list[dict], dict[str, str]]:
 
 def read_applied_policy(zc) -> dict:
     """读模板上当前生效的阈值（宏值）与窗口（min 函数参数）。客户端须已登录。"""
-    ids = _template_ids(zc)
+    shim_ids, ids = _template_ids(zc)
     macros: dict[str, str] = {}
     rows = zc._rpc("usermacro.get", {"hostids": ids, "output": ["macro", "value"]})
     for r in rows:
         macros.setdefault(str(r["macro"]), str(r["value"]))
-    triggers, key_by_id = _trigger_functions(zc, ids)
+    triggers, key_by_id = _trigger_functions(zc, ids, skip_ids=frozenset(shim_ids))
     applied: dict[str, Any] = {}
     for spec in SPECS:
         applied[spec["threshold"]] = _to_num(macros.get(spec["macro"]))
@@ -146,28 +165,33 @@ def apply_policy(zc, policy: dict) -> dict:
     """把策略应用到模板：改模板宏（阈值）+ 重写触发器窗口表达式。
 
     需要只读客户端？不——必须传入 readonly=False 的客户端（允许 usermacro/trigger 写方法）。
+    阈值宏在两棵模板树的壳模板上各挂一份（主动/被动接入的主机都能继承）；
+    窗口表达式覆盖两棵树全部子模块原件。
     返回 {"template_ids": [...], "changes": ["CPU 阈值 -> 90", ...]}。
     """
-    ids = _template_ids(zc)
-    triggers, key_by_id = _trigger_functions(zc, ids)
+    shim_ids, ids = _template_ids(zc)
+    triggers, key_by_id = _trigger_functions(zc, ids, skip_ids=frozenset(shim_ids))
     changes: list[str] = []
 
-    # 1) 阈值：模板宏
+    # 1) 阈值：模板宏（每棵树各一份，缺失即创建）
     for spec in SPECS:
         want = str(policy[spec["threshold"]])
         rows = zc._rpc(
-            "usermacro.get", {"hostids": ids, "output": ["hostmacroid", "macro", "value"], "filter": {"macro": spec["macro"]}}
+            "usermacro.get", {"hostids": ids, "output": ["hostmacroid", "hostid", "macro", "value"], "filter": {"macro": spec["macro"]}}
         )
-        if rows:
-            row = rows[0]
-            if str(row["value"]) != want:
-                zc._rpc("usermacro.update", {"hostmacroid": row["hostmacroid"], "value": want})
-                changes.append(f"{spec['label']}阈值 -> {want}")
-        else:
-            zc._rpc(
-                "usermacro.create", {"hostid": ids[0], "macro": spec["macro"], "value": want}
-            )
-            changes.append(f"{spec['label']}阈值宏创建 = {want}")
+        rows = rows if isinstance(rows, list) else []
+        by_host = {str(r["hostid"]): r for r in rows}
+        for shim_id in shim_ids:
+            row = by_host.get(shim_id)
+            if row:
+                if str(row["value"]) != want:
+                    zc._rpc("usermacro.update", {"hostmacroid": row["hostmacroid"], "value": want})
+                    changes.append(f"{spec['label']}阈值 -> {want}")
+            else:
+                zc._rpc(
+                    "usermacro.create", {"hostid": shim_id, "macro": spec["macro"], "value": want}
+                )
+                changes.append(f"{spec['label']}阈值宏创建 = {want}")
 
     # 2) 窗口：模板触发器表达式里的 min(Nm) 参数
     for t in triggers:

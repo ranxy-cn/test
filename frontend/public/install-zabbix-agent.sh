@@ -11,10 +11,16 @@
 #   3. 安装 zabbix-agent，写配置（Server / ServerActive / Hostname / HostMetadata）
 #   4. 启动并自启，放行本机防火墙 10050（被动检查用，可选）
 #   5. agent 主动连母机 Trapper 端口（默认 10051，可用 IP:端口 指定）→ 自动注册进 Zabbix
+#
+# 参数（均可选）：
+#   $1 = Zabbix Server（IP 或 IP:端口）
+#   $2 = 自动注册元数据（HostMetadata）
+#   $3 = agent 主动检查上报间隔（RefreshActiveChecks，秒，默认 120）
 set -euo pipefail
 
 ZBX_SERVER="${1:-124.221.251.186}"
 ZBX_META="${2:-devops-auto}"
+ZBX_REFRESH="${3:-120}"
 
 # Server= 只接受 IP/主机名；ServerActive= 接受 IP:端口（缺省 10051）
 case "${ZBX_SERVER}" in
@@ -101,9 +107,11 @@ cp "$CONF" "${CONF}.bak.$(date +%s)"
 sed -i -e "s|^Server=.*|Server=${ZBX_HOST}|" \
        -e "s|^ServerActive=.*|ServerActive=${ZBX_HOST}:${ZBX_TRAP}|" \
        -e "s|^#\?Hostname=.*|Hostname=$(hostname)|" \
-       -e "s|^#\?HostMetadata=.*|HostMetadata=${ZBX_META}|" "$CONF"
+       -e "s|^#\?HostMetadata=.*|HostMetadata=${ZBX_META}|" \
+       -e "s|^#\?RefreshActiveChecks=.*|RefreshActiveChecks=${ZBX_REFRESH}|" "$CONF"
 grep -q '^HostMetadata=' "$CONF" || echo "HostMetadata=${ZBX_META}" >> "$CONF"
-log "配置完成：Server=${ZBX_HOST}，ServerActive=${ZBX_HOST}:${ZBX_TRAP}，Hostname=$(hostname)，HostMetadata=${ZBX_META}"
+grep -q '^RefreshActiveChecks=' "$CONF" || echo "RefreshActiveChecks=${ZBX_REFRESH}" >> "$CONF"
+log "配置完成：Server=${ZBX_HOST}，ServerActive=${ZBX_HOST}:${ZBX_TRAP}，Hostname=$(hostname)，HostMetadata=${ZBX_META}，RefreshActiveChecks=${ZBX_REFRESH}s"
 
 # ---------- 4. 启动 ----------
 # 兼容无 systemd 的环境（Docker 容器等）：/proc/1/comm 为 systemd 才走 systemctl，
@@ -139,7 +147,7 @@ cat <<TIP
  安装完成 ✅
   本机主机名（Zabbix 显示名）：$(hostname)
   注册元数据：${ZBX_META} → 母机 ${ZBX_SERVER}
-agent 每 2 分钟主动连一次母机 ${ZBX_HOST}:${ZBX_TRAP}，首次连接即自动注册。
+agent 每 ${ZBX_REFRESH} 秒主动连一次母机 ${ZBX_HOST}:${ZBX_TRAP}，首次连接即自动注册。
 约 1~3 分钟后到 Zabbix 前端“数据采集→主机”查看新主机。
 ============================================================
 TIP

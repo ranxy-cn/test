@@ -232,6 +232,13 @@ def test_remote_cpu_start_status_and_stop(client, db, monkeypatch):
     spawn = next(c for c in fake.commands if stress._MARK_CPU in c)
     assert spawn.count("timeout 60") == 4
     assert "nohup" in spawn
+    # 回归：spawn 必须是合法 shell 语法。
+    # 历史静默失败："&;" 拼接、done 后跟裸标记符，都会让 sh -c 语法报错退出，
+    # stderr 被 nohup 吞掉，平台却返回"启动成功"，子机上毫无反应。
+    import subprocess
+
+    syntax = subprocess.run(["bash", "-n", "-c", spawn], capture_output=True, text=True)
+    assert syntax.returncode == 0, f"压测命令语法非法: {syntax.stderr}"
 
     items = client.get("/api/v1/tools/remote-stress").json()["items"]
     assert [i["asset_id"] for i in items] == [aid]
@@ -243,6 +250,42 @@ def test_remote_cpu_start_status_and_stop(client, db, monkeypatch):
     # 停止命令用方括号技巧 pkill 标记进程
     assert any("pkill -f" in c and "cp[u]" in c for c in fake.commands)
     assert client.get("/api/v1/tools/remote-stress").json()["items"] == []
+
+
+def test_connect_passes_both_key_and_password(client, monkeypatch):
+    """_connect 必须同时携带巡检私钥与密码（先公钥后密码）。
+
+    回归：全局 DIAG_SSH_PASSWORD 兜底会让纳管子机拿到无关密码，
+    旧逻辑“密码为空才用私钥”被挤掉私钥通道 → Authentication failed。
+    """
+    import app.services.stress as stress
+
+    captured: dict = {}
+
+    class _FakeParamikoClient:
+        def set_missing_host_key_policy(self, policy):  # noqa: ARG002
+            return None
+
+        def connect(self, ip, **kw):
+            captured.update(kw)
+            captured["ip"] = ip
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(stress.paramiko, "SSHClient", lambda: _FakeParamikoClient())
+    monkeypatch.setattr("app.services.inspector._load_private_key", lambda path: "FAKE-KEY")
+
+    stress._connect({"ip": "10.0.0.9", "port": 1002, "username": "root", "password": "some-pwd", "key_path": "/app/keys/inspect_key"})
+    assert captured["ip"] == "10.0.0.9"
+    assert captured["pkey"] == "FAKE-KEY"
+    assert captured["password"] == "some-pwd"
+
+    # 密码为空时同样带私钥
+    captured.clear()
+    stress._connect({"ip": "10.0.0.9", "port": 1002, "username": "root", "password": "", "key_path": "/app/keys/inspect_key"})
+    assert captured["pkey"] == "FAKE-KEY"
+    assert captured["password"] is None
 
 
 def test_remote_mem_start_computes_target_mb(client, db, monkeypatch):
