@@ -1,37 +1,71 @@
 <template>
   <div>
-    <el-space wrap style="margin-bottom: 14px">
-      <el-radio-group v-model="status" @change="load">
-            <el-radio-button value="">全部</el-radio-button>
-            <el-radio-button value="pending_analysis">待分析</el-radio-button>
-            <el-radio-button value="pending_approval">待审批</el-radio-button>
-            <el-radio-button value="executing">执行中</el-radio-button>
-            <el-radio-button value="recovered">已恢复</el-radio-button>
-            <el-radio-button value="escalated">已升级</el-radio-button>
+    <!-- 资产台账联动：母机 → 分组 按钮切换筛选 -->
+    <div class="filter-block">
+      <span class="filter-label">母机</span>
+      <el-radio-group v-model="motherId" size="default" @change="onMotherChange">
+        <el-radio-button value="">全部母机</el-radio-button>
+        <el-radio-button v-for="m in mothers" :key="m.id" :value="m.id">{{ m.hostname }}</el-radio-button>
       </el-radio-group>
-      <el-button v-perm="'tickets:operate'" type="primary" @click="openDemo">模拟告警</el-button>
+    </div>
+    <div class="filter-block">
+      <span class="filter-label">分组</span>
+      <el-radio-group v-model="group" size="default" @change="search">
+        <el-radio-button value="">全部分组</el-radio-button>
+        <el-radio-button v-for="g in groups" :key="g.name" :value="g.name">
+          {{ g.name || '未分组' }}<span class="opt-count">({{ g.total }})</span>
+        </el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <!-- 筛选框 + 操作区 -->
+    <div class="filter-block row">
+      <el-select v-model="status" placeholder="全部状态" clearable style="width: 140px" @change="search">
+        <el-option v-for="(label, val) in STATUS_OPTIONS" :key="val" :label="label" :value="val" />
+      </el-select>
+      <el-input
+        v-model="keyword"
+        placeholder="搜索编号 / 标题 / 资产"
+        clearable
+        style="width: 240px"
+        @keyup.enter="search"
+        @clear="search"
+      />
+      <el-button type="primary" plain @click="search">查询</el-button>
+      <el-button @click="resetFilters">重置</el-button>
+      <span class="spacer"></span>
       <el-tooltip :disabled="stressEnabled" content="仅服务器开启 STRESS_TOOLS_ENABLED 后可用">
         <span>
           <el-button v-perm="'tools:operate'" type="warning" plain :disabled="!stressEnabled" @click="openStress">CPU 压测</el-button>
         </span>
       </el-tooltip>
       <el-button @click="load">刷新</el-button>
-    </el-space>
+    </div>
 
-    <el-table :data="items" stripe style="width: 100%" empty-text="暂无任务单，可点击「模拟告警」走一遍绿灯路径">
+    <el-table :data="items" stripe style="width: 100%" empty-text="暂无任务单" v-loading="loading">
       <el-table-column prop="number" label="编号" width="170" />
-      <el-table-column label="标题" min-width="200" show-overflow-tooltip>
+      <el-table-column label="标题" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">
           <span :title="row.title">{{ triggerLabel(row) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="资产" width="170" show-overflow-tooltip>
+      <el-table-column label="母机" width="130" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.asset_info?.mother_hostname || '-' }}</template>
+      </el-table-column>
+      <el-table-column label="分组" width="110">
         <template #default="{ row }">
-          <span :title="row.asset_id">{{ dictLabel('asset', row.asset_id) }}</span>
+          <el-tag v-if="row.asset_info?.group" size="small" effect="plain">{{ row.asset_info.group }}</el-tag>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="子机" width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <template v-if="row.asset_info?.hostname">{{ row.asset_info.hostname }}</template>
+          <span v-else :title="row.asset_id">{{ row.asset_id }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="owner" label="负责人" width="90" />
-      <el-table-column label="状态" width="120">
+      <el-table-column label="状态" width="110">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
         </template>
@@ -42,13 +76,7 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="预案" width="160" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span v-if="row.candidate_action_id" :title="row.candidate_action_id">{{ dictLabel('action', row.candidate_action_id) }}</span>
-          <span v-else>-</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="created_at" label="创建时间" width="190" :formatter="fmtTimeCol('created_at')" />
+      <el-table-column prop="created_at" label="创建时间" width="170" :formatter="fmtTimeCol('created_at')" />
       <el-table-column label="操作" width="100" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="go(row)">查看详情</el-button>
@@ -56,22 +84,17 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="demoVisible" title="模拟 Zabbix 告警" width="520px">
-      <el-form label-width="100px">
-        <el-form-item label="演示路径">
-          <el-select v-model="demo.scenario" style="width: 100%">
-            <el-option label="绿灯 · CPU 飙高自动滚动重启" value="green" />
-            <el-option label="黄灯 · 复制延迟需审批" value="yellow" />
-            <el-option label="红灯 · 未知故障升级" value="red" />
-            <el-option label="验证失败 · 停止不循环" value="verify_fail" />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="demoVisible = false">取消</el-button>
-        <el-button type="primary" :loading="sending" @click="sendDemo">发送</el-button>
-      </template>
-    </el-dialog>
+    <div class="pager">
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        :total="total"
+        :page-sizes="[10, 20, 50]"
+        layout="total, sizes, prev, pager, next"
+        @current-change="load"
+        @size-change="search"
+      />
+    </div>
 
     <el-dialog v-model="stressVisible" title="真实 CPU 压测（让 Zabbix 采到真数据）" width="580px">
       <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
@@ -104,18 +127,46 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { fetchTickets, fetchStatus, fetchStressStatus, fetchDict, postWebhook, startCpuStress, stopCpuStress } from '../api'
+import {
+  fetchTickets,
+  fetchStatus,
+  fetchStressStatus,
+  fetchDict,
+  fetchMothers,
+  fetchMotherGroups,
+  startCpuStress,
+  stopCpuStress,
+} from '../api'
 import { fmtTimeCol } from '../time'
+
+const STATUS_OPTIONS = {
+  pending_analysis: '待分析',
+  pending_approval: '待审批',
+  pending_execution: '待执行',
+  executing: '执行中',
+  verifying: '验证中',
+  recovered: '已恢复',
+  escalated: '已升级',
+  skipped: '已跳过',
+}
 
 const router = useRouter()
 const items = ref([])
+const loading = ref(false)
+// 资产台账联动筛选
+const mothers = ref([])
+const groups = ref([])
+const motherId = ref('')
+const group = ref('')
+// 筛选与分页
 const status = ref('')
-const demoVisible = ref(false)
-const sending = ref(false)
-const demo = reactive({ scenario: 'green' })
+const keyword = ref('')
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 let timer
 
 // ===== 业务字典（code → 中文名映射）=====
@@ -133,41 +184,54 @@ function loadDict() {
     .catch(() => {})
 }
 
-function dictLabel(type, code) {
-  return (dictMaps.value[type] || {})[code] || code
-}
-
 function triggerLabel(row) {
-  return dictLabel('trigger', row.title || row.trigger_name)
+  return (dictMaps.value.trigger || {})[row.title || row.trigger_name] || row.title || row.trigger_name
 }
 
-// ===== CPU 压测状态 =====
-const stressVisible = ref(false)
-const stressEnabled = ref(false)
-const stressRunning = ref(false)
-const stressRemaining = ref(0)
-const stressCores = ref(0)
-const stressDuration = ref(420)
-const stressStarting = ref(false)
-let stressTimer
-
-const presets = {
-  green: { asset_id: 'ast-order-app-01', trigger_name: 'CPU usage > 85% for 5 minutes' },
-  yellow: { asset_id: 'ast-order-db-01', trigger_name: 'MySQL replication lag too high' },
-  red: { asset_id: 'ast-order-app-02', trigger_name: 'mystery native crash' },
-  verify_fail: { asset_id: 'ast-order-job-01', trigger_name: 'CPU usage too high' },
+// ===== 资产台账联动 =====
+async function loadMothers() {
+  try {
+    const { data } = await fetchMothers()
+    mothers.value = data.items || []
+  } catch {
+    mothers.value = []
+  }
 }
 
-const statusLabel = (s) => ({
-  pending_analysis: '待分析',
-  pending_approval: '待审批',
-  pending_execution: '待执行',
-  executing: '执行中',
-  verifying: '验证中',
-  recovered: '已恢复',
-  escalated: '已升级',
-  skipped: '已跳过',
-}[s] || s)
+async function loadGroups() {
+  if (!motherId.value) {
+    groups.value = []
+    return
+  }
+  try {
+    const { data } = await fetchMotherGroups(motherId.value)
+    groups.value = data.items || []
+  } catch {
+    groups.value = []
+  }
+}
+
+function onMotherChange() {
+  group.value = ''
+  loadGroups()
+  search()
+}
+
+function search() {
+  page.value = 1
+  load()
+}
+
+function resetFilters() {
+  motherId.value = ''
+  group.value = ''
+  status.value = ''
+  keyword.value = ''
+  groups.value = []
+  search()
+}
+
+const statusLabel = (s) => STATUS_OPTIONS[s] || s
 
 const statusType = (s) => ({
   recovered: 'success',
@@ -180,40 +244,34 @@ const statusType = (s) => ({
 const lightLabel = (l) => ({ green: '绿灯', yellow: '黄灯', red: '红灯' }[l] || l)
 
 async function load() {
-  const { data } = await fetchTickets(status.value)
-  items.value = data.items
+  loading.value = true
+  try {
+    const params = { page: page.value, page_size: pageSize.value }
+    if (motherId.value) params.mother_id = motherId.value
+    if (group.value) params.group = group.value
+    if (status.value) params.status = status.value
+    if (keyword.value && keyword.value.trim()) params.keyword = keyword.value.trim()
+    const { data } = await fetchTickets(params)
+    items.value = data.items
+    total.value = data.total ?? data.items.length
+  } finally {
+    loading.value = false
+  }
 }
 
 function go(row) {
   router.push(`/tickets/${row.id}`)
 }
 
-function openDemo() {
-  demoVisible.value = true
-}
-
-async function sendDemo() {
-  sending.value = true
-  try {
-    const p = presets[demo.scenario]
-    const { data } = await postWebhook({
-      event_id: `ui-${Date.now()}`,
-      asset_id: p.asset_id,
-      trigger_name: p.trigger_name,
-      demo_scenario: demo.scenario,
-      message: p.trigger_name,
-    })
-    demoVisible.value = false
-    if (data.skipped) {
-      ElMessage.warning('维护窗口内已跳过')
-    } else {
-      ElMessage.success(`已立案 ${data.ticket.number}`)
-      router.push(`/tickets/${data.ticket.id}`)
-    }
-  } finally {
-    sending.value = false
-  }
-}
+// ===== CPU 压测状态 =====
+const stressVisible = ref(false)
+const stressEnabled = ref(false)
+const stressRunning = ref(false)
+const stressRemaining = ref(0)
+const stressCores = ref(0)
+const stressDuration = ref(420)
+const stressStarting = ref(false)
+let stressTimer
 
 async function loadStressState() {
   try {
@@ -260,9 +318,10 @@ async function doStopStress() {
   }
 }
 
-onMounted(async () => {
+onMounted(() => {
   load()
   loadDict()
+  loadMothers()
   loadStressState()
   fetchStatus().then(({ data }) => {
     stressEnabled.value = !!data.integrations?.stress_tools_enabled
@@ -274,3 +333,36 @@ onUnmounted(() => {
   clearInterval(stressTimer)
 })
 </script>
+
+<style scoped>
+.filter-block {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.filter-block.row {
+  gap: 10px;
+}
+.filter-label {
+  font-size: 13px;
+  color: #606266;
+  width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.opt-count {
+  font-size: 12px;
+  opacity: 0.65;
+  margin-left: 2px;
+}
+.spacer {
+  flex: 1;
+}
+.pager {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+</style>

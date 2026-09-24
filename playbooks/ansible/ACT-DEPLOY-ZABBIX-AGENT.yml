@@ -1,0 +1,99 @@
+---
+# 白名单预案 ACT-DEPLOY-ZABBIX-AGENT：仅声明式模块，禁止 shell/command。
+# 约束：执行器会把本文件单独拷贝到临时目录运行，因此所有配置内容必须内联（不引用外部模板/角色文件）。
+- name: Deploy Zabbix agent (whitelist ACT-DEPLOY-ZABBIX-AGENT)
+  hosts: devops
+  gather_facts: true
+  become: true
+  vars:
+    zbx_pkg: "{{ zabbix_agent_package | default('zabbix-agent') }}"
+    zbx_conf: >-
+      {{ '/etc/zabbix/zabbix_agent2.conf' if (zabbix_agent_package | default('zabbix-agent')) == 'zabbix-agent2'
+         else '/etc/zabbix/zabbix_agentd.conf' }}
+    zbx_server: "{{ zabbix_server | default('127.0.0.1') }}"
+    zbx_version: "{{ zabbix_agent_version | default('6.0') }}"
+  tasks:
+    - name: install zabbix repository signing key (debian family)
+      ansible.builtin.get_url:
+        url: https://repo.zabbix.com/zabbix-official-repo.key
+        dest: /etc/apt/trusted.gpg.d/zabbix.asc
+        mode: "0644"
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: add zabbix apt repository (debian family)
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb https://repo.zabbix.com/zabbix/{{ zbx_version }}/{{ ansible_facts['distribution'] | lower }}
+          {{ ansible_facts['distribution_release'] }} main
+        state: present
+        update_cache: true
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: add zabbix yum repository (redhat family)
+      ansible.builtin.copy:
+        dest: /etc/yum.repos.d/zabbix.repo
+        mode: "0644"
+        content: |
+          [zabbix]
+          name=Zabbix Official Repository
+          baseurl=https://repo.zabbix.com/zabbix/{{ zbx_version }}/rhel/{{ ansible_facts['distribution_major_version'] }}/$basearch/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://repo.zabbix.com/zabbix-official-repo.key
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: install zabbix agent package
+      ansible.builtin.package:
+        name: "{{ zbx_pkg }}"
+        state: present
+      register: zbx_install
+
+    - name: configure zabbix server address
+      ansible.builtin.lineinfile:
+        path: "{{ zbx_conf }}"
+        regexp: "^#?Server="
+        line: "Server={{ zbx_server }}"
+        backup: true
+      notify: restart zabbix agent
+
+    - name: configure active server address
+      ansible.builtin.lineinfile:
+        path: "{{ zbx_conf }}"
+        regexp: "^#?ServerActive="
+        line: "ServerActive={{ zbx_server }}:10051"
+        backup: true
+      notify: restart zabbix agent
+
+    - name: register with inventory hostname
+      ansible.builtin.lineinfile:
+        path: "{{ zbx_conf }}"
+        regexp: "^#?Hostname="
+        line: "Hostname={{ inventory_hostname }}"
+        backup: true
+      notify: restart zabbix agent
+
+    - name: tag host metadata for auto registration
+      ansible.builtin.lineinfile:
+        path: "{{ zbx_conf }}"
+        line: "HostMetadata=devops-auto"
+      notify: restart zabbix agent
+
+    - name: flush handlers so config reload happens before verify
+      ansible.builtin.meta: flush_handlers
+
+    - name: enable and start zabbix agent
+      ansible.builtin.service:
+        name: "{{ zbx_pkg }}"
+        enabled: true
+        state: started
+
+    - name: verify agent is listening on 10050
+      ansible.builtin.wait_for:
+        port: 10050
+        timeout: 60
+
+  handlers:
+    - name: restart zabbix agent
+      ansible.builtin.service:
+        name: "{{ zbx_pkg }}"
+        state: restarted

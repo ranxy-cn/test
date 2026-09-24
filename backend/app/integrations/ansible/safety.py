@@ -129,6 +129,16 @@ def extra_vars_from(action_id: str, asset: Any, params: dict[str, Any] | None) -
     if "force" in pb.allowed_params:
         force_val = params.get("force")
         out["force"] = bool(_default("force", False) if force_val is None else force_val)
+    if "zabbix_server" in pb.allowed_params:
+        raw_server = (
+            params.get("zabbix_server")
+            or asset_extra.get("zabbix_server")
+            or _default("zabbix_server", "127.0.0.1")
+        )
+        out["zabbix_server"] = safe_ident(str(raw_server), "127.0.0.1")
+    if "zabbix_agent_package" in pb.allowed_params:
+        raw_pkg = str(params.get("zabbix_agent_package") or _default("zabbix_agent_package", "zabbix-agent"))
+        out["zabbix_agent_package"] = safe_ident(raw_pkg, "zabbix-agent")
     service = asset_extra.get("service_name") or asset_extra.get("ansible_service") or "order-app"
     out["service_name"] = safe_ident(service, "order-app")
     return out

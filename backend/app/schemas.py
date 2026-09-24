@@ -270,6 +270,27 @@ class ZabbixWebhookIn(BaseModel):
         return v
 
 
+class AnomalyOut(BaseModel):
+    """异常条目：仅 异常/恢复 两态。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    event_id: str
+    hostid: str = ""
+    host: str = ""
+    hostname: str = ""
+    ip: str = ""
+    trigger_name: str = ""
+    severity: str = "high"
+    message: str = ""
+    status: str  # abnormal | recovered
+    asset_id: str | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    recovered_at: datetime | None = None
+
+
 class TicketOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

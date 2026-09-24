@@ -14,6 +14,9 @@ READ_ONLY_METHODS = frozenset(
         "event.get",
         "problem.get",
         "trigger.get",
+        "hostgroup.get",
+        "template.get",
+        "action.get",
     }
 )
 

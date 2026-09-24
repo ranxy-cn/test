@@ -16,6 +16,7 @@ from app.models import Menu, RoleMenu
 
 # (code, name, type, path, perm_code, icon, sort, [children])
 MENU_TREE: list[tuple] = [
+    ("menu:anomalies", "异常告警", "menu", "/anomalies", "anomalies:read", "warning", 5, []),
     ("menu:tickets", "任务单", "menu", "/tickets", "tickets:read", "tickets", 10, [
         ("btn:ticket-approve", "审批通过/驳回", "button", "", "tickets:operate", "", 10, []),
         ("btn:ticket-retry", "重试执行", "button", "", "tickets:operate", "", 20, []),

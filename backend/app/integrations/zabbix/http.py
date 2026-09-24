@@ -54,6 +54,7 @@ class HttpZabbixClient:
         timeout: float = 8.0,
         retries: int = 2,
         verify_ssl: bool = True,
+        readonly: bool = True,
     ):
         self.url = normalize_zabbix_jsonrpc_url(url)
         self.token = token or ""
@@ -62,6 +63,7 @@ class HttpZabbixClient:
         self.timeout = timeout
         self.retries = max(1, int(retries))
         self.verify_ssl = verify_ssl
+        self.readonly = readonly
         self._session: str | None = None
         self.auth_style: str | None = None
         self.last_error: str | None = None
@@ -77,7 +79,10 @@ class HttpZabbixClient:
         return headers
 
     def _rpc(self, method: str, params: dict[str, Any] | list | None = None, *, use_auth: bool = True) -> Any:
-        assert_readonly_method(method)
+        if self.readonly:
+            assert_readonly_method(method)
+        if use_auth and not self.token and not self._session and self.username and self.password:
+            self._ensure_session()
         params = params if params is not None else {}
         self._rpc_id += 1
         payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method, "params": params, "id": self._rpc_id}
@@ -399,6 +404,108 @@ class HttpZabbixClient:
                 "last_error": str(exc),
             }
 
+
+    def asset_metrics(self, asset_id: str, host_hint: dict[str, Any] | None = None, minutes: int = 60) -> dict[str, Any]:
+        """资产监控大盘：CPU / 内存 / 磁盘 / 负载 的历史序列与最新值（Zabbix history API）。"""
+        host = self.resolve_host(asset_id, host_hint)
+        if not host.get("mapped"):
+            return {"mapped": False, "asset_id": asset_id, "note": UNMAPPED_NOTE, "series": {}, "latest": {}}
+        hostid = str(host["hostid"])
+        time_from = int(time.time()) - max(5, int(minutes)) * 60
+
+        def search_item(key_fragment: str) -> dict[str, Any] | None:
+            """按 key 子串搜索监控项（主机监控项可能上千，不能整表截断）。"""
+            found = self._rpc(
+                "item.get",
+                {
+                    "output": ["itemid", "name", "key_", "lastvalue", "lastclock", "units", "value_type"],
+                    "hostids": [hostid],
+                    "monitored": True,
+                    "search": {"key_": key_fragment},
+                    "limit": 50,
+                },
+            )
+            rows = found if isinstance(found, list) else []
+            return rows[0] if rows else None
+
+        cpu_item = search_item("system.cpu.util") or search_item("system.cpu.load[all,avg1]")
+        mem_item = search_item("vm.memory.utilization") or search_item("vm.memory.size[pavailable]")
+        load_item = search_item("system.cpu.load[all,avg1]") or search_item("system.cpu.load")
+        # 磁盘：优先根分区 pused；容器 agent 场景无 "/" 项时取任意 pused 挂载点（反映宿主分区）
+        disk_item = search_item("vfs.fs.size[/,pused]")
+        if disk_item is None:
+            cands = self._rpc(
+                "item.get",
+                {
+                    "output": ["itemid", "name", "key_", "lastvalue", "lastclock", "units", "value_type"],
+                    "hostids": [hostid],
+                    "monitored": True,
+                    "search": {"key_": "vfs.fs.size"},
+                    "limit": 100,
+                },
+            )
+            rows = cands if isinstance(cands, list) else []
+            disk_item = next(
+                (i for i in rows if ",pused]" in str(i.get("key_", ""))),
+                rows[0] if rows else None,
+            )
+
+        def series_for(item: dict[str, Any] | None, label: str) -> list[dict[str, Any]]:
+            if not item:
+                return []
+            rows = self._rpc(
+                "history.get",
+                {
+                    "output": "extend",
+                    "history": int(item.get("value_type") or 0),
+                    "itemids": [item["itemid"]],
+                    "time_from": time_from,
+                    "sortfield": "clock",
+                    "sortorder": "ASC",
+                    "limit": 400,
+                },
+            )
+            rows = rows if isinstance(rows, list) else []
+            return [{"t": r.get("clock"), label: _num(r.get("value"))} for r in rows]
+
+        def last_pct(item: dict[str, Any] | None) -> float | None:
+            return _num(item.get("lastvalue")) if item else None
+
+        cpu_series = series_for(cpu_item, "cpu")
+        mem_series = series_for(mem_item, "mem")
+        disk_series = series_for(disk_item, "disk")
+        load_series = series_for(load_item, "load")
+
+        # 内存 pavailable（剩余%）与 utilization（已用%）口径归一为“已用%”
+        mem_latest = last_pct(mem_item)
+        if mem_item and "pavailable" in str(mem_item.get("key_", "")):
+            mem_series = [{"t": r["t"], "mem": (100.0 - r["mem"]) if r.get("mem") is not None else None} for r in mem_series]
+            mem_latest = 100.0 - mem_latest if mem_latest is not None else None
+
+        preview_items = [i for i in (cpu_item, mem_item, disk_item, load_item) if i]
+        return {
+            "mapped": True,
+            "real": True,
+            "asset_id": asset_id,
+            "host": host,
+            "minutes": minutes,
+            "latest": {
+                "cpu": last_pct(cpu_item),
+                "mem": mem_latest,
+                "disk": last_pct(disk_item),
+                "load1": last_pct(load_item),
+            },
+            "series": {
+                "cpu": cpu_series,
+                "mem": mem_series,
+                "disk": disk_series,
+                "load": load_series,
+            },
+            "items_preview": [
+                {"key": i.get("key_"), "lastvalue": i.get("lastvalue"), "units": i.get("units")}
+                for i in preview_items
+            ],
+        }
 
     def list_hosts(self, limit: int = 20) -> list[dict[str, Any]]:
         self._ensure_session()

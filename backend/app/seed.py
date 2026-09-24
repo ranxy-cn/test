@@ -12,10 +12,12 @@ from app.services.backups import seed_backup_jobs
 
 # 权限点目录：模块:动作
 PERMISSIONS: list[tuple[str, str, str]] = [
+    ("anomalies:read", "异常告警查看", "查看异常/恢复条目列表"),
     ("tickets:read", "任务单查看", "查看任务单列表与详情"),
     ("tickets:operate", "任务单操作", "审批、驳回、重试执行"),
     ("catalog:read", "预案目录查看", "查看预案目录与数字员工档案"),
     ("assets:read", "资产查看", "查看资产台账"),
+    ("assets:write", "资产登记", "登记/更新资产（自动纳管回写）"),
     ("backups:read", "备份查看", "查看备份任务与运行记录"),
     ("backups:operate", "备份操作", "触发备份与恢复演练"),
     ("notifications:read", "通知查看", "查看与标记通知"),
@@ -125,8 +127,10 @@ def seed_if_empty(db: Session) -> None:
             )
         )
 
-    assets = [
-        Asset(
+    # 演示数据：仅当开关开启 **且资产表为空** 时才种，避免污染真实台账
+    if get_settings().seed_demo_assets and db.query(Asset).first() is None:
+        assets: list[Asset] = [
+            Asset(
             id="ast-order-app-01",
             hostname="order-app-01",
             zabbix_host="order-app-01",
@@ -229,24 +233,23 @@ def seed_if_empty(db: Session) -> None:
             tenant_id="tenant-default",
             reachable=False,
         ),
-    ]
-    for asset in assets:
-        if db.get(Asset, asset.id) is None:
-            db.add(asset)
+        ]
+        for asset in assets:
+            if db.get(Asset, asset.id) is None:
+                db.add(asset)
+        existing_mw = db.scalar(select(MaintenanceWindow).limit(1))
+        if existing_mw is None:
+            now = utcnow()
+            db.add(
+                MaintenanceWindow(
+                    asset_id="ast-order-app-03",
+                    reason="计划变更窗口：扩容演练",
+                    starts_at=now - timedelta(hours=1),
+                    ends_at=now + timedelta(days=1),
+                )
+            )
+        seed_backup_jobs(db)
     for row in db.scalars(select(Asset)).all():
         if not row.zabbix_host:
             row.zabbix_host = row.hostname
-
-    existing_mw = db.scalar(select(MaintenanceWindow).limit(1))
-    if existing_mw is None:
-        now = utcnow()
-        db.add(
-            MaintenanceWindow(
-                asset_id="ast-order-app-03",
-                reason="计划变更窗口：扩容演练",
-                starts_at=now - timedelta(hours=1),
-                ends_at=now + timedelta(days=1),
-            )
-        )
     db.flush()
-    seed_backup_jobs(db)

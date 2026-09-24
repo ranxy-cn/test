@@ -17,8 +17,15 @@ os.environ["OBSERVATION_SECONDS"] = "0"
 os.environ["PROBE_INTERVAL_SECONDS"] = "0"
 os.environ["WEBHOOK_SECRET"] = "dev-webhook-secret"
 os.environ["INTEGRATION_MODE"] = "mock"
+# 服务器容器可能注入空的 ADMIN_INITIAL_PASSWORD 覆盖默认值，测试固定为代码默认值
+os.environ["ADMIN_INITIAL_PASSWORD"] = "Admin@123456"
+# 服务器 .env 的 SEED_DEMO_ASSETS=0 会渗入测试，演示资产是多数用例的前置数据，测试强制开启
+os.environ["SEED_DEMO_ASSETS"] = "true"
 # 压平开发者本地 .env 中的真实集成凭据，保证测试确定性（env 变量优先于 dotenv）
 # 注意：不要设置 ZABBIX_MODE/ANSIBLE_MODE/VAULT_MODE，其优先级高于 INTEGRATION_MODE，会影响工厂用例
+# （服务器容器可能注入这些变量，测试环境一律剔除以保确定性）
+for _k in ("ZABBIX_MODE", "ANSIBLE_MODE", "VAULT_MODE"):
+    os.environ.pop(_k, None)
 os.environ["ZABBIX_URL"] = ""
 os.environ["ZABBIX_USER"] = ""
 os.environ["ZABBIX_PASSWORD"] = ""
@@ -26,6 +33,8 @@ os.environ["ZABBIX_TOKEN"] = ""
 os.environ["VAULT_ADDR"] = ""
 os.environ["VAULT_TOKEN"] = ""
 os.environ["STRESS_TOOLS_ENABLED"] = "false"
+# 测试保留旧「webhook→自动立案」管线（生产默认关闭，只记异常条目）
+os.environ["WEBHOOK_AUTO_TICKET"] = "true"
 os.environ["ACTION_FAIL_COOLDOWN_SECONDS"] = "1800"
 os.environ["PLAYBOOKS_DIR"] = str(ROOT / "playbooks")
 os.environ["KNOWLEDGE_DIR"] = str(ROOT / "knowledge")

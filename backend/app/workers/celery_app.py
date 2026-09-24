@@ -26,5 +26,9 @@ celery_app.conf.update(
             "task": "run_due_backups",
             "schedule": 60.0,
         },
+        "probe-assets": {
+            "task": "probe_assets",
+            "schedule": 300.0,
+        },
     },
 )

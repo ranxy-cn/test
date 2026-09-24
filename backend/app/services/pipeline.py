@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta, timezone
 from typing import Any
 
@@ -14,12 +15,13 @@ from app.domain.state_machine import transition
 from app.executor.verifier import BusinessProbeVerifier
 from app.integrations import get_playbook_runner
 from app.integrations.zabbix.mapping import mapping_from_asset
-from app.models import AlertEvent, Approval, Asset, MaintenanceWindow, Ticket, TicketStatus, utcnow
-from app.schemas import params_digest
+from app.models import AlertEvent, Approval, Asset, MaintenanceWindow, Ticket, TicketSource, TicketStatus, utcnow
+from app.schemas import Diagnosis, params_digest
 from app.services.audit import add_audit, add_event
 from app.services.cooldowns import last_action_failure, record_action_failure
 from app.services.locks import acquire_asset_lock, heartbeat_lock, record_lock_conflict, release_asset_lock
 from app.services.notify import notify_ticket
+from app.services.tickets import next_ticket_number
 from sqlalchemy import select
 
 
@@ -69,6 +71,104 @@ def dispatch_execution(ticket_id: int) -> None:
         execute_ticket.delay(ticket_id)
         return
     run_execution(ticket_id)
+
+
+class ManualActionRejected(Exception):
+    """策略引擎红灯，拒绝人工发起的动作。"""
+
+    def __init__(self, reasons: list[str]):
+        self.reasons = reasons
+        super().__init__("；".join(reasons))
+
+
+def create_manual_ticket(
+    db: Session,
+    *,
+    asset: Asset,
+    action_id: str,
+    params: dict[str, Any] | None = None,
+    reason: str = "",
+    actor: str = "",
+) -> Ticket:
+    """人工一键发起白名单预案：与告警链路共用同一策略引擎 / 审批 / 执行管线。
+
+    绿灯 → 直接排队执行；黄灯 → 挂起等审批；红灯 → 升级并抛 ManualActionRejected。
+    """
+    settings = get_settings()
+    pb = get_playbook(action_id)
+    if pb is None:
+        raise ValueError(f"action_id 不在预案白名单: {action_id}")
+
+    uid = uuid.uuid4().hex[:12]
+    ticket = Ticket(
+        number=next_ticket_number(db),
+        idempotency_key=f"manual|{asset.id}|{action_id}|{uid}",
+        source=TicketSource.manual.value,
+        status=TicketStatus.pending_analysis.value,
+        employee_id=settings.employee_id,
+        asset_id=asset.id,
+        tenant_id=asset.tenant_id,
+        title=f"人工发起：{pb.name}",
+        trigger_name="",
+        severity="info",
+        action_type="MANUAL",
+        job_version=f"manual-{pb.version}",
+        event_id=f"manual-{uid}",
+        owner=asset.owner,
+        demo_scenario="green",
+    )
+    db.add(ticket)
+    db.flush()
+
+    diagnosis = Diagnosis(
+        root_cause="人工发起运维动作",
+        evidence_refs=[f"manual-request:{uid}"],
+        candidate_action_id=action_id,
+        confidence=1.0,
+        summary=reason or f"人工发起 {pb.name}",
+        recommended_params=params or {},
+    )
+    ctx = asset_context(db, asset, action_id)
+    policy = evaluate_policy(diagnosis, ctx)
+    ticket.policy_result = policy.model_dump()
+    ticket.policy_light = policy.light
+    ticket.candidate_action_id = policy.action_id
+    ticket.playbook_version = pb.version
+    ticket.params = params or {}
+    ticket.params_digest = params_digest(asset.id, pb.version, params or {})
+    ticket.risk_level = pb.risk
+    add_event(
+        db,
+        ticket_id=ticket.id,
+        kind="manual_requested",
+        actor=actor or "manual",
+        message=f"人工发起 {pb.id}@{pb.version}，策略{policy.light}",
+        payload=policy.model_dump(),
+    )
+    add_audit(
+        db,
+        ticket_id=ticket.id,
+        event_type="manual_request",
+        actor=actor or "manual",
+        result={"action_id": action_id, "light": policy.light, "reasons": policy.reasons},
+        playbook_version=pb.version,
+        params_digest=ticket.params_digest,
+        policy_version=get_settings().policy_version,
+    )
+
+    if policy.light == "red":
+        _escalate(db, ticket, "；".join(policy.reasons))
+        db.flush()
+        raise ManualActionRejected(policy.reasons)
+    if policy.light == "yellow":
+        _request_approval(db, ticket, pb.id)
+        notify_ticket(db, ticket, "pending_approval", f"{ticket.number} 人工发起 {pb.id}，等待审批")
+        db.flush()
+    else:
+        _set_status(ticket, TicketStatus.pending_execution)
+        add_event(db, ticket_id=ticket.id, kind="auto_execute_authorized", message="绿灯：进入自动执行")
+        db.flush()
+    return ticket
 
 
 def run_pipeline(ticket_id: int) -> None:
@@ -316,6 +416,25 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
 
         if pb.restart_cooldown:
             asset.last_restart_at = utcnow()
+
+        # 执行成功 → 回写 CMDB，形成“部署 → 纳管”闭环
+        if result["ok"]:
+            asset.reachable = True
+            if pb.id == "ACT-DEPLOY-ZABBIX-AGENT":
+                extra = dict(asset.extra or {})
+                extra["zabbix_agent"] = {
+                    "deployed_at": utcnow().isoformat(),
+                    "zabbix_server": (ticket.params or {}).get("zabbix_server") or "",
+                    "ticket": ticket.number,
+                }
+                asset.extra = extra
+                asset.zabbix_host = asset.hostname
+                add_event(
+                    db,
+                    ticket_id=ticket.id,
+                    kind="asset_synced",
+                    message="已回写 CMDB：reachable=true，zabbix_host 已绑定",
+                )
 
         _set_status(ticket, TicketStatus.verifying)
         add_event(db, ticket_id=ticket.id, kind="verification_started", message="开始业务探测与观察期")

@@ -9,3 +9,5 @@ playbooks:
     file: ACT-CLEAN-TMPLOG.yaml
   - id: ACT-RESTART-PROBE
     file: ACT-RESTART-PROBE.yaml
+  - id: ACT-DEPLOY-ZABBIX-AGENT
+    file: ACT-DEPLOY-ZABBIX-AGENT.yaml

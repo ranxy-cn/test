@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import AnomaliesView from './views/AnomaliesView.vue'
 import TicketsView from './views/TicketsView.vue'
 import TicketDetailView from './views/TicketDetailView.vue'
 import EmployeeView from './views/EmployeeView.vue'
@@ -19,7 +20,8 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', component: LoginView, meta: { public: true } },
-    { path: '/', redirect: '/tickets' },
+    { path: '/', redirect: '/anomalies' },
+    { path: '/anomalies', component: AnomaliesView, meta: { perm: 'anomalies:read' } },
     { path: '/tickets', component: TicketsView, meta: { perm: 'tickets:read' } },
     { path: '/tickets/:id', component: TicketDetailView, props: true, meta: { perm: 'tickets:read' } },
     { path: '/employee', component: EmployeeView, meta: { perm: 'catalog:read' } },
@@ -31,7 +33,7 @@ const router = createRouter({
     { path: '/users', component: UsersView, meta: { perm: 'users:manage' } },
     { path: '/roles', component: RolesView, meta: { perm: 'roles:manage' } },
     { path: '/menus', component: MenusView, meta: { perm: 'menus:manage' } },
-    { path: '/:pathMatch(.*)*', redirect: '/tickets' },
+    { path: '/:pathMatch(.*)*', redirect: '/anomalies' },
   ],
 })
 
@@ -45,7 +47,7 @@ setUnauthorizedHandler(() => {
 
 router.beforeEach(async (to) => {
   if (to.meta.public) {
-    if (auth.isLoggedIn()) return { path: '/tickets' }
+    if (auth.isLoggedIn()) return { path: '/anomalies' }
     return true
   }
   if (!auth.isLoggedIn()) {

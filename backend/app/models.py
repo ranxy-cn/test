@@ -32,6 +32,7 @@ class TicketSource(str, enum.Enum):
     alert = "alert"
     schedule = "schedule"
     assign = "assign"
+    manual = "manual"
 
 
 # ===== 登录鉴权 / RBAC =====
@@ -222,9 +223,16 @@ class Asset(Base):
     role: Mapped[str] = mapped_column(String(64))
     env: Mapped[str] = mapped_column(String(32), default="prod")
     owner: Mapped[str] = mapped_column(String(64))
+    group: Mapped[str] = mapped_column(String(64), default="", comment="业务分组，如订单系统/财务系统")
+    kind: Mapped[str] = mapped_column(String(16), default="child", comment="节点角色：mother=母机（Zabbix Server 所在）/ child=子机")
+    mother_id: Mapped[str] = mapped_column(String(64), default="", comment="归属母机资产 ID（子机字段；母机为空）")
+    db_mode: Mapped[str] = mapped_column(String(16), default="bundled", comment="母机数据库模式：bundled=独立 MySQL 容器镜像 / external=复用已有 MySQL（母机字段）")
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
     reachable: Mapped[bool] = mapped_column(Boolean, default=True)
     db_ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    last_check_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    unreachable_reason: Mapped[str] = mapped_column(String(256), default="")
     last_restart_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     external_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     zabbix_host: Mapped[str] = mapped_column(String(128), default="")
@@ -345,6 +353,48 @@ class AlertEvent(Base):
     skip_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ticket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+
+
+class AnomalyEvent(Base):
+    """异常告警条目：只有「异常 / 恢复」两种状态，按 Zabbix event_id 幂等更新。"""
+
+    __tablename__ = "anomaly_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    hostid: Mapped[str] = mapped_column(String(32), default="")
+    host: Mapped[str] = mapped_column(String(128), default="")
+    hostname: Mapped[str] = mapped_column(String(128), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    trigger_name: Mapped[str] = mapped_column(String(256), default="")
+    severity: Mapped[str] = mapped_column(String(32), default="high")
+    message: Mapped[str] = mapped_column(String(256), default="")
+    # abnormal 异常 / recovered 恢复
+    status: Mapped[str] = mapped_column(String(16), default="abnormal", index=True)
+    asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    diagnostics: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="异常时刻进程快照（TOP 进程/负载/内存/监听/会话）")
+    # none 未采集 / running 采集中 / done 完成 / failed 失败
+    diag_status: Mapped[str] = mapped_column(String(16), default="none")
+    diag_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    diag_error: Mapped[str] = mapped_column(String(512), default="")
+    first_seen_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+    recovered_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+
+
+class AnomalyLog(Base):
+    """异常告警原始通知日志：每条 Zabbix webhook 推送（异常/恢复）都留痕，保留完整原始载荷。"""
+
+    __tablename__ = "anomaly_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[int] = mapped_column(ForeignKey("anomaly_events.id"), index=True)
+    event_id: Mapped[str] = mapped_column(String(128), default="")
+    # problem 异常通知 / recovered 恢复通知
+    action: Mapped[str] = mapped_column(String(16), default="problem")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    received_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
 class ResourceLock(Base):

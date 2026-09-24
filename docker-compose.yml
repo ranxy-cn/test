@@ -4,6 +4,8 @@ x-backend-env: &backend-env
   DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://devops_agent:devops_agent@mysql:3306/devops_agent?charset=utf8mb4}
   REDIS_URL: redis://redis:6379/0
   WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+  # Zabbix webhook 自动立案开关：默认关闭（只记异常/恢复条目），置 true 走 AI 诊断/策略/预案管线
+  WEBHOOK_AUTO_TICKET: ${WEBHOOK_AUTO_TICKET:-false}
   USE_CELERY: "true"
   DEMO_MODE: "true"
   # ===== 登录鉴权（生产必须覆盖 JWT_SECRET / ADMIN_INITIAL_PASSWORD）=====
@@ -21,6 +23,8 @@ x-backend-env: &backend-env
   ZABBIX_VERIFY_SSL: ${ZABBIX_VERIFY_SSL:-true}
   ZABBIX_TIMEOUT_SECONDS: ${ZABBIX_TIMEOUT_SECONDS:-8}
   ZABBIX_RETRIES: ${ZABBIX_RETRIES:-2}
+  SEED_DEMO_ASSETS: ${SEED_DEMO_ASSETS:-}
+  PROVISION_ZABBIX_SERVER: ${PROVISION_ZABBIX_SERVER:-}
   VAULT_ADDR: ${VAULT_ADDR:-}
   VAULT_TOKEN: ${VAULT_TOKEN:-}
   ANSIBLE_RUNNER_ENABLED: ${ANSIBLE_RUNNER_ENABLED:-false}
@@ -35,6 +39,8 @@ x-backend-env: &backend-env
   NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
   STRESS_TOOLS_ENABLED: ${STRESS_TOOLS_ENABLED:-false}
   STRESS_MAX_SECONDS: ${STRESS_MAX_SECONDS:-1200}
+  # 异常诊断上机采集的 SSH 密码兜底（优先用资产 extra.provision.password）
+  DIAG_SSH_PASSWORD: ${DIAG_SSH_PASSWORD:-}
   ACTION_FAIL_COOLDOWN_SECONDS: ${ACTION_FAIL_COOLDOWN_SECONDS:-1800}
   LOCK_TTL_SECONDS: ${LOCK_TTL_SECONDS:-120}
   OBSERVATION_SECONDS: "10"
@@ -97,6 +103,7 @@ services:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
       - ./inventory:/app/inventory:ro
+      - ./keys:/app/keys:ro
 
   worker:
     build:
@@ -113,6 +120,7 @@ services:
       - ./playbooks:/app/playbooks:ro
       - ./knowledge:/app/knowledge:ro
       - ./inventory:/app/inventory:ro
+      - ./keys:/app/keys:ro
 
   beat:
     build:

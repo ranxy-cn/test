@@ -13,6 +13,8 @@ redis==5.2.1
 httpx==0.28.1
 respx==0.22.0
 pyyaml==6.0.2
+paramiko==3.5.1
+python-multipart==0.0.20
 langgraph==0.2.60
 langchain-core==0.3.28
 python-dotenv==1.0.1

@@ -17,6 +17,19 @@ def retry_queued_tickets() -> int:
     return retry_queued_executions()
 
 
+@celery_app.task(name="probe_assets", max_retries=0)
+def probe_assets() -> dict:
+    """定时探活全部资产：TCP 探测，回写 reachable/last_seen_at/unreachable_reason。"""
+    from app.database import SessionLocal
+    from app.services.probe import run_probe_cycle
+
+    db = SessionLocal()
+    try:
+        return run_probe_cycle(db)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="run_due_backups", max_retries=0)
 def run_due_backups() -> int:
     from app.database import SessionLocal

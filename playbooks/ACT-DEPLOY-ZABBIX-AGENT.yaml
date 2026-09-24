@@ -1,0 +1,34 @@
+id: ACT-DEPLOY-ZABBIX-AGENT
+name: 部署 Zabbix Agent
+version: "1.0.0"
+description: 中风险：在目标主机安装并配置 Zabbix Agent，Server 指向指定 Zabbix 服务器，写入自动注册元数据（HostMetadata=devops-auto），实现新机器监控自动纳管。属软件安装类操作，需人工审批。
+risk: medium
+auto_allowed: false
+requires_db_ok: false
+requires_reachable: true
+restart_cooldown: false
+success_criteria: Agent 服务运行中且 10050 端口监听；Zabbix 侧通过自动注册出现新主机
+stop_conditions: 软件源不可用、安装失败或服务反复退出，立即停止并升级人工
+allowed_params:
+  zabbix_server:
+    type: string
+    default: "127.0.0.1"
+  zabbix_agent_package:
+    type: string
+    default: "zabbix-agent"
+steps:
+  - id: repo
+    name: 配置 Zabbix 软件源
+    mock_seconds: 0.1
+  - id: install
+    name: 安装 Zabbix Agent
+    mock_seconds: 0.2
+  - id: configure
+    name: 写入 Server/HostMetadata 配置
+    mock_seconds: 0.1
+  - id: service
+    name: 启动并设置开机自启
+    mock_seconds: 0.1
+  - id: verify
+    name: 校验 10050 端口监听
+    mock_seconds: 0.1
