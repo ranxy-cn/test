@@ -840,9 +840,10 @@ def uninstall_mother(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除母机：先 SSH 到目标机卸载 Zabbix 栈（停止容器+删除安装目录），成功后移除台账记录。
+    """删除母机：先 SSH 到目标机卸载 Zabbix 栈（停止容器+删除安装目录），成功后级联删除母机及名下全部子机台账。
 
-    任一步失败均不删除记录，避免"台账删了但服务器上还装着"的脏状态。
+    任一步失败均不删除记录，避免"台账删了但服务器上还装着"的脏状态；
+    母机或任一子机被工单/维护窗口/备份任务引用时直接拒绝（提交时校验）。
     """
     import threading as _threading
 
@@ -858,16 +859,10 @@ def uninstall_mother(
             400,
             "该母机未部署成功，服务器上没有 Zabbix 栈可卸载；请取消勾选「卸载」，直接删除记录即可",
         )
-    n_children = db.query(Asset).filter(Asset.kind != "mother", Asset.mother_id == mother_id).count()
-    if n_children:
-        raise HTTPException(409, f"该母机名下还有 {n_children} 台子机，请先删除或迁移子机")
-    refs = {
-        "tickets": db.query(Ticket).filter(Ticket.asset_id == mother_id).count(),
-        "maintenance_windows": db.query(MaintenanceWindow).filter(MaintenanceWindow.asset_id == mother_id).count(),
-        "backup_jobs": db.query(BackupJob).filter(BackupJob.asset_id == mother_id).count(),
-    }
-    if any(refs.values()):
-        raise HTTPException(409, f"资产被引用，先处理关联数据: {refs}")
+    # 级联范围：卸载成功后母机连同名下全部子机一起删（整栈下线，子机不悬空）
+    cascade_children = _mother_children(db, mother_id)
+    _assert_refs_free(db, [a, *cascade_children])
+    cascade_ids = [c.id for c in cascade_children]
 
     # 卸载是长耗时 SSH 操作（compose down 最长 3 分钟），放后台线程执行，前端轮询进度
     a.extra = {
@@ -905,6 +900,11 @@ def uninstall_mother(
             if a2 is None:
                 return
             if ok:
+                # 级联删除：母机 Zabbix 栈已卸载，名下子机监控随栈消失，台账一并移除
+                for cid in cascade_ids:
+                    c2 = db2.get(Asset, cid)
+                    if c2 is not None:
+                        db2.delete(c2)
                 db2.delete(a2)
             else:
                 # 卸载失败保留记录，状态回 failed 供用户重试或改为仅删记录
@@ -928,7 +928,13 @@ def uninstall_mother(
                 ticket_id=None,
                 event_type="mother_uninstall",
                 actor=current.username,
-                result={"asset_id": mother_id, "ip": body.ip, "status": "deleted" if ok else "failed", "error": err},
+                result={
+                    "asset_id": mother_id,
+                    "ip": body.ip,
+                    "status": "deleted" if ok else "failed",
+                    "error": err,
+                    "cascade_children": cascade_ids,
+                },
             )
             db2.commit()
         finally:
@@ -1172,34 +1178,69 @@ def get_asset(asset_id: str, db: Session = Depends(get_db)):
     return row
 
 
-@router.delete("/api/v1/assets/{asset_id}", dependencies=[Depends(require_perm("assets:write"))])
-def delete_asset(asset_id: str, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("assets:write"))):
-    """删除资产；被工单/维护窗口/备份任务引用时拒绝。"""
-    a = db.get(Asset, asset_id)
-    if a is None:
-        raise HTTPException(404, "资产不存在")
+def _mother_children(db: Session, mother_id: str) -> list[Asset]:
+    """母机名下的全部子机台账（kind != mother，含 node/child 等一切非母机节点）。"""
+    return db.scalars(select(Asset).where(Asset.kind != "mother", Asset.mother_id == mother_id)).all()
+
+
+def _assert_refs_free(db: Session, assets: list[Asset]) -> None:
+    """工单/维护窗口/备份任务引用检查：任一被引用即 409，保证级联不产生部分删除。"""
+    ids = [a.id for a in assets]
     refs = {
-        "tickets": db.query(Ticket).filter(Ticket.asset_id == asset_id).count(),
-        "maintenance_windows": db.query(MaintenanceWindow).filter(MaintenanceWindow.asset_id == asset_id).count(),
-        "backup_jobs": db.query(BackupJob).filter(BackupJob.asset_id == asset_id).count(),
+        "tickets": db.query(Ticket).filter(Ticket.asset_id.in_(ids)).count(),
+        "maintenance_windows": db.query(MaintenanceWindow).filter(MaintenanceWindow.asset_id.in_(ids)).count(),
+        "backup_jobs": db.query(BackupJob).filter(BackupJob.asset_id.in_(ids)).count(),
     }
     if any(refs.values()):
         raise HTTPException(409, f"资产被引用，先处理关联数据: {refs}")
-    if a.kind == "mother":
-        # 母机名下还有子机时不允许删除，避免子机悬空
-        n_children = db.query(Asset).filter(Asset.kind != "mother", Asset.mother_id == asset_id).count()
-        if n_children:
-            raise HTTPException(409, f"该母机名下还有 {n_children} 台子机，请先删除或迁移子机")
-    db.delete(a)
+
+
+def _zabbix_delete_host_best_effort(db: Session, a: Asset) -> str:
+    """Zabbix 侧注销监控主机（最佳努力，失败不阻断删除）。返回说明文本。"""
+    try:
+        client = zabbix_client_for(db, a)
+        hostid = a.external_id or ""
+        if not hostid and a.zabbix_host:
+            hosts = client._rpc("host.get", {"filter": {"host": [a.zabbix_host]}, "output": ["hostid"]}) or []
+            hostid = str(hosts[0]["hostid"]) if hosts else ""
+        if hostid:
+            client._rpc("host.delete", [hostid])
+            return f"已在 Zabbix 注销主机（hostid={hostid}）"
+    except Exception as exc:  # noqa: BLE001
+        return f"Zabbix 注销失败（不影响删除）：{str(exc)[:200]}"
+    return ""
+
+
+@router.delete("/api/v1/assets/{asset_id}", dependencies=[Depends(require_perm("assets:write"))])
+def delete_asset(asset_id: str, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("assets:write"))):
+    """删除资产；母机级联删除名下全部子机；母机或任一子机被引用时拒绝（不产生部分删除）。"""
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(404, "资产不存在")
+    # 级联范围：母机 → 名下全部子机一起删（整个监控栈下线，避免子机悬空产生脏数据）
+    cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
+    _assert_refs_free(db, [a, *cascade_children])
+    zbx_notes = []
+    for c in cascade_children:
+        note = _zabbix_delete_host_best_effort(db, c)
+        if note:
+            zbx_notes.append(f"{c.id}: {note}")
+    for t in [a, *cascade_children]:
+        db.delete(t)
     add_audit(
         db,
         ticket_id=None,
         event_type="asset_delete",
         actor=current.username,
-        result={"asset_id": asset_id, "hostname": a.hostname},
+        result={
+            "asset_id": asset_id,
+            "hostname": a.hostname,
+            "cascade_children": [c.id for c in cascade_children],
+            "zabbix": zbx_notes,
+        },
     )
     db.commit()
-    return {"deleted": asset_id}
+    return {"deleted": asset_id, "cascade_children": [c.id for c in cascade_children]}
 
 
 @router.post("/api/v1/assets/probe", dependencies=[Depends(require_perm("assets:read"))])
@@ -1224,7 +1265,10 @@ def remove_asset(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除子机资产；勾选卸载时先 SSH 到来源机卸载 zabbix-agent 并从 Zabbix 注销主机。"""
+    """删除子机资产；勾选卸载时先 SSH 到来源机卸载 zabbix-agent 并从 Zabbix 注销主机。
+
+    母机走"仅删除记录"时级联删除名下全部子机（与 DELETE /assets/{id} 行为一致）。
+    """
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
@@ -1232,13 +1276,9 @@ def remove_asset(
     # 未部署成功的母机没有可卸载的东西，必须能直接删除，否则永远删不掉
     if a.kind == "mother" and body.uninstall:
         raise HTTPException(400, "母机卸载请走「删除母机」弹窗的「卸载并删除」流程")
-    refs = {
-        "tickets": db.query(Ticket).filter(Ticket.asset_id == asset_id).count(),
-        "maintenance_windows": db.query(MaintenanceWindow).filter(MaintenanceWindow.asset_id == asset_id).count(),
-        "backup_jobs": db.query(BackupJob).filter(BackupJob.asset_id == asset_id).count(),
-    }
-    if any(refs.values()):
-        raise HTTPException(409, f"资产被引用，先处理关联数据: {refs}")
+    # 级联范围：母机 → 名下全部子机一起删，引用检查覆盖全部删除对象
+    cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
+    _assert_refs_free(db, [a, *cascade_children])
 
     # 1) 远程卸载 zabbix-agent（纳管来源机；密码仅本次使用）
     uninstall_logs: list[str] = []
@@ -1263,21 +1303,16 @@ def remove_asset(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"SSH 连接失败（{ip}:{port}）：{exc}")
 
-    # 2) Zabbix 侧注销监控主机（最佳努力，失败不阻断删除）
-    zbx_note = ""
-    try:
-        client = zabbix_client_for(db, a)
-        hostid = a.external_id or ""
-        if not hostid and a.zabbix_host:
-            hosts = client._rpc("host.get", {"filter": {"host": [a.zabbix_host]}, "output": ["hostid"]}) or []
-            hostid = str(hosts[0]["hostid"]) if hosts else ""
-        if hostid:
-            client._rpc("host.delete", [hostid])
-            zbx_note = f"已在 Zabbix 注销主机（hostid={hostid}）"
-    except Exception as exc:  # noqa: BLE001
-        zbx_note = f"Zabbix 注销失败（不影响删除）：{str(exc)[:200]}"
+    # 2) Zabbix 侧注销监控主机（最佳努力，失败不阻断删除；级联子机一并注销）
+    zbx_notes: list[str] = []
+    for t in [a, *cascade_children]:
+        note = _zabbix_delete_host_best_effort(db, t)
+        if note:
+            zbx_notes.append(f"{t.id}: {note}")
+    zbx_note = "；".join(zbx_notes)
 
-    db.delete(a)
+    for t in [a, *cascade_children]:
+        db.delete(t)
     add_audit(
         db,
         ticket_id=None,
@@ -1288,11 +1323,18 @@ def remove_asset(
             "hostname": a.hostname,
             "uninstalled": body.uninstall,
             "uninstall_logs": uninstall_logs[-8:],
+            "cascade_children": [c.id for c in cascade_children],
             "zabbix": zbx_note,
         },
     )
     db.commit()
-    return {"deleted": asset_id, "uninstalled": body.uninstall, "uninstall_logs": uninstall_logs[-8:], "zabbix": zbx_note}
+    return {
+        "deleted": asset_id,
+        "uninstalled": body.uninstall,
+        "uninstall_logs": uninstall_logs[-8:],
+        "zabbix": zbx_note,
+        "cascade_children": [c.id for c in cascade_children],
+    }
 
 
 @router.get("/api/v1/assets/{asset_id}/provision", dependencies=[Depends(require_perm("assets:read"))])

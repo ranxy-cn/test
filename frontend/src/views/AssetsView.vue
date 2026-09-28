@@ -552,6 +552,9 @@
         <p v-if="!motherDeleteForm.deployed" style="margin: 4px 0 0">
           该母机未部署成功，服务器上没有 Zabbix 栈，无需勾选「卸载」，直接点「仅删除记录」即可。
         </p>
+        <p v-if="motherDeleteForm.children > 0" style="margin: 4px 0 0">
+          该母机名下还有 <b>{{ motherDeleteForm.children }}</b> 台子机，将随母机一并删除（级联删除，<b>不可恢复</b>）。
+        </p>
       </el-alert>
       <el-form label-width="120" style="margin-top: 12px">
         <el-form-item>
@@ -1246,16 +1249,13 @@ async function submitChildDelete() {
 // ===== 母机删除（可选卸载远端 Zabbix 栈） =====
 const motherDeleteVisible = ref(false)
 const motherDeleting = ref(false)
-const motherDeleteForm = reactive({ id: '', hostname: '', ip: '', port: 22, username: 'root', password: '', uninstall: true, deployed: true })
+const motherDeleteForm = reactive({ id: '', hostname: '', ip: '', port: 22, username: 'root', password: '', uninstall: true, deployed: true, children: 0 })
 
 function openMotherDelete(row) {
   const m = mothers.value.find((x) => x.id === row.id) || row
-  // 统计真实子机：排除"本机·母机"合成行（is_mother），它不是数据库资产，不该挡住删除
+  // 级联删除：母机删除时名下子机一并删除；子机被工单/维护窗口/备份任务引用时后端会 409 拒绝
+  // 统计真实子机：排除"本机·母机"合成行（is_mother），它不是数据库资产
   const cnt = m.children_count ?? (m.id === selectedMotherId.value ? children.value.filter((c) => !c.is_mother).length : 0)
-  if ((cnt ?? 0) > 0) {
-    ElMessage.warning(`该母机名下还有 ${cnt} 台子机，请先删除或迁移子机后再删除母机`)
-    return
-  }
   // 未部署成功（未绑定 Zabbix 实例）的母机：服务器上没有 Zabbix 栈，勾选卸载只会 SSH 白跑
   // 还常因凭据问题失败；默认直接走"仅删除记录"
   const deployed = !!(m.zabbix_url || m.deploy?.status === 'success')
@@ -1268,6 +1268,7 @@ function openMotherDelete(row) {
     password: '',
     uninstall: deployed,
     deployed,
+    children: cnt ?? 0,
   })
   motherDeleteVisible.value = true
 }
@@ -1291,9 +1292,10 @@ async function submitMotherDelete() {
       ElMessage.success('卸载任务已启动：停止容器 → 删除安装目录 → 移除台账记录')
       startDeployPolling(motherDeleteForm.id)
     } else {
-      await deleteAsset(motherDeleteForm.id)
+      const { data } = await deleteAsset(motherDeleteForm.id)
       motherDeleteVisible.value = false
-      ElMessage.success(`已删除 ${motherDeleteForm.id}`)
+      const n = (data.cascade_children || []).length
+      ElMessage.success(`已删除 ${motherDeleteForm.id}${n ? `，并级联删除其名下 ${n} 台子机` : ''}`)
       if (wasSelected) {
         selectedMotherId.value = ''
         detailView.value = false
