@@ -109,6 +109,8 @@ services:
       - ./knowledge:/app/knowledge:ro
       - ./inventory:/app/inventory:ro
       - ./keys:/app/keys:ro
+      # 宿主机 /proc 只读挂载：实时监控读取宿主机网口计数器（CPU/内存/负载本就是宿主机全局值）
+      - /proc:/host/proc:ro
 
   worker:
     build:

@@ -421,6 +421,28 @@ class MetricSample(Base):
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
+class SystemMetricSample(Base):
+    """本机系统资源实时采样（CPU/内存/磁盘/负载/网速），API 进程启动后每 5 秒落库。
+
+    与资产维度 metric_samples 区分：这里固定记录 DevOpsAgent 所在服务器自身，
+    不回填历史，启动即开始记录；网速为字节/秒。
+    """
+
+    __tablename__ = "system_metric_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(TZDateTime, index=True)
+    cpu: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem: Mapped[float | None] = mapped_column(Float, nullable=True)
+    disk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    load1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 网络速率（字节/秒）
+    net_rx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_tx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="real")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+
+
 class ResourceLock(Base):
     __tablename__ = "resource_locks"
 

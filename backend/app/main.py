@@ -11,6 +11,7 @@ from app.routers.dict import router as dict_router
 from app.routers.ops import router as ops_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.knowledge import router as knowledge_router
+from app.routers.system_metrics import router as system_metrics_router
 from app import database as dbmod
 from app.seed import seed_if_empty
 
@@ -31,7 +32,14 @@ async def lifespan(_: FastAPI):
         db.commit()
     finally:
         db.close()
-    yield
+    # 系统资源实时采样：启动即记录（不回填历史），7 天保留
+    from app.services import system_live
+
+    system_live.start_sampler()
+    try:
+        yield
+    finally:
+        system_live.stop_sampler()
 
 
 def get_jwt_secret_configured() -> bool:
@@ -61,3 +69,4 @@ app.include_router(admin_perms_router)
 app.include_router(dict_router)
 app.include_router(dashboard_router)
 app.include_router(knowledge_router)
+app.include_router(system_metrics_router)

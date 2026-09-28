@@ -104,10 +104,9 @@ export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })
 export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })
-export const fetchAssetTrends = (id, { hours = 6, compareDays = 0, baseline = false, forecast = false } = {}) =>
-  http.get(`/assets/${id}/trends`, {
-    params: { hours, compare_days: compareDays, with_baseline: baseline, with_forecast: forecast },
-  })
+// 本机系统资源实时监控（类 macOS 活动监视器）：1 秒轮询实时值 / 后台采样落库历史
+export const fetchSystemRealtime = () => http.get('/system/metrics/realtime')
+export const fetchSystemHistory = (minutes = 60) => http.get('/system/metrics/history', { params: { minutes } })
 export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, payload, { timeout: 20000 })
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
 export const runAction = (payload) => http.post('/actions/run', payload)

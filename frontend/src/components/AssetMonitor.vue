@@ -25,37 +25,37 @@
         </el-col>
       </el-row>
 
-      <!-- 折线图 -->
+      <!-- 实时系统监控（类 macOS 活动监视器）：顶部选项卡切换指标视图，1 秒/次刷新 -->
       <el-card shadow="never" class="block">
         <template #header>
           <div class="row-between">
             <span>
-              趋势（{{ metricsNote || '近 60 分钟' }}）
-              <el-tag v-if="!metricsReal" size="small" type="warning">演示数据</el-tag>
-              <el-tag v-else size="small" type="success">Zabbix 真实数据</el-tag>
+              实时监控
+              <el-tag v-if="liveNote" size="small" type="warning">{{ liveNote }}</el-tag>
+              <el-tag v-else size="small" type="success">1 秒/次实时刷新</el-tag>
             </span>
-            <div class="row-gap">
-              <el-radio-group v-model="minutes" size="small" @change="loadMetrics">
-                <el-radio-button :value="30">30 分钟</el-radio-button>
-                <el-radio-button :value="60">1 小时</el-radio-button>
-                <el-radio-button :value="180">3 小时</el-radio-button>
-                <el-radio-button :value="360">6 小时</el-radio-button>
-                <el-radio-button :value="720">12 小时</el-radio-button>
-                <el-radio-button :value="1440">24 小时</el-radio-button>
-              </el-radio-group>
-              <el-select v-model="compareDays" size="small" style="width: 128px" @change="loadMetrics">
-                <el-option :value="0" label="不对比历史" />
-                <el-option :value="1" label="对比前 1 天" />
-                <el-option :value="3" label="对比前 3 天" />
-                <el-option :value="7" label="对比前 7 天" />
-              </el-select>
-              <el-checkbox v-model="showBaseline" size="small" @change="loadMetrics">基线/异常</el-checkbox>
-              <el-checkbox v-model="showForecast" size="small" @change="loadMetrics">预测</el-checkbox>
-              <el-button size="small" :loading="metricsLoading" @click="loadMetrics">刷新</el-button>
-            </div>
+            <span class="live-src">
+              DevOpsAgent 所在服务器<template v-if="live?.net_iface"> · 网口 {{ live.net_iface }}</template> · 自打开起实时记录
+            </span>
           </div>
         </template>
-        <div ref="chartEl" class="chart" />
+
+        <!-- 顶部选项卡：每个指标常驻显示实时值，点击切换大图 -->
+        <div class="live-tabs">
+          <button
+            v-for="t in LIVE_TABS"
+            :key="t.key"
+            type="button"
+            class="live-tab"
+            :class="{ active: liveTab === t.key }"
+            @click="switchLiveTab(t.key)"
+          >
+            <span class="live-tab-name">{{ t.name }}</span>
+            <span class="live-tab-value" v-html="tabValue(t.key)"></span>
+          </button>
+        </div>
+
+        <div ref="liveChartEl" class="chart live-chart" />
       </el-card>
 
       <!-- 服务器详情：SSH 全景采集（系统 / 硬件 / 内存 / 磁盘 / 网络 / 进程） -->
@@ -382,9 +382,9 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import * as echarts from 'echarts'
-import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchAssetTrends, inspectAsset } from '../api'
+import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchSystemRealtime, inspectAsset } from '../api'
 import { cnTrigger } from '../trigger-cn'
 import { fmtTimeCol } from '../time'
 import AnomalyDetailDrawer from './AnomalyDetailDrawer.vue'
@@ -396,17 +396,22 @@ const props = defineProps({
 defineEmits(['update:modelValue'])
 
 const asset = ref(null)
-const metricsNote = ref('')
-const metricsReal = ref(false)
-const metricsLoading = ref(false)
-const minutes = ref(60)
-// 多日对比 / 历史基线与异常标记 / 趋势预测 开关
-const compareDays = ref(0)
-const showBaseline = ref(true)
-const showForecast = ref(false)
-const chartEl = ref(null)
-const metricsLatest = ref({})
-let chart = null
+// ===== 实时系统监控（类 macOS 活动监视器）=====
+const LIVE_TABS = [
+  { key: 'cpu', name: 'CPU', color: '#0a84ff', pct: true },
+  { key: 'mem', name: '内存', color: '#34c759', pct: true },
+  { key: 'disk', name: '磁盘', color: '#ff9500', pct: true },
+  { key: 'load', name: '负载', color: '#ff3b30', pct: false },
+  { key: 'net', name: '网络', color: '#5e5ce6', net: true },
+]
+const liveTab = ref('cpu')
+const live = ref({})
+const liveChartEl = ref(null)
+let liveChart = null
+let liveTimer = null
+// 滑动窗口：最多 300 点（5 分钟），从弹窗打开起累积，不回填历史
+const LIVE_MAX_POINTS = 300
+const liveBufs = { cpu: [], mem: [], disk: [], load: [], netRx: [], netTx: [] }
 
 const inspecting = ref(false)
 const inspectError = ref('')
@@ -414,7 +419,6 @@ const snapshot = ref(null)
 const autoRefresh = ref(true)
 const topTab = ref('cpu')
 let inspectTimer = null
-let metricsTimer = null
 
 // ===== 服务器详情（SSH 全景采集） =====
 const sysinfo = ref(null)
@@ -483,13 +487,13 @@ const title = computed(() => (asset.value ? `资产监控 · ${asset.value.id}�
 const fmtNum = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(2))
 
 const healthCards = computed(() => {
-  const l = metricsLatest.value || {}
+  const l = live.value || {}
   const pct = (v) => (v == null ? null : Math.max(0, Math.min(100, v)))
   const color = (v) => (v == null ? '#d2d2d7' : v >= 90 ? '#ff3b30' : v >= 75 ? '#ff9500' : '#34c759')
   const items = [
-    { key: 'cpu', label: 'CPU 使用率', unit: '%', tip: '整机 CPU 使用率（Zabbix system.cpu.util）' },
-    { key: 'mem', label: '内存使用率', unit: '%', tip: '物理内存已用百分比' },
-    { key: 'disk', label: '磁盘使用率', unit: '%', tip: '根分区已用百分比（Zabbix vfs.fs.size[/,pused]）' },
+    { key: 'cpu', label: 'CPU 使用率', unit: '%', tip: '整机 CPU 使用率（/proc/stat 实时计算）' },
+    { key: 'mem', label: '内存使用率', unit: '%', tip: '物理内存已用百分比（/proc/meminfo）' },
+    { key: 'disk', label: '磁盘使用率', unit: '%', tip: '根分区已用百分比' },
     { key: 'load1', label: '负载 load1', unit: '', tip: '1 分钟平均负载，超过 CPU 核数说明过载', raw: true },
   ]
   return items.map((it) => {
@@ -613,32 +617,39 @@ function reset() {
   anomalies.value = []
   anomalyTotal.value = 0
   anomalyPage.value = 1
+  live.value = {}
+  liveTab.value = 'cpu'
+  for (const k of Object.keys(liveBufs)) liveBufs[k] = []
   stopAuto()
 }
 
 function onOpened() {
   window.addEventListener('resize', resizeChart)
   loadAll()
+  // 等弹窗 DOM 布局完成后再初始化图表并启动 1 秒轮询
+  nextTick(() => {
+    startLive()
+  })
 }
 
 function onClosed() {
   stopAuto()
+  stopLive()
   window.removeEventListener('resize', resizeChart)
-  if (chart) {
-    chart.dispose()
-    chart = null
+  if (liveChart) {
+    liveChart.dispose()
+    liveChart = null
   }
 }
 
 function resizeChart() {
-  chart && chart.resize()
+  liveChart && liveChart.resize()
 }
 
 async function loadAll() {
   try {
     const { data } = await fetchAsset(props.assetId)
     asset.value = data
-    await loadMetrics()
   } finally {
     // 打开弹窗即开始免密巡检 + 自动刷新
     runInspect()
@@ -647,194 +658,152 @@ async function loadAll() {
   loadAnomalies()
 }
 
-async function loadMetrics() {
-  metricsLoading.value = true
+// ===== 实时监控：1 秒/次读 /proc 快照，滑动窗口渲染（自打开起累积，不回填历史） =====
+
+function pushBuf(key, t, v) {
+  if (v == null) return
+  const arr = liveBufs[key]
+  arr.push([t, v])
+  if (arr.length > LIVE_MAX_POINTS) arr.splice(0, arr.length - LIVE_MAX_POINTS)
+}
+
+async function tickLive() {
+  // 页面不可见时跳过本次轮询，避免无谓请求；恢复可见后下一秒自动续上
+  if (document.hidden) return
   try {
-    const { data } = await fetchAssetTrends(props.assetId, {
-      hours: minutes.value / 60,
-      compareDays: compareDays.value,
-      baseline: showBaseline.value,
-      forecast: showForecast.value,
-    })
-    // mock 演示序列时后端 note 会注明；有落库/实时数据即视为真实
-    metricsReal.value = !(data.note || '').includes('演示') && !(data.note || '').includes('暂无落库')
-    metricsNote.value = data.note || ''
-    // 健康卡兼容 load1 / load 两种最新值键名
-    const l = data.latest || {}
-    metricsLatest.value = { ...l, load1: l.load1 ?? l.load }
-    renderChart(data)
-  } finally {
-    metricsLoading.value = false
+    const { data } = await fetchSystemRealtime()
+    live.value = data || {}
+    if (!data?.supported) return
+    const t = (data.ts || Math.floor(Date.now() / 1000)) * 1000
+    pushBuf('cpu', t, data.cpu)
+    pushBuf('mem', t, data.mem)
+    pushBuf('disk', t, data.disk)
+    pushBuf('load', t, data.load1)
+    pushBuf('netRx', t, data.net_rx_bps)
+    pushBuf('netTx', t, data.net_tx_bps)
+    renderLiveChart()
+  } catch {
+    /* 单次拉取失败静默，下一秒重试 */
   }
 }
 
-// ===== 曲线图渲染：主序列 + 多日对比（虚线）+ 历史基线带 + 异常点 + 预测线 =====
-
-function buildMarks(key, data) {
-  const marks = {}
-  const bands = data.baseline_bands?.[key]
-  if (showBaseline.value && bands?.length) {
-    // 正常范围带（P05~P95），叠加在对应指标曲线上
-    marks.markArea = {
-      silent: true,
-      itemStyle: { color: 'rgba(10, 132, 255, 0.06)' },
-      data: bands.map((s) => [
-        { xAxis: s.from * 1000, yAxis: s.low },
-        { xAxis: s.to * 1000, yAxis: s.high },
-      ]),
-    }
-  }
-  const ano = (data.anomalies || []).filter((a) => a.metric === key)
-  if (showBaseline.value && ano.length) {
-    // 显著偏离历史基线的异常点（连续 ≥2 点才标记，滤单点噪声）
-    marks.markPoint = {
-      symbol: 'circle',
-      symbolSize: 9,
-      itemStyle: { color: '#ff3b30', borderColor: '#fff', borderWidth: 1 },
-      label: { show: false },
-      data: ano.map((a) => ({ coord: [a.t * 1000, a.value] })),
-    }
-  }
-  return marks
+function startLive() {
+  stopLive()
+  tickLive()
+  liveTimer = setInterval(tickLive, 1000)
 }
 
-function renderChart(data) {
-  if (!chartEl.value) return
-  chart = chart || echarts.init(chartEl.value)
-  const series = data.series || {}
-  const fmt = (arr, key) =>
-    (arr || []).map((p) => [Number(p.t) * 1000, p[key] != null ? p[key] : p.v]).filter(([, v]) => v != null)
+function stopLive() {
+  if (liveTimer) {
+    clearInterval(liveTimer)
+    liveTimer = null
+  }
+}
 
-  const defs = [
-    { name: 'CPU %', key: 'cpu', color: '#0a84ff', pct: true },
-    { name: '内存 %', key: 'mem', color: '#34c759', pct: true },
-    { name: '磁盘 %', key: 'disk', color: '#ff9500', pct: true },
-    { name: '负载', key: 'load', color: '#ff3b30', pct: false },
-  ]
-  // 只展示有数据的系列，全部画进同一坐标系（负载走右侧独立轴）
-  const hasData = defs.filter((d) => fmt(series[d.key], d.key).length > 0)
+function switchLiveTab(key) {
+  liveTab.value = key
+  renderLiveChart()
+}
+
+// 网速格式化：B/s → KB/s → MB/s → GB/s
+function speedText(bps) {
+  if (bps == null) return '—'
+  if (bps >= 1024 ** 3) return `${(bps / 1024 ** 3).toFixed(2)} GB/s`
+  if (bps >= 1024 ** 2) return `${(bps / 1024 ** 2).toFixed(2)} MB/s`
+  if (bps >= 1024) return `${(bps / 1024).toFixed(1)} KB/s`
+  return `${Math.round(bps)} B/s`
+}
+
+// 选项卡常驻实时值：不用单独 class（v-html 内容无 scoped 属性），单位用内联样式
+function tabValue(key) {
+  const l = live.value || {}
+  const t = LIVE_TABS.find((x) => x.key === key)
+  if (t?.net) {
+    if (l.net_rx_bps == null && l.net_tx_bps == null) return '—'
+    return (
+      `<span style="color:#34c759">↓ ${speedText(l.net_rx_bps)}</span>` +
+      ` · <span style="color:#ff9500">↑ ${speedText(l.net_tx_bps)}</span>`
+    )
+  }
+  const v = key === 'load' ? l.load1 : l[key]
+  if (v == null) return '—'
+  if (key === 'load') return `<span style="color:${v >= 2 ? '#ff3b30' : '#1d1d1f'}">${v.toFixed(2)}</span>`
+  const c = v >= 90 ? '#ff3b30' : v >= 75 ? '#ff9500' : '#1d1d1f'
+  return `<span style="color:${c}">${v.toFixed(1)}</span><span style="font-size:11px;font-weight:400;color:#86868b;margin-left:1px">%</span>`
+}
+
+const liveNote = computed(() => live.value?.note || '')
+
+// ===== 实时曲线渲染：当前选项卡对应序列，1 秒增量追加（animation 关闭保证流畅） =====
+
+function renderLiveChart() {
+  if (!liveChartEl.value) return
+  liveChart = liveChart || echarts.init(liveChartEl.value)
+  const t = LIVE_TABS.find((x) => x.key === liveTab.value) || LIVE_TABS[0]
   const grad = (c) => new echarts.graphic.LinearGradient(0, 0, 0, 1, [
     { offset: 0, color: `${c}33` },
     { offset: 1, color: `${c}05` },
   ])
-  const echartsSeries = []
-  for (const d of hasData) {
-    // 主序列
-    echartsSeries.push({
-      name: d.name,
-      type: 'line',
-      showSymbol: false,
-      smooth: true,
-      data: fmt(series[d.key], d.key),
-      itemStyle: { color: d.color },
-      lineStyle: { color: d.color, width: 2 },
-      areaStyle: d.pct ? { color: grad(d.color) } : undefined,
-      yAxisIndex: d.pct ? 0 : 1,
-      ...buildMarks(d.key, data),
-    })
-    // 多日对比：历史同窗口序列平移对齐到当前时间轴，虚线淡化叠加
-    for (const c of data.compare || []) {
-      const arr = c.series?.[d.key] || []
-      if (!arr.length) continue
-      echartsSeries.push({
-        name: `${c.date} ${d.name}`,
-        type: 'line',
-        showSymbol: false,
-        smooth: true,
-        data: fmt(arr, d.key),
-        itemStyle: { color: d.color },
-        lineStyle: { color: d.color, width: 1, opacity: 0.4, type: 'dashed' },
-        yAxisIndex: d.pct ? 0 : 1,
-        silent: true,
-      })
-    }
-    // 趋势预测：线性回归外推，虚线延长展示
-    const fc = data.forecast?.[d.key]
-    if (showForecast.value && fc?.points?.length) {
-      echartsSeries.push({
-        name: `${d.name}·预测`,
-        type: 'line',
-        showSymbol: false,
-        smooth: true,
-        data: fmt(fc.points, 'v'),
-        itemStyle: { color: d.color },
-        lineStyle: { color: d.color, width: 2, type: [6, 6], opacity: 0.85 },
-        yAxisIndex: d.pct ? 0 : 1,
-      })
-    }
-  }
-  // 预测模式下标注"现在"分界线
-  if (showForecast.value && echartsSeries.length) {
-    echartsSeries[0] = {
-      ...echartsSeries[0],
-      markLine: {
-        silent: true,
-        symbol: 'none',
-        label: { formatter: '现在', position: 'insideEndTop', color: '#86868b' },
-        lineStyle: { color: '#86868b', type: 'dashed' },
-        data: [{ xAxis: Date.now() }],
-      },
-    }
-  }
-  const hasPct = hasData.some((d) => d.pct)
-  chart.setOption(
+  const mk = (name, buf, color, dashed) => ({
+    name,
+    type: 'line',
+    showSymbol: false,
+    smooth: true,
+    data: buf,
+    itemStyle: { color },
+    lineStyle: { color, width: 2, ...(dashed ? { type: 'dashed', width: 1.5 } : {}) },
+    areaStyle: dashed ? undefined : { color: grad(color) },
+  })
+  const series = t.net
+    ? [mk('下载', liveBufs.netRx, '#34c759'), mk('上传', liveBufs.netTx, '#ff9500', true)]
+    : [mk(t.name, liveBufs[t.key], t.color)]
+  const fmtVal = (v) => (t.net ? speedText(v) : t.pct ? `${v.toFixed(2)}%` : v.toFixed(2))
+  liveChart.setOption(
     {
       animation: false,
       tooltip: {
         trigger: 'axis',
-        // 悬浮交互：精确展示该时刻各指标数值（百分比指标带 %，负载为绝对值）
-        axisPointer: { type: 'cross', label: { backgroundColor: '#6e6e73' } },
         confine: true,
         formatter: (params) => {
           const list = Array.isArray(params) ? params : [params]
           if (!list.length) return ''
-          const time = new Date(list[0].value[0]).toLocaleString('zh-CN', {
-            hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-          })
+          const time = new Date(list[0].value[0]).toLocaleTimeString('zh-CN', { hour12: false })
           const rows = list
             .filter((p) => p.value?.[1] != null)
-            .map((p) => {
-              const unit = p.seriesName.includes('%') ? '%' : ''
-              return `<div style="display:flex;justify-content:space-between;gap:16px">` +
-                `<span>${p.marker}${p.seriesName}</span>` +
-                `<b>${Number(p.value[1]).toFixed(2)}${unit}</b></div>`
-            })
+            .map((p) => `<div style="display:flex;justify-content:space-between;gap:16px"><span>${p.marker}${p.seriesName}</span><b>${fmtVal(p.value[1])}</b></div>`)
             .join('')
           return `<div style="font-weight:600;margin-bottom:4px">${time}</div>${rows}`
         },
       },
-      legend: { top: 0, icon: 'roundRect', itemWidth: 14, itemHeight: 8, type: 'scroll' },
-      grid: { left: 52, right: hasData.some((d) => !d.pct) ? 52 : 28, top: 36, bottom: 30 },
+      grid: { left: 60, right: 20, top: 26, bottom: 28 },
       xAxis: {
         type: 'time',
         axisLine: { lineStyle: { color: '#d2d2d7' } },
         axisLabel: { hideOverlap: true },
       },
-      yAxis: [
-        {
-          type: 'value',
-          name: hasPct ? '%' : '',
-          min: 0,
-          max: hasPct ? 100 : null,
-          splitLine: { lineStyle: { color: '#e8e8ed' } },
-        },
-        {
-          type: 'value',
-          name: 'load',
-          splitLine: { show: false },
-          axisLabel: { color: '#6e6e73' },
-        },
-      ],
-      series: echartsSeries,
+      yAxis: t.pct
+        ? { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%' }, splitLine: { lineStyle: { color: '#e8e8ed' } } }
+        : {
+            type: 'value',
+            min: 0,
+            scale: true,
+            axisLabel: {
+              // 网络视图纵轴压缩为 KB/M 短标签，其余直接数值
+              formatter: (v) => (t.net && v >= 1024 ? speedText(v).replace(' ', '') : v),
+            },
+            splitLine: { lineStyle: { color: '#e8e8ed' } },
+          },
+      series,
     },
     true,
   )
-  if (!echartsSeries.length) {
-    chart.setOption({ graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无监控数据', fill: '#86868b', fontSize: 14 } }] })
-  } else {
-    chart.setOption({ graphic: [] })
-  }
-  chart.resize()
+  const hasData = t.net ? liveBufs.netRx.length + liveBufs.netTx.length : liveBufs[t.key].length
+  liveChart.setOption({
+    graphic: hasData
+      ? []
+      : [{ type: 'text', left: 'center', top: 'middle', style: { text: '等待数据…', fill: '#86868b', fontSize: 14 } }],
+  })
+  liveChart.resize()
 }
 
 async function runInspect() {
@@ -856,10 +825,6 @@ function stopAuto() {
     clearInterval(inspectTimer)
     inspectTimer = null
   }
-  if (metricsTimer) {
-    clearInterval(metricsTimer)
-    metricsTimer = null
-  }
 }
 
 watch(autoRefresh, (on) => {
@@ -868,11 +833,6 @@ watch(autoRefresh, (on) => {
     inspectTimer = setInterval(() => {
       if (!inspecting.value) runInspect()
     }, 3000)
-    // 趋势图跟随自动刷新：短窗口 10s，长窗口（含 24h/多日对比）降到 60s，避免无谓请求
-    const trendInterval = minutes.value >= 720 || compareDays.value > 0 ? 60000 : 10000
-    metricsTimer = setInterval(() => {
-      if (!metricsLoading.value) loadMetrics()
-    }, trendInterval)
   }
 })
 </script>
@@ -986,5 +946,52 @@ watch(autoRefresh, (on) => {
   margin-top: 8px;
   font-family: monospace;
   font-size: 12px;
+}
+/* ===== 实时监控：顶部选项卡（类 macOS 活动监视器） ===== */
+.live-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.live-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 118px;
+  padding: 8px 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-fill-color-lighter);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.live-tab:hover {
+  border-color: var(--el-border-color);
+  background: var(--el-fill-color);
+}
+.live-tab.active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+}
+.live-tab-name {
+  font-size: 12px;
+  color: var(--muted);
+}
+.live-tab-value {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.live-src {
+  font-size: 12px;
+  color: var(--muted);
+}
+.live-chart {
+  height: 320px;
 }
 </style>
