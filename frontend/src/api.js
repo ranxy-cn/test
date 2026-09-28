@@ -104,6 +104,10 @@ export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })
 export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })
+export const fetchAssetTrends = (id, { hours = 6, compareDays = 0, baseline = false, forecast = false } = {}) =>
+  http.get(`/assets/${id}/trends`, {
+    params: { hours, compare_days: compareDays, with_baseline: baseline, with_forecast: forecast },
+  })
 export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, payload, { timeout: 20000 })
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
 export const runAction = (payload) => http.post('/actions/run', payload)

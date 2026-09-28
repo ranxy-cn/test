@@ -398,6 +398,29 @@ class AnomalyLog(Base):
     received_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
+class MetricSample(Base):
+    """监控指标采样：CPU/内存/磁盘/负载 定时落库（celery beat 每 5 分钟）。
+
+    支撑 24 小时趋势、多日对比、历史基线与异常检测、趋势预测；
+    (asset_id, ts) 唯一，重复采集幂等覆盖。
+    """
+
+    __tablename__ = "metric_samples"
+    __table_args__ = (UniqueConstraint("asset_id", "ts", name="uq_metric_asset_ts"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_id: Mapped[str] = mapped_column(String(64))
+    ts: Mapped[datetime] = mapped_column(TZDateTime)
+    # 四项核心指标：CPU 使用率% / 内存使用率% / 磁盘使用率% / 1 分钟负载
+    cpu: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem: Mapped[float | None] = mapped_column(Float, nullable=True)
+    disk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    load1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # real Zabbix 真实数据 / mock 演示数据
+    source: Mapped[str] = mapped_column(String(16), default="real")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+
+
 class ResourceLock(Base):
     __tablename__ = "resource_locks"
 

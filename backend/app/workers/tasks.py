@@ -30,6 +30,19 @@ def probe_assets() -> dict:
         db.close()
 
 
+@celery_app.task(name="collect_metric_samples", max_retries=0)
+def collect_metric_samples() -> dict:
+    """定时采集全部资产 CPU/内存/磁盘/负载并落库（5 分钟槽幂等），支撑趋势/对比/基线/预测。"""
+    from app.database import SessionLocal
+    from app.services.metrics_store import run_collect_cycle
+
+    db = SessionLocal()
+    try:
+        return run_collect_cycle(db)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="run_due_backups", max_retries=0)
 def run_due_backups() -> int:
     from app.database import SessionLocal

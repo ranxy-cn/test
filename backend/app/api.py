@@ -215,33 +215,20 @@ def import_assets(file: UploadFile, db: Session = Depends(get_db)) -> AssetImpor
     return result
 
 
-def _zabbix_cfg(mother: Asset | None) -> dict:
-    """母机上登记的 Zabbix 实例连接信息（extra["zabbix"]）。空 dict 表示回落全局配置。"""
-    z = ((mother.extra or {}).get("zabbix") or {}) if mother else {}
-    return z if z.get("url") else {}
-
-
-def zabbix_client_for(db: Session, asset: Asset):
-    """按资产所属母机实例化 Zabbix 客户端：优先母机登记的实例，否则回落全局配置。"""
-    from app.integrations.zabbix.http import build_http_zabbix
-
-    mother_id = asset.mother_id or (asset.id if asset.kind == "mother" else "") or get_settings().mother_asset_id
-    mother = db.get(Asset, mother_id)
-    cfg = _zabbix_cfg(mother)
-    if cfg:
-        s = get_settings()
-        from app.integrations.zabbix.http import HttpZabbixClient
-
-        return HttpZabbixClient(
-            cfg["url"],
-            cfg.get("token", ""),
-            username=cfg.get("user", ""),
-            password=cfg.get("password", ""),
-            timeout=s.zabbix_timeout_seconds,
-            retries=s.zabbix_retries,
-            verify_ssl=cfg.get("verify_ssl", True),
-        )
-    return build_http_zabbix()
+# Zabbix 客户端解析与 mock 演示序列实现在 app/services/metrics_store.py（api 与 celery 采集任务共用）
+from app.services.metrics_store import (  # noqa: E402
+    _zabbix_cfg,
+    baseline_bands,
+    build_baseline,
+    detect_anomalies,
+    forecast_series,
+    host_hint_of,
+    mock_asset_metrics as _mock_asset_metrics,
+    query_compare,
+    query_series,
+    resolve_real_client,
+    zabbix_client_for,
+)
 
 
 def _children_metrics_summary(client: Any, rows: list[dict]) -> dict[str, dict[str, float | None]]:
@@ -1359,30 +1346,6 @@ def get_asset_provision(asset_id: str, db: Session = Depends(get_db)):
     }
 
 
-def _mock_asset_metrics(asset_id: str, minutes: int) -> dict:
-    """Zabbix 未接入（mock 模式）时的演示序列：最近 N 分钟、每分钟一个点。"""
-    import random
-
-    now = int(utcnow().timestamp())
-    n = max(10, min(int(minutes), 240))
-
-    def walk(base: float, spread: float, low: float, high: float) -> list:
-        vals, cur = [], base
-        for i in range(n):
-            cur = min(high, max(low, cur + random.uniform(-spread, spread) + (base - cur) * 0.1))
-            vals.append({"t": str(now - (n - 1 - i) * 60), "v": round(cur, 1)})
-        return vals
-
-    series = {
-        "cpu": walk(45.0, 6.0, 3.0, 97.0),
-        "mem": walk(68.0, 1.5, 20.0, 95.0),
-        "disk": walk(38.0, 0.1, 5.0, 98.0),
-        "load": walk(1.2, 0.3, 0.0, 16.0),
-    }
-    latest = {k: (v[-1]["v"] if v else None) for k, v in series.items()}
-    return {"mapped": True, "real": False, "asset_id": asset_id, "minutes": minutes, "latest": latest, "series": series}
-
-
 class AssetMetricsOut(BaseModel):
     mapped: bool
     real: bool
@@ -1428,6 +1391,116 @@ def asset_metrics(asset_id: str, db: Session = Depends(get_db), minutes: int = Q
     return AssetMetricsOut(mapped=True, real=False, asset_id=asset_id, minutes=minutes,
                            latest=mock["latest"], series=mock["series"],
                            note="Zabbix 未接入（mock 模式），展示演示数据")
+
+
+class AssetTrendsOut(BaseModel):
+    asset_id: str
+    hours: float
+    # stored 本地落库样本为主 / realtime 本地无样本回退实时（或演示）序列
+    source: str
+    latest: dict
+    series: dict
+    compare: list = []
+    baseline_bands: dict = {}
+    anomalies: list = []
+    forecast: dict = {}
+    note: str = ""
+
+
+def _norm_series(points: list | None, key: str) -> list[dict]:
+    """归一化序列点为 {t: unix秒, v: float}（兼容 real 的 {t, cpu} 与 mock 的 {t, v} 形式）。"""
+    out = []
+    for p in points or []:
+        try:
+            t = int(p.get("t"))
+        except (TypeError, ValueError):
+            continue
+        v = p.get(key, p.get("v"))
+        if v is None:
+            continue
+        out.append({"t": t, "v": round(float(v), 2)})
+    return out
+
+
+def _merge_series(stored: dict, realtime: dict) -> dict:
+    """落库序列与实时序列合并：实时点（1 分钟精度）优先覆盖同一时刻的落库样本。"""
+    out: dict[str, list[dict]] = {}
+    for key in ("cpu", "mem", "disk", "load"):
+        pts: dict[int, dict] = {p["t"]: p for p in _norm_series(stored.get(key), key)}
+        for p in _norm_series(realtime.get(key), key):
+            pts[p["t"]] = p
+        out[key] = sorted(pts.values(), key=lambda p: p["t"])
+    return out
+
+
+@router.get("/api/v1/assets/{asset_id}/trends", dependencies=[Depends(require_perm("assets:read"))])
+def asset_trends(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    hours: float = Query(default=6, ge=0.5, le=24),
+    compare_days: int = Query(default=0, ge=0, le=7),
+    with_baseline: bool = Query(default=True),
+    with_forecast: bool = Query(default=False),
+) -> AssetTrendsOut:
+    """资产趋势分析：本地落库指标（5 分钟粒度）+ 实时序列补尾。
+
+    - hours：时间范围，最大 24 小时
+    - compare_days：返回前 N 天同长度窗口序列（平移对齐到当前时间轴，多日同轴叠加对比）
+    - with_baseline：返回历史基线带（P05~P95，按日内时段）与显著偏离的异常点
+    - with_forecast：返回各指标线性回归外推的未来趋势点
+    """
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(404, "资产不存在")
+
+    stored = query_series(db, asset_id, hours)
+    realtime_note = ""
+    realtime: dict = {}
+    client = resolve_real_client(db, a)
+    if client is not None:
+        try:
+            data = client.asset_metrics(asset_id, host_hint_of(a), min(int(hours * 60), 1440))
+            if data.get("mapped"):
+                realtime = data.get("series") or {}
+        except Exception as exc:  # noqa: BLE001
+            realtime_note = f"Zabbix 实时拉取失败：{str(exc)[:120]}"
+    else:
+        realtime = _mock_asset_metrics(asset_id, min(int(hours * 60), 240))["series"]
+
+    series = _merge_series(stored["series"], realtime)
+    latest = {k: (s[-1]["v"] if s else None) for k, s in series.items()}
+    compare = query_compare(db, asset_id, compare_days, hours) if compare_days > 0 else []
+
+    bands: dict = {}
+    anomalies: list = []
+    if with_baseline:
+        baseline = build_baseline(db, asset_id)
+        now_unix = int(utcnow().timestamp())
+        bands = baseline_bands(baseline, now_unix - int(hours * 3600), now_unix)
+        anomalies = detect_anomalies(series, baseline)
+
+    forecast: dict = {}
+    if with_forecast:
+        forecast = {k: forecast_series(v) for k, v in series.items() if len(v) >= 5}
+
+    source = "realtime" if stored["count"] == 0 and any(series.values()) else "stored"
+    notes = []
+    if not stored["count"]:
+        notes.append("本地暂无落库样本（采集任务每 5 分钟落库），展示实时/演示序列")
+    if realtime_note:
+        notes.append(realtime_note)
+    return AssetTrendsOut(
+        asset_id=asset_id,
+        hours=hours,
+        source=source,
+        latest=latest,
+        series=series,
+        compare=compare,
+        baseline_bands=bands,
+        anomalies=anomalies,
+        forecast=forecast,
+        note="；".join(notes),
+    )
 
 
 class AssetInspectIn(BaseModel):

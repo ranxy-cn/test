@@ -40,7 +40,17 @@
                 <el-radio-button :value="60">1 小时</el-radio-button>
                 <el-radio-button :value="180">3 小时</el-radio-button>
                 <el-radio-button :value="360">6 小时</el-radio-button>
+                <el-radio-button :value="720">12 小时</el-radio-button>
+                <el-radio-button :value="1440">24 小时</el-radio-button>
               </el-radio-group>
+              <el-select v-model="compareDays" size="small" style="width: 128px" @change="loadMetrics">
+                <el-option :value="0" label="不对比历史" />
+                <el-option :value="1" label="对比前 1 天" />
+                <el-option :value="3" label="对比前 3 天" />
+                <el-option :value="7" label="对比前 7 天" />
+              </el-select>
+              <el-checkbox v-model="showBaseline" size="small" @change="loadMetrics">基线/异常</el-checkbox>
+              <el-checkbox v-model="showForecast" size="small" @change="loadMetrics">预测</el-checkbox>
               <el-button size="small" :loading="metricsLoading" @click="loadMetrics">刷新</el-button>
             </div>
           </div>
@@ -374,7 +384,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import * as echarts from 'echarts'
-import { fetchAnomalies, fetchAsset, fetchAssetMetrics, fetchAssetSysinfo, inspectAsset } from '../api'
+import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchAssetTrends, inspectAsset } from '../api'
 import { cnTrigger } from '../trigger-cn'
 import { fmtTimeCol } from '../time'
 import AnomalyDetailDrawer from './AnomalyDetailDrawer.vue'
@@ -390,6 +400,10 @@ const metricsNote = ref('')
 const metricsReal = ref(false)
 const metricsLoading = ref(false)
 const minutes = ref(60)
+// 多日对比 / 历史基线与异常标记 / 趋势预测 开关
+const compareDays = ref(0)
+const showBaseline = ref(true)
+const showForecast = ref(false)
 const chartEl = ref(null)
 const metricsLatest = ref({})
 let chart = null
@@ -636,57 +650,166 @@ async function loadAll() {
 async function loadMetrics() {
   metricsLoading.value = true
   try {
-    const { data } = await fetchAssetMetrics(props.assetId, minutes.value)
-    metricsReal.value = !!data.real
+    const { data } = await fetchAssetTrends(props.assetId, {
+      hours: minutes.value / 60,
+      compareDays: compareDays.value,
+      baseline: showBaseline.value,
+      forecast: showForecast.value,
+    })
+    // mock 演示序列时后端 note 会注明；有落库/实时数据即视为真实
+    metricsReal.value = !(data.note || '').includes('演示') && !(data.note || '').includes('暂无落库')
     metricsNote.value = data.note || ''
-    metricsLatest.value = data.latest || {}
-    renderChart(data.series || {})
+    // 健康卡兼容 load1 / load 两种最新值键名
+    const l = data.latest || {}
+    metricsLatest.value = { ...l, load1: l.load1 ?? l.load }
+    renderChart(data)
   } finally {
     metricsLoading.value = false
   }
 }
 
-function renderChart(series) {
+// ===== 曲线图渲染：主序列 + 多日对比（虚线）+ 历史基线带 + 异常点 + 预测线 =====
+
+function buildMarks(key, data) {
+  const marks = {}
+  const bands = data.baseline_bands?.[key]
+  if (showBaseline.value && bands?.length) {
+    // 正常范围带（P05~P95），叠加在对应指标曲线上
+    marks.markArea = {
+      silent: true,
+      itemStyle: { color: 'rgba(10, 132, 255, 0.06)' },
+      data: bands.map((s) => [
+        { xAxis: s.from * 1000, yAxis: s.low },
+        { xAxis: s.to * 1000, yAxis: s.high },
+      ]),
+    }
+  }
+  const ano = (data.anomalies || []).filter((a) => a.metric === key)
+  if (showBaseline.value && ano.length) {
+    // 显著偏离历史基线的异常点（连续 ≥2 点才标记，滤单点噪声）
+    marks.markPoint = {
+      symbol: 'circle',
+      symbolSize: 9,
+      itemStyle: { color: '#ff3b30', borderColor: '#fff', borderWidth: 1 },
+      label: { show: false },
+      data: ano.map((a) => ({ coord: [a.t * 1000, a.value] })),
+    }
+  }
+  return marks
+}
+
+function renderChart(data) {
   if (!chartEl.value) return
   chart = chart || echarts.init(chartEl.value)
+  const series = data.series || {}
   const fmt = (arr, key) =>
     (arr || []).map((p) => [Number(p.t) * 1000, p[key] != null ? p[key] : p.v]).filter(([, v]) => v != null)
 
   const defs = [
-    { name: 'CPU %', arr: series.cpu, key: 'cpu', color: '#0a84ff', pct: true },
-    { name: '内存 %', arr: series.mem, key: 'mem', color: '#34c759', pct: true },
-    { name: '磁盘 %', arr: series.disk, key: 'disk', color: '#ff9500', pct: true },
-    { name: '负载', arr: series.load, key: 'load', color: '#ff3b30', pct: false },
+    { name: 'CPU %', key: 'cpu', color: '#0a84ff', pct: true },
+    { name: '内存 %', key: 'mem', color: '#34c759', pct: true },
+    { name: '磁盘 %', key: 'disk', color: '#ff9500', pct: true },
+    { name: '负载', key: 'load', color: '#ff3b30', pct: false },
   ]
   // 只展示有数据的系列，全部画进同一坐标系（负载走右侧独立轴）
-  const hasData = defs.filter((d) => fmt(d.arr, d.key).length > 0)
+  const hasData = defs.filter((d) => fmt(series[d.key], d.key).length > 0)
   const grad = (c) => new echarts.graphic.LinearGradient(0, 0, 0, 1, [
     { offset: 0, color: `${c}33` },
     { offset: 1, color: `${c}05` },
   ])
-  const mkSeries = (d) => ({
-    name: d.name,
-    type: 'line',
-    showSymbol: false,
-    smooth: true,
-    lineWidth: 2,
-    data: fmt(d.arr, d.key),
-    itemStyle: { color: d.color },
-    lineStyle: { color: d.color, width: 2 },
-    areaStyle: d.pct ? { color: grad(d.color) } : undefined,
-    yAxisIndex: d.pct ? 0 : 1,
-  })
+  const echartsSeries = []
+  for (const d of hasData) {
+    // 主序列
+    echartsSeries.push({
+      name: d.name,
+      type: 'line',
+      showSymbol: false,
+      smooth: true,
+      data: fmt(series[d.key], d.key),
+      itemStyle: { color: d.color },
+      lineStyle: { color: d.color, width: 2 },
+      areaStyle: d.pct ? { color: grad(d.color) } : undefined,
+      yAxisIndex: d.pct ? 0 : 1,
+      ...buildMarks(d.key, data),
+    })
+    // 多日对比：历史同窗口序列平移对齐到当前时间轴，虚线淡化叠加
+    for (const c of data.compare || []) {
+      const arr = c.series?.[d.key] || []
+      if (!arr.length) continue
+      echartsSeries.push({
+        name: `${c.date} ${d.name}`,
+        type: 'line',
+        showSymbol: false,
+        smooth: true,
+        data: fmt(arr, d.key),
+        itemStyle: { color: d.color },
+        lineStyle: { color: d.color, width: 1, opacity: 0.4, type: 'dashed' },
+        yAxisIndex: d.pct ? 0 : 1,
+        silent: true,
+      })
+    }
+    // 趋势预测：线性回归外推，虚线延长展示
+    const fc = data.forecast?.[d.key]
+    if (showForecast.value && fc?.points?.length) {
+      echartsSeries.push({
+        name: `${d.name}·预测`,
+        type: 'line',
+        showSymbol: false,
+        smooth: true,
+        data: fmt(fc.points, 'v'),
+        itemStyle: { color: d.color },
+        lineStyle: { color: d.color, width: 2, type: [6, 6], opacity: 0.85 },
+        yAxisIndex: d.pct ? 0 : 1,
+      })
+    }
+  }
+  // 预测模式下标注"现在"分界线
+  if (showForecast.value && echartsSeries.length) {
+    echartsSeries[0] = {
+      ...echartsSeries[0],
+      markLine: {
+        silent: true,
+        symbol: 'none',
+        label: { formatter: '现在', position: 'insideEndTop', color: '#86868b' },
+        lineStyle: { color: '#86868b', type: 'dashed' },
+        data: [{ xAxis: Date.now() }],
+      },
+    }
+  }
   const hasPct = hasData.some((d) => d.pct)
   chart.setOption(
     {
       animation: false,
       tooltip: {
         trigger: 'axis',
-        valueFormatter: (v) => (v == null ? '—' : Number(v).toFixed(2)),
+        // 悬浮交互：精确展示该时刻各指标数值（百分比指标带 %，负载为绝对值）
+        axisPointer: { type: 'cross', label: { backgroundColor: '#6e6e73' } },
+        confine: true,
+        formatter: (params) => {
+          const list = Array.isArray(params) ? params : [params]
+          if (!list.length) return ''
+          const time = new Date(list[0].value[0]).toLocaleString('zh-CN', {
+            hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+          })
+          const rows = list
+            .filter((p) => p.value?.[1] != null)
+            .map((p) => {
+              const unit = p.seriesName.includes('%') ? '%' : ''
+              return `<div style="display:flex;justify-content:space-between;gap:16px">` +
+                `<span>${p.marker}${p.seriesName}</span>` +
+                `<b>${Number(p.value[1]).toFixed(2)}${unit}</b></div>`
+            })
+            .join('')
+          return `<div style="font-weight:600;margin-bottom:4px">${time}</div>${rows}`
+        },
       },
-      legend: { top: 0, icon: 'roundRect', itemWidth: 14, itemHeight: 8 },
+      legend: { top: 0, icon: 'roundRect', itemWidth: 14, itemHeight: 8, type: 'scroll' },
       grid: { left: 52, right: hasData.some((d) => !d.pct) ? 52 : 28, top: 36, bottom: 30 },
-      xAxis: { type: 'time', axisLine: { lineStyle: { color: '#d2d2d7' } } },
+      xAxis: {
+        type: 'time',
+        axisLine: { lineStyle: { color: '#d2d2d7' } },
+        axisLabel: { hideOverlap: true },
+      },
       yAxis: [
         {
           type: 'value',
@@ -702,11 +825,11 @@ function renderChart(series) {
           axisLabel: { color: '#6e6e73' },
         },
       ],
-      series: hasData.map(mkSeries),
+      series: echartsSeries,
     },
     true,
   )
-  if (!hasData.length) {
+  if (!echartsSeries.length) {
     chart.setOption({ graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '暂无监控数据', fill: '#86868b', fontSize: 14 } }] })
   } else {
     chart.setOption({ graphic: [] })
@@ -745,10 +868,11 @@ watch(autoRefresh, (on) => {
     inspectTimer = setInterval(() => {
       if (!inspecting.value) runInspect()
     }, 3000)
-    // 趋势图与指标卡跟随自动刷新（Zabbix 历史查询，10s 一次）
+    // 趋势图跟随自动刷新：短窗口 10s，长窗口（含 24h/多日对比）降到 60s，避免无谓请求
+    const trendInterval = minutes.value >= 720 || compareDays.value > 0 ? 60000 : 10000
     metricsTimer = setInterval(() => {
       if (!metricsLoading.value) loadMetrics()
-    }, 10000)
+    }, trendInterval)
   }
 })
 </script>

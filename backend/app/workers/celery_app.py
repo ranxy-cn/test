@@ -30,5 +30,10 @@ celery_app.conf.update(
             "task": "probe_assets",
             "schedule": 300.0,
         },
+        # 监控指标采样：每 5 分钟一帧，落库支撑 24h 趋势/多日对比/基线异常/预测
+        "collect-metric-samples": {
+            "task": "collect_metric_samples",
+            "schedule": 300.0,
+        },
     },
 )
