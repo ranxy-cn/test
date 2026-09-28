@@ -216,3 +216,16 @@ def test_trends_api_param_bounds(auth_token, client, db):
     assert client.get("/api/v1/assets/a-7/trends", params={"compare_days": 7}, headers=_h(auth_token)).status_code == 200
     assert client.get("/api/v1/assets/a-7/trends", params={"compare_days": 8}, headers=_h(auth_token)).status_code == 422
     assert client.get("/api/v1/assets/not-exist/trends", headers=_h(auth_token)).status_code == 404
+
+
+def test_mock_series_covers_requested_window():
+    """mock 演示序列：大窗口自适应步长铺满整个时间窗（修复 24h 只画最近 4h 的问题）。"""
+    from app.services.metrics_store import mock_asset_metrics
+
+    s = mock_asset_metrics("a-1", 1440)["series"]["cpu"]
+    ts = [int(p["t"]) for p in s]
+    assert len(s) <= 240
+    assert ts[-1] - ts[0] >= 1400 * 60  # 24h 窗口覆盖 ≥ 23h20m
+    # 小窗口行为不变：10 分钟仍为每分钟一个点
+    s2 = mock_asset_metrics("a-1", 10)["series"]["cpu"]
+    assert len(s2) == 10 and int(s2[-1]["t"]) - int(s2[0]["t"]) == 9 * 60

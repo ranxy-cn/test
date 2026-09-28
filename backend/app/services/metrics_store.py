@@ -93,15 +93,17 @@ def host_hint_of(asset: Asset) -> dict:
 
 
 def mock_asset_metrics(asset_id: str, minutes: int) -> dict:
-    """Zabbix 未接入（mock 模式）时的演示序列：最近 N 分钟、每分钟一个点。"""
+    """Zabbix 未接入（mock 模式）时的演示序列：最近 N 分钟，最多 240 点自适应步长铺满窗口。"""
     now = int(utcnow().timestamp())
-    n = max(10, min(int(minutes), 240))
+    minutes = max(10, min(int(minutes), 1440))
+    n = min(minutes, 240)
+    step = max(60, minutes * 60 // n)  # 大窗口自动放大采样间隔，序列始终覆盖完整时间窗
 
     def walk(base: float, spread: float, low: float, high: float) -> list:
         vals, cur = [], base
         for i in range(n):
             cur = min(high, max(low, cur + random.uniform(-spread, spread) + (base - cur) * 0.1))
-            vals.append({"t": str(now - (n - 1 - i) * 60), "v": round(cur, 1)})
+            vals.append({"t": str(now - (n - 1 - i) * step), "v": round(cur, 1)})
         return vals
 
     series = {

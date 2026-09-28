@@ -1465,7 +1465,7 @@ def asset_trends(
         except Exception as exc:  # noqa: BLE001
             realtime_note = f"Zabbix 实时拉取失败：{str(exc)[:120]}"
     else:
-        realtime = _mock_asset_metrics(asset_id, min(int(hours * 60), 240))["series"]
+        realtime = _mock_asset_metrics(asset_id, min(int(hours * 60), 1440))["series"]
 
     series = _merge_series(stored["series"], realtime)
     latest = {k: (s[-1]["v"] if s else None) for k, s in series.items()}
