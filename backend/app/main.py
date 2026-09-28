@@ -9,6 +9,8 @@ from app.routers.admin_users import router as admin_users_router
 from app.routers.auth import router as auth_router
 from app.routers.dict import router as dict_router
 from app.routers.ops import router as ops_router
+from app.routers.dashboard import router as dashboard_router
+from app.routers.knowledge import router as knowledge_router
 from app import database as dbmod
 from app.seed import seed_if_empty
 
@@ -57,3 +59,5 @@ app.include_router(auth_router)
 app.include_router(admin_users_router)
 app.include_router(admin_perms_router)
 app.include_router(dict_router)
+app.include_router(dashboard_router)
+app.include_router(knowledge_router)

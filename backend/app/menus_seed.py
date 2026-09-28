@@ -16,6 +16,7 @@ from app.models import Menu, RoleMenu
 
 # (code, name, type, path, perm_code, icon, sort, [children])
 MENU_TREE: list[tuple] = [
+    ("menu:dashboard", "运维大屏", "menu", "/dashboard", "dashboard:read", "data-analysis", 1, []),
     ("menu:anomalies", "异常告警", "menu", "/anomalies", "anomalies:read", "warning", 5, []),
     ("menu:tickets", "任务单", "menu", "/tickets", "tickets:read", "tickets", 10, [
         ("btn:ticket-approve", "审批通过/驳回", "button", "", "tickets:operate", "", 10, []),
@@ -36,6 +37,11 @@ MENU_TREE: list[tuple] = [
         ("btn:stress-start", "启动压测", "button", "", "tools:operate", "", 10, []),
         ("btn:stress-stop", "停止压测", "button", "", "tools:operate", "", 20, []),
     ]),
+    ("menu:knowledge", "知识库", "menu", "/knowledge", "knowledge:read", "collection", 75, [
+        ("btn:knowledge-upload", "上传知识文档", "button", "", "knowledge:write", "", 10, []),
+        ("btn:knowledge-delete", "删除知识文档", "button", "", "knowledge:write", "", 20, []),
+    ]),
+    ("menu:chat", "智能对话", "menu", "/chat", "knowledge:chat", "chat-dot-round", 80, []),
     ("menu:system", "系统管理", "dir", "", "", "setting", 90, [
         ("menu:users", "用户管理", "menu", "/users", "users:manage", "user-filled", 10, []),
         ("menu:roles", "角色权限", "menu", "/roles", "roles:manage", "key", 20, []),

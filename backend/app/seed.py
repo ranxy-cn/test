@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Asset, DigitalEmployee, MaintenanceWindow, Permission, Role, RolePermission, User, UserRole, utcnow
+from app.models import Asset, DigitalEmployee, MaintenanceWindow, Menu, Permission, Role, RoleMenu, RolePermission, User, UserRole, utcnow
 from app.security import hash_password
 from app.services.backups import seed_backup_jobs
 
@@ -29,14 +29,19 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("users:manage", "用户管理", "用户、角色与权限管理"),
     ("roles:manage", "角色权限管理", "角色增删、菜单授权与权限点分配"),
     ("menus:manage", "菜单管理", "菜单/路由/按钮资源树的维护"),
+    ("dashboard:read", "运维大屏", "查看领导驾驶舱与运营指标"),
+    ("knowledge:read", "知识库查看", "查看运维知识文档与检索结果"),
+    ("knowledge:write", "知识库维护", "上传、分析与删除运维文档"),
+    ("knowledge:chat", "智能对话", "使用知识库和实时状态进行 AI 对话"),
 ]
 
 READ_PERMS = [c for c, _, _ in PERMISSIONS if c.endswith(":read")]
 OPERATE_PERMS = [c for c, _, _ in PERMISSIONS if c.endswith(":operate")]
+SELF_SERVICE_PERMS = ["knowledge:chat"]
 
 ROLES: list[tuple[str, str, str, list[str]]] = [
-    ("viewer", "只读用户", "仅查看各类页面", READ_PERMS),
-    ("operator", "运维操作员", "查看 + 审批/工具/备份操作", READ_PERMS + OPERATE_PERMS),
+    ("viewer", "只读用户", "仅查看各类页面", READ_PERMS + SELF_SERVICE_PERMS),
+    ("operator", "运维操作员", "查看 + 审批/工具/备份操作", READ_PERMS + OPERATE_PERMS + SELF_SERVICE_PERMS + ["knowledge:write"]),
     ("admin", "管理员", "全部权限，含用户管理", [c for c, _, _ in PERMISSIONS]),
 ]
 
@@ -71,7 +76,9 @@ def seed_rbac(db: Session) -> None:
     from app.menus_seed import grant_tree_to_role, role_default_menu_codes, seed_menus
     from app.models import RoleMenu
 
+    existing_menu_codes = {m.code for m in db.scalars(select(Menu)).all()}
     menus = seed_menus(db)
+    new_menu_codes = set(menus) - existing_menu_codes
     for code, name, _desc, _perms in ROLES:
         role = role_by_code[code]
         has_grants = (
@@ -80,6 +87,14 @@ def seed_rbac(db: Session) -> None:
         )
         if not has_grants:
             grant_tree_to_role(db, role.id, menus, role_default_menu_codes(code))
+        elif new_menu_codes:
+            existing_menu_ids = {
+                row.menu_id for row in db.scalars(select(RoleMenu).where(RoleMenu.role_id == role.id)).all()
+            }
+            for menu_code in new_menu_codes.intersection(role_default_menu_codes(code)):
+                menu = menus.get(menu_code)
+                if menu is not None and menu.id not in existing_menu_ids:
+                    db.add(RoleMenu(role_id=role.id, menu_id=menu.id))
     db.flush()
 
     # 业务字典（告警标题/资产/预案中文名映射，只补缺失项）

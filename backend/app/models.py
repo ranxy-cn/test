@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.types import JSON
 
 from app.database import TZDateTime, Base
@@ -457,3 +458,23 @@ class BackupRun(Base):
     note: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+
+
+class KnowledgeDocument(Base):
+    """企业自有运维知识文档。正文落库，便于多副本 API 共享检索结果。"""
+
+    __tablename__ = "knowledge_documents"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    filename: Mapped[str] = mapped_column(String(256))
+    title: Mapped[str] = mapped_column(String(256), default="")
+    mime_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    content: Mapped[str] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"))
+    summary: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="indexed")
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)

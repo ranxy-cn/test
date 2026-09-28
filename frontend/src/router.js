@@ -12,6 +12,10 @@ import UsersView from './views/UsersView.vue'
 import MenusView from './views/MenusView.vue'
 import RolesView from './views/RolesView.vue'
 import LoginView from './views/LoginView.vue'
+import DashboardView from './views/DashboardView.vue'
+import KnowledgeView from './views/KnowledgeView.vue'
+import ChatView from './views/ChatView.vue'
+import StandaloneScreenView from './views/StandaloneScreenView.vue'
 import { auth } from './auth'
 import { setUnauthorizedHandler } from './api'
 import { ElMessage } from 'element-plus'
@@ -20,7 +24,9 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', component: LoginView, meta: { public: true } },
-    { path: '/', redirect: '/anomalies' },
+    { path: '/', redirect: '/dashboard' },
+    { path: '/dashboard', component: DashboardView, meta: { perm: 'dashboard:read' } },
+    { path: '/screen', component: StandaloneScreenView, meta: { standalone: true, perm: 'dashboard:read' } },
     { path: '/anomalies', component: AnomaliesView, meta: { perm: 'anomalies:read' } },
     { path: '/tickets', component: TicketsView, meta: { perm: 'tickets:read' } },
     { path: '/tickets/:id', component: TicketDetailView, props: true, meta: { perm: 'tickets:read' } },
@@ -28,6 +34,8 @@ const router = createRouter({
     { path: '/report', component: ReportView, meta: { perm: 'reports:read' } },
     { path: '/assets', component: AssetsView, meta: { perm: 'assets:read' } },
     { path: '/status', component: StatusView, meta: { perm: 'status:read' } },
+    { path: '/knowledge', component: KnowledgeView, meta: { perm: 'knowledge:read' } },
+    { path: '/chat', component: ChatView, meta: { perm: 'knowledge:chat' } },
     { path: '/notifications', component: NotificationsView, meta: { perm: 'notifications:read' } },
     { path: '/backups', component: BackupsView, meta: { perm: 'backups:read' } },
     { path: '/users', component: UsersView, meta: { perm: 'users:manage' } },

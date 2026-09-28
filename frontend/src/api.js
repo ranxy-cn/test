@@ -130,3 +130,16 @@ export const stopMemStress = () => http.post('/tools/mem-stress/stop')
 export const fetchStressTargets = () => http.get('/tools/stress-targets')
 export const fetchRemoteStress = () => http.get('/tools/remote-stress')
 export const stopRemoteStress = (assetId) => http.post('/tools/stress/stop', { asset_id: assetId })
+export const fetchDashboardOverview = () => http.get('/dashboard/overview')
+export const fetchKnowledgeDocuments = () => http.get('/knowledge/documents')
+export const searchKnowledge = (q, limit = 6) => http.get('/knowledge/search', { params: { q, limit } })
+export const uploadKnowledgeDocument = (file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return http.post('/knowledge/documents/upload', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
+}
+export const deleteKnowledgeDocument = (id) => http.delete(`/knowledge/documents/${id}`)
+export const sendKnowledgeChat = (message, history = []) => http.post('/knowledge/chat', { message, history }, { timeout: 90000 })

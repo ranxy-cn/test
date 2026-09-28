@@ -101,7 +101,7 @@ import { changePassword } from './api'
 
 const route = useRoute()
 const router = useRouter()
-const isPublicPage = computed(() => Boolean(route.meta.public))
+const isPublicPage = computed(() => Boolean(route.meta.public || route.meta.standalone))
 
 // 移动端抽屉式侧边栏：路由切换后自动收起
 const sidebarOpen = ref(false)

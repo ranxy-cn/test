@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
+    # 兼容 OpenAI Chat Completions 协议的企业模型网关；为空时回退到 OPENAI_* 配置。
+    chat_api_key: str = ""
+    chat_base_url: str = ""
+    chat_model: str = "glm-4.7-channel-cg"
+    chat_timeout_seconds: float = 60.0
+    knowledge_max_upload_bytes: int = 20 * 1024 * 1024
 
     policy_version: str = "policy-v1.0.0"
     mock_model_version: str = "mock-diagnoser-v1"
