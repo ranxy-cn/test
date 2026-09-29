@@ -316,7 +316,7 @@
           该母机名下还有 <b>{{ motherDeleteForm.children }}</b> 台子机，将随母机一并删除（级联删除）。
         </p>
         <p style="margin: 4px 0 0">
-          母机为纯台账记录，删除不影响服务器；如需清理子机上的 Agent，请在删除对应子机时勾选「卸载 Agent」。
+          删除仅清理平台台账记录，不影响服务器本身；如需清理子机上的 Agent，请在删除对应子机时勾选「卸载 Agent」。
         </p>
       </el-alert>
       <template #footer>
@@ -598,17 +598,44 @@ const policySourceLabel = computed(() => {
   return policyTarget.value?.is_mother ? '母机策略（子机未自定义时沿用）' : map[policyInfo.value?.source] || ''
 })
 
-// ===== 添加母机（纯业务登记） =====
+// ===== 添加母机（SSH 验证 + 自动纳管本机子机） =====
 const addMotherVisible = ref(false)
 const addingMother = ref(false)
 const motherForm = reactive({
   hostname: '',
   ip: '',
   ssh_port: 22,
+  username: 'root',
+  password: '',
   env: 'prod',
   owner: '',
   alert_policy: { ...ALERT_POLICY_DEFAULT },
 })
+
+// ===== SSH 连通性测试（新增母机 / 子机表单共用） =====
+const sshTesting = ref('') // '' | 'mother' | 'child'
+
+async function runSshTest(target) {
+  const form = target === 'mother' ? motherForm : addChildForm
+  const port = target === 'mother' ? form.ssh_port : form.port
+  if (!form.ip.trim()) {
+    ElMessage.warning('请先填写服务器 IP')
+    return
+  }
+  if (!form.password) {
+    ElMessage.warning('请先填写 SSH 密码')
+    return
+  }
+  sshTesting.value = target
+  try {
+    const { data } = await testSsh({ ip: form.ip.trim(), port, username: form.username, password: form.password })
+    ElMessage.success(data.message || '连接成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || '连接失败：无法建立 SSH 会话')
+  } finally {
+    sshTesting.value = ''
+  }
+}
 
 let overviewTimer = null
 onMounted(() => {
@@ -998,9 +1025,9 @@ async function submitAddChild() {
     ElMessage.warning('请填写目标机 IP')
     return
   }
-  // 母机是纯登记的汇聚节点，向母机自身 IP 重复纳管没有意义
+  // 母机本机子机已在新增母机时自动纳管，同一 IP 重复添加没有意义
   if (mother.value && addChildForm.ip.trim() === (mother.value.ip || '').trim()) {
-    ElMessage.warning('这是母机自身的 IP：母机作为汇聚节点无需重复纳管（子机列表中的"本机·母机"即母机自身指标）')
+    ElMessage.warning('这是母机自身的 IP：新增母机时已自动纳管本机子机，无需重复添加')
     return
   }
   if (!addChildForm.password) {

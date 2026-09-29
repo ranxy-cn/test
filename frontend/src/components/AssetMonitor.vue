@@ -813,7 +813,7 @@ async function loadOverview() {
   if (ovLoading.value) return
   ovLoading.value = true
   try {
-    const { data } = await fetchSystemHistory(ovRange.value)
+    const { data } = await fetchSystemHistory(ovRange.value, props.assetId || '')
     ovItems.value = data.items || []
     ovBucket.value = data.bucket_seconds || 0
     await nextTick()

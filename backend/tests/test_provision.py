@@ -431,7 +431,7 @@ def test_provision_display_name_duplicate_rejected(client, db):
 
 
 def test_provision_mother_validation(client, db, monkeypatch):
-    """母机校验：不存在 404 / 非母机 400 / 母机自身 IP 拒绝纳管。"""
+    """母机校验：不存在 404 / 非母机 400 / 母机自身 IP 允许纳管（本机子机）。"""
     monkeypatch.setattr(dep_mod, "deploy_to_host", lambda *a, **kw: None)
     db.add(
         Asset(
@@ -458,8 +458,8 @@ def test_provision_mother_validation(client, db, monkeypatch):
     assert "不是母机" in r.json()["detail"]
 
     r = client.post("/api/v1/assets/provision", json={"ip": "10.1.1.1", "password": "x", "mother_id": "m-1"})
-    assert r.status_code == 400
-    assert "自身" in r.json()["detail"]
+    assert r.status_code == 200  # 母机本机子机：允许纳管
+    assert r.json()["status"] == "running"
 
 
 # ---------- 删除 / 卸载端点 ----------

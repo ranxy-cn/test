@@ -307,6 +307,8 @@ def _overview_payload(db: Session, mother: Asset | None) -> dict:
 @router.get("/api/v1/assets/mothers", dependencies=[Depends(require_perm("assets:read"))])
 def list_mothers(db: Session = Depends(get_db)):
     """母机列表（kind=mother），附各母机子机数量。注意路由顺序：须在 /assets/{asset_id} 之前。"""
+    from app.routers.agent_api import agent_status_of
+
     settings = get_settings()
     items = []
     for a in db.scalars(select(Asset).where(Asset.kind == "mother").order_by(Asset.id)).all():
@@ -317,6 +319,14 @@ def list_mothers(db: Session = Depends(get_db)):
         q = db.query(Asset).filter(Asset.id != a.id, Asset.kind != "mother")
         q = q.filter(or_(Asset.mother_id == a.id, Asset.mother_id == "")) if is_default else q.filter(Asset.mother_id == a.id)
         row["children_count"] = q.count()
+        # 母机在线 = 本机子机 agent 在线（新增母机自动纳管产生）；无本机子机时保持台账值
+        self_child_id = str((a.extra or {}).get("self_child_id") or "")
+        row["self_child_id"] = self_child_id
+        if self_child_id:
+            child = db.get(Asset, self_child_id)
+            if child is not None:
+                row["reachable"] = agent_status_of(child, db)["online"]
+                row["self_child_online"] = row["reachable"]
         items.append(row)
     return {"items": items, "default_id": settings.mother_asset_id}
 
@@ -329,18 +339,56 @@ def mother_overview(db: Session = Depends(get_db)):
 
 
 class MotherCreateIn(BaseModel):
-    """新增母机（纯业务登记）。
+    """新增母机：SSH 验证 + 自动纳管本机子机。
 
-    母机是子机 agent 数据汇聚的业务归属节点：子机 agent 按 mother_id 归属上报，
-    平台不再在母机上部署任何监控栈。登记仅写台账，不触碰目标服务器。
+    提供密码时：先验证 SSH 连通性（失败拒绝创建），成功后自动在母机下创建
+    并纳管一台「本机子机」（部署自研 agent 采集真实指标），母机的在线状态与
+    监控数据均来自该子机。不提供密码则退回旧的纯业务登记（仅 API 兼容，
+    前端一律强制填写密码）。
     """
 
     hostname: str = Field(min_length=1, max_length=128)
     ip: str = Field(min_length=3, max_length=64)
     ssh_port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(default="root", max_length=64)
+    password: str = Field(default="", max_length=128)  # 仅本次验证/部署使用，不落库
     env: str = Field(default="prod", max_length=32)
     owner: str = Field(default="", max_length=64)
     alert_policy: dict | None = None  # 告警策略（阈值/窗口），缺省字段用平台默认值
+
+
+class SshTestIn(BaseModel):
+    """SSH 连通性测试：新增母机/子机前手动验证凭据。密码仅本次使用，不落库。"""
+
+    ip: str = Field(min_length=3, max_length=64)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(default="root", max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+
+
+def _verify_ssh(ip: str, port: int, username: str, password: str) -> int:
+    """SSH 连通性验证：连接并执行 echo 探针。成功返回耗时 ms，失败抛 ProvisionError。"""
+    import time as _time
+
+    started = _time.monotonic()
+    ssh = provision_svc._connect_ssh(ip, port, username, password)
+    try:
+        code, out = provision_svc._run(ssh, "echo __ssh_ok__", timeout=15, logs=[], pty=False)
+        if "__ssh_ok__" not in out:
+            raise provision_svc.ProvisionError("SSH 已连接但命令执行异常，请检查目标机 shell 可用性")
+    finally:
+        ssh.close()
+    return round((_time.monotonic() - started) * 1000)
+
+
+@router.post("/api/v1/assets/ssh-test", dependencies=[Depends(require_perm("assets:write"))])
+def ssh_test(body: SshTestIn):
+    """测试目标机 SSH 能否连通并执行命令（供新增母机/子机表单的「测试连接」按钮）。"""
+    try:
+        ms = _verify_ssh(body.ip.strip(), body.port, body.username.strip(), body.password)
+    except provision_svc.ProvisionError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"ok": True, "latency_ms": ms, "message": f"连接成功，命令执行正常（{ms}ms）"}
 
 
 @router.get("/api/v1/assets/mothers/{mother_id}/overview", dependencies=[Depends(require_perm("assets:read"))])
@@ -355,10 +403,15 @@ def mother_overview_by_id(mother_id: str, db: Session = Depends(get_db)):
 @router.post("/api/v1/assets/mothers", dependencies=[Depends(require_perm("assets:write"))])
 def create_mother(
     body: MotherCreateIn,
+    request: Request,
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """登记一台母机（纯业务登记，不触碰目标服务器）。"""
+    """新增母机：SSH 验证 + 自动纳管本机子机（密码留空则仅登记，API 兼容路径）。"""
+    import secrets as _secrets
+
+    from app.routers.agent_api import agent_cfg_of
+
     try:
         alert_policy = normalize_policy(body.alert_policy)
     except ValueError as exc:
@@ -371,6 +424,15 @@ def create_mother(
     if db.query(Asset).filter(Asset.hostname == body.hostname).first():
         raise HTTPException(409, f"主机名已被资产占用：{body.hostname}")
 
+    # SSH 验证前置：失败直接拒绝创建，避免错误 IP 的死台账
+    use_ssh = bool(body.password.strip())
+    verify_ms = 0
+    if use_ssh:
+        try:
+            verify_ms = _verify_ssh(body.ip.strip(), body.ssh_port, body.username.strip(), body.password)
+        except provision_svc.ProvisionError as exc:
+            raise HTTPException(400, f"SSH 验证失败：{exc}") from None
+
     asset = Asset(
         id=aid,
         hostname=body.hostname.strip(),
@@ -380,23 +442,93 @@ def create_mother(
         owner=body.owner,
         kind="mother",
         tenant_id=get_settings().tenant_id,
-        reachable=True,  # 纯业务登记，默认可达（母机即平台汇聚节点）
+        reachable=False,  # 在线状态由本机子机 agent 推导（见 list_mothers），台账初始不可达
         extra={
             "alert_policy": alert_policy,
-            "provision": {"ip": body.ip, "port": body.ssh_port, "status": "registered"},
+            "provision": {
+                "ip": body.ip,
+                "port": body.ssh_port,
+                **({"username": body.username.strip()} if use_ssh else {}),
+                "status": "registered",
+            },
         },
     )
     db.add(asset)
+
+    child_id = ""
+    if use_ssh:
+        # 自动纳管本机子机：归属该母机，部署自研 agent 采集真实指标（幂等复用同 ip:port 子机）
+        cid = provision_svc.asset_id_for_ip(body.ip, body.ssh_port)
+        child = db.get(Asset, cid)
+        if child is None:
+            if db.query(Asset).filter(Asset.id.like("node-%")).count():
+                for node in db.query(Asset).filter(Asset.id.like("node-%")).all():
+                    p = (node.extra or {}).get("provision") or {}
+                    if (
+                        str(p.get("ip") or "").strip().lower() == body.ip.strip().lower()
+                        and int(p.get("port") or 22) == int(body.ssh_port)
+                    ):
+                        child = node
+                        break
+        if child is None:
+            child = Asset(
+                id=cid,
+                hostname=f"{body.ip.strip()}:{body.ssh_port}",
+                app="",
+                role="other",
+                env=body.env,
+                owner=body.owner,
+                kind="child",
+                mother_id=aid,
+                tenant_id=get_settings().tenant_id,
+                reachable=False,
+                extra={"provision": {"status": "running", "ip": body.ip, "port": body.ssh_port, "username": body.username.strip()}},
+            )
+        else:
+            child.mother_id = aid
+            extra = dict(child.extra or {})
+            extra["provision"] = {"status": "running", "ip": body.ip, "port": body.ssh_port, "username": body.username.strip()}
+            child.extra = extra
+        token = _secrets.token_urlsafe(24)
+        child.extra = {**(child.extra or {}), "agent_token": token}
+        child_id = cid
+        asset.extra = {**asset.extra, "self_child_id": child_id}
+        db.add(child)
     db.commit()
+
+    if use_ssh and child_id:
+        server_url = (get_settings().platform_public_url or str(request.base_url).rstrip("/")).strip()
+        cfg = agent_cfg_of(db.get(Asset, child_id), db)
+        _spawn_agent_deploy(
+            child_id,
+            ip=body.ip,
+            port=body.ssh_port,
+            username=body.username.strip(),
+            password=body.password,
+            lang="go",
+            token=token,
+            server_url=server_url,
+            cfg=cfg,
+            requested_by=current.username,
+        )
+
     add_audit(
         db,
         ticket_id=None,
         event_type="mother_create",
         actor=current.username,
-        result={"asset_id": aid, "ip": body.ip},
+        result={
+            "asset_id": aid,
+            "ip": body.ip,
+            "ssh_verified": use_ssh,
+            "ssh_latency_ms": verify_ms,
+            "self_child_id": child_id,
+        },
     )
     db.commit()
-    return _asset_row(asset)
+    row = _asset_row(asset)
+    row.update({"self_child_id": child_id, "ssh_verified": use_ssh, "provision_started": bool(child_id)})
+    return row
 
 
 class AlertPolicyIn(BaseModel):
@@ -1123,6 +1255,60 @@ def upsert_asset(body: AssetUpsertIn, db: Session = Depends(get_db)):
     }
 
 
+def _spawn_agent_deploy(
+    asset_id: str,
+    *,
+    ip: str,
+    port: int,
+    username: str,
+    password: str,
+    lang: str,
+    token: str,
+    server_url: str,
+    cfg: dict,
+    requested_by: str,
+) -> None:
+    """后台线程执行 agent 部署（SSH 下发约 1 分钟），失败落库避免状态停在「安装中」。"""
+    from app.services import agent_deployer
+
+    def _run_deploy() -> None:
+        from app.database import SessionLocal
+
+        db2 = SessionLocal()
+        try:
+            agent_deployer.deploy_to_host(
+                db2,
+                asset_id,
+                ip=ip,
+                lang=lang,
+                ssh_user=username,
+                ssh_password=password,
+                token=token,
+                server_url=server_url,
+                cfg=cfg,
+                port=port,
+                requested_by=requested_by,
+            )
+        except Exception as exc:  # noqa: BLE001 失败落库，避免状态永远停在"安装中"
+            asset2 = db2.get(Asset, asset_id)
+            if asset2:
+                prov = (asset2.extra or {}).get("provision") or {}
+                asset2.extra = {
+                    **(asset2.extra or {}),
+                    "provision": {**prov, "status": "failed", "error": str(exc)[:500]},
+                    "agent_deploy": {
+                        **(asset2.extra or {}).get("agent_deploy", {}),
+                        "state": "failed",
+                        "error": str(exc)[:500],
+                    },
+                }
+                db2.commit()
+        finally:
+            db2.close()
+
+    threading.Thread(target=_run_deploy, daemon=True, name=f"provision-{asset_id}").start()
+
+
 class AssetProvisionIn(BaseModel):
     """资产页一键纳管：SSH 密码直连新机下发自研 agent。密码仅本次部署使用，不落库。"""
 
@@ -1154,7 +1340,6 @@ def provision_asset(
     import secrets as _secrets
 
     from app.routers.agent_api import agent_cfg_of
-    from app.services import agent_deployer
 
     # 归属母机
     requested_mother = body.mother_id.strip()
@@ -1164,11 +1349,6 @@ def provision_asset(
         raise HTTPException(404, f"归属母机不存在：{mother_id}")
     if mother is not None and mother.kind != "mother":
         raise HTTPException(400, f"资产 {mother_id} 不是母机")
-    if mother is not None:
-        # 母机即平台自身（或登记的汇聚节点），不需要也不可以重复纳管
-        mother_ip = str(((mother.extra or {}).get("provision") or {}).get("ip") or mother.hostname or "").strip()
-        if mother_ip and body.ip.strip() == mother_ip:
-            raise HTTPException(400, f"{body.ip} 是母机「{mother.hostname or mother.id}」自身，无需也不可重复纳管")
     mother_id = mother.id if mother is not None else ""
     # 唯一性按 (地址, 端口) 判定：同 IP 不同 SSH 端口是不同资产；
     # 已存在（兼容旧格式不含端口的 id）则复用原资产幂等重跑，避免重复建卡
@@ -1226,43 +1406,18 @@ def provision_asset(
     # 后台线程执行部署（SSH 下发约 1 分钟），接口立即返回
     server_url = (get_settings().platform_public_url or str(request.base_url).rstrip("/")).strip()
     cfg = agent_cfg_of(asset, db)
-
-    def _run_deploy() -> None:
-        from app.database import SessionLocal
-
-        db2 = SessionLocal()
-        try:
-            agent_deployer.deploy_to_host(
-                db2,
-                aid,
-                ip=body.ip,
-                lang=body.lang,
-                ssh_user=body.username,
-                ssh_password=body.password,
-                token=token,
-                server_url=server_url,
-                cfg=cfg,
-                port=body.port,
-                requested_by=current.username,
-            )
-        except Exception as exc:  # noqa: BLE001 失败落库，避免状态永远停在"安装中"
-            asset2 = db2.get(Asset, aid)
-            if asset2:
-                prov = (asset2.extra or {}).get("provision") or {}
-                asset2.extra = {
-                    **(asset2.extra or {}),
-                    "provision": {**prov, "status": "failed", "error": str(exc)[:500]},
-                    "agent_deploy": {
-                        **(asset2.extra or {}).get("agent_deploy", {}),
-                        "state": "failed",
-                        "error": str(exc)[:500],
-                    },
-                }
-                db2.commit()
-        finally:
-            db2.close()
-
-    threading.Thread(target=_run_deploy, daemon=True, name=f"provision-{aid}").start()
+    _spawn_agent_deploy(
+        aid,
+        ip=body.ip,
+        port=body.port,
+        username=body.username,
+        password=body.password,
+        lang=body.lang,
+        token=token,
+        server_url=server_url,
+        cfg=cfg,
+        requested_by=current.username,
+    )
     return {
         "id": aid,
         "status": "running",

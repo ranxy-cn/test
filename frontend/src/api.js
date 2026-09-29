@@ -102,8 +102,13 @@ export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove
 export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })
 // 本机系统资源实时监控（类 macOS 活动监视器）：1 秒轮询实时值 / 后台采样落库历史
-export const fetchSystemRealtime = () => http.get('/system/metrics/realtime')
-export const fetchSystemHistory = (minutes = 60) => http.get('/system/metrics/history', { params: { minutes } })
+// assetId：子机=该子机 Agent 上报；母机=其本机子机曲线；留空=平台本机
+export const fetchSystemRealtime = (assetId = '') =>
+  http.get('/system/metrics/realtime', { params: assetId ? { asset_id: assetId } : {} })
+export const fetchSystemHistory = (minutes = 60, assetId = '') =>
+  http.get('/system/metrics/history', { params: assetId ? { minutes, asset_id: assetId } : { minutes } })
+// SSH 连通性测试（新增母机/子机前的「测试连接」按钮）
+export const testSsh = (payload) => http.post('/assets/ssh-test', payload, { timeout: 30000 })
 // 子机 Agent：全局默认配置 + 资产级覆盖 + SSH 部署（py/go）
 export const fetchAgentConfigDefaults = () => http.get('/agent-config/defaults')
 export const updateAgentConfigDefaults = (patch) => http.put('/agent-config/defaults', patch)

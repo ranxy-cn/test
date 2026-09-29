@@ -35,7 +35,7 @@ def test_default_mother_is_kind_mother(auth_token, client, db):
 
 
 def test_create_mother_pure_registration(auth_token, client, db):
-    """登记母机：纯台账不碰服务器、id 规则 mother-<ip>、审计留痕。"""
+    """登记母机（API 兼容路径，无密码不验证）：id 规则 mother-<ip>、审计留痕、台账初始不可达。"""
     r = client.post(
         "/api/v1/assets/mothers",
         json={"hostname": "ops-m-02", "ip": "10.0.0.9", "owner": "ops"},
@@ -45,7 +45,8 @@ def test_create_mother_pure_registration(auth_token, client, db):
     body = r.json()
     assert body["id"] == "mother-10-0-0-9"
     assert body["kind"] == "mother"
-    assert body["reachable"] is True  # 纯业务登记，默认可达（汇聚节点）
+    assert body["reachable"] is False  # 未做 SSH 验证，不假显示在线
+    assert body["self_child_id"] == ""
 
     row = db.get(Asset, "mother-10-0-0-9")
     assert row.extra["provision"] == {"ip": "10.0.0.9", "port": 22, "status": "registered"}
