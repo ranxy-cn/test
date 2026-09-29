@@ -9,10 +9,10 @@ PROBLEM = {
     "TRIGGER.NAME": "High CPU utilization (over 90% for 5m)",
     "EVENT.SEVERITY": "High",
     "EVENT.NSEVERITY": "4",
-    "HOST.NAME": "Zabbix server",
-    "HOST.HOST": "Zabbix server",
+    "HOST.NAME": "demo-host-01",
+    "HOST.HOST": "demo-host-01",
     "HOST.ID": "10084",
-    "HOST.IP": "124.221.251.186",
+    "HOST.IP": "10.0.0.51",
 }
 
 
@@ -105,32 +105,28 @@ def _mk_asset(aid: str, *, kind: str = "child", mother_id: str = "", group: str 
 
 def test_anomalies_attach_mother_group_child(client, db, monkeypatch):
     _disable_auto_ticket(monkeypatch)
-    db.add(_mk_asset("mother-186", kind="mother", hostname="186"))
-    # 复用 seed 的 ast-zabbix-server（hostname="Zabbix server"，external_id=10084）作为子机
-    child = db.get(Asset, "ast-zabbix-server")
-    child.mother_id = "mother-186"
-    child.group = "订单系统"
+    db.add(_mk_asset("mother-01", kind="mother", hostname="mother-node-01"))
+    child = _mk_asset("ast-demo-01", hostname="demo-host-01", mother_id="mother-01", group="订单系统")
+    child.external_id = "10084"
+    db.add(child)
     db.commit()
 
-    # HOST.ID=10084 → external_id 匹配到子机 ast-zabbix-server
+    # HOST.NAME 匹配 → 子机 ast-demo-01（HOST.ID=10084 → external_id 兜底）
     client.post("/api/v1/webhooks/zabbix", json=dict(PROBLEM), headers=auth_headers())
 
     listed = client.get("/api/v1/anomalies").json()
     assert listed["total"] == 1
     item = listed["items"][0]
-    assert item["mother_id"] == "mother-186"
-    assert item["mother_name"] == "186"
+    assert item["mother_id"] == "mother-01"
+    assert item["mother_name"] == "mother-node-01"
     assert item["group"] == "订单系统"
-    assert item["child"] == "Zabbix server"
+    assert item["child"] == "demo-host-01"
 
 
 def test_anomalies_mother_self_fallback(client, db, monkeypatch):
-    """母机自身 agent（"Zabbix server" 主机）无对应子机记录时，归属到母机自身（本机·母机）。"""
+    """母机自身 agent 上报（主机名命中母机资产）时，归属到母机自身（本机·母机）。"""
     _disable_auto_ticket(monkeypatch)
-    db.add(_mk_asset("mother-186", kind="mother", hostname="186"))
-    z = db.get(Asset, "ast-zabbix-server")
-    if z is not None:
-        db.delete(z)
+    db.add(_mk_asset("mother-01", kind="mother", hostname="demo-host-01"))
     db.commit()
 
     client.post("/api/v1/webhooks/zabbix", json=dict(PROBLEM), headers=auth_headers())
@@ -138,9 +134,9 @@ def test_anomalies_mother_self_fallback(client, db, monkeypatch):
     listed = client.get("/api/v1/anomalies").json()
     assert listed["total"] == 1
     item = listed["items"][0]
-    assert item["mother_id"] == "mother-186"
-    assert item["mother_name"] == "186"
-    assert item["child"] == "186"
+    assert item["mother_id"] == "mother-01"
+    assert item["mother_name"] == "demo-host-01"
+    assert item["child"] == "demo-host-01"
     assert item["is_mother_self"] is True
 
 
@@ -163,12 +159,12 @@ def test_anomalies_pagination(client, monkeypatch):
 def test_anomalies_filter_by_asset_id(client, db, monkeypatch):
     """asset_id 精确过滤：只返回该资产名下的异常条目（资产监控详情用）。"""
     _disable_auto_ticket(monkeypatch)
-    db.add(_mk_asset("mother-186", kind="mother", hostname="186"))
-    child = db.get(Asset, "ast-zabbix-server")  # seed 资产，external_id=10084
-    child.mother_id = "mother-186"
-    other = _mk_asset("ast-other", hostname="other-host", mother_id="mother-186", group="测试分组1")
+    db.add(_mk_asset("mother-01", kind="mother", hostname="mother-node-01"))
+    mine = _mk_asset("ast-mine", hostname="demo-host-01", mother_id="mother-01")  # HOST.NAME 匹配
+    mine.external_id = "10084"
+    other = _mk_asset("ast-other", hostname="other-host", mother_id="mother-01", group="测试分组1")
     other.external_id = "20084"
-    db.add(other)
+    db.add_all([mine, other])
     db.commit()
 
     client.post("/api/v1/webhooks/zabbix", json=dict(PROBLEM), headers=auth_headers())
@@ -189,10 +185,10 @@ def test_anomalies_filter_by_asset_id(client, db, monkeypatch):
         headers=auth_headers(),
     )
 
-    mine = client.get("/api/v1/anomalies", params={"asset_id": "ast-zabbix-server"}).json()
+    mine = client.get("/api/v1/anomalies", params={"asset_id": "ast-mine"}).json()
     assert mine["total"] == 1
     assert [i["event_id"] for i in mine["items"]] == ["9001"]
-    assert mine["items"][0]["child"] == "Zabbix server"
+    assert mine["items"][0]["child"] == "demo-host-01"
 
     theirs = client.get("/api/v1/anomalies", params={"asset_id": "ast-other"}).json()
     assert theirs["total"] == 1

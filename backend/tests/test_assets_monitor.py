@@ -230,8 +230,8 @@ tcp LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=900,fd=6))
 @@USERS@@
 root pts/0 2026-09-23 09:00 (1.2.3.4)
 @@AGENT@@
-/usr/sbin/zabbix_agentd -c /etc/zabbix/zabbix_agentd.conf
-zabbix_agentd (daemon) (Zabbix) 6.0.7
+root 12345 0.0 0.2 123456 7890 ? Ss 09:00 0:10 /opt/devops-agent/agent --config /opt/devops-agent/config.json
+devops-agent version 1.0.0
 @@END@@
 """
 
@@ -301,11 +301,11 @@ def test_collect_sysinfo_parses_all_sections(monkeypatch):
     assert ("tcp", "0.0.0.0:22") in listen
     procs = {p["process"] for p in data["network"]["listening"]}
     assert any(p.startswith("sshd") for p in procs)
-    # 进程 / 会话 / Agent
+    # 进程 / 会话 / 自研 agent
     assert data["processes"] == {"total": 152, "running": 3, "zombie": 1}
     assert data["users"][0].startswith("root")
-    assert data["zabbix_agent"]["running"] is True
-    assert "6.0.7" in data["zabbix_agent"]["version"]
+    assert data["agent"]["running"] is True
+    assert "1.0.0" in data["agent"]["version"]
 
 
 def test_asset_sysinfo_requires_ip(client, db):

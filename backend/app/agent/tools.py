@@ -58,6 +58,38 @@ def query_metrics(
     return _metrics_via_adapter(asset_id, scenario, trigger, host_hint=host_hint, event_id=event_id)
 
 
+def _mock_metrics(
+    asset_id: str,
+    scenario: str,
+    trigger: str,
+    window_minutes: int = 30,
+) -> dict[str, Any]:
+    """诊断演示用的场景化指标（与 mock 集成模式一致）。"""
+    cpu = 92.4 if "cpu" in trigger.lower() or scenario in {"green", "verify_fail", "cooldown", "lock"} else 41.0
+    if scenario == "yellow":
+        cpu = 28.0
+    if scenario == "red":
+        cpu = 67.0
+    if scenario == "disk" or "disk" in trigger.lower() or "磁盘" in trigger:
+        cpu = 22.0
+    return {
+        "ref": "metrics:cpu" if scenario != "disk" else "metrics:disk",
+        "source": "mock",
+        "asset_id": asset_id,
+        "window_minutes": window_minutes,
+        "mapped": True,
+        "cpu_pct": cpu,
+        "mem_pct": 71.2,
+        "disk_pct": 91.0 if scenario == "disk" or "disk" in trigger.lower() else 38.0,
+        "top_process": "java OrderApplication" if scenario != "yellow" else "mysqld",
+        "series": [
+            {"t": "-25m", "cpu": max(20, cpu - 40)},
+            {"t": "-10m", "cpu": max(40, cpu - 10)},
+            {"t": "now", "cpu": cpu},
+        ],
+    }
+
+
 def _metrics_via_adapter(
     asset_id: str,
     scenario: str,
@@ -65,28 +97,8 @@ def _metrics_via_adapter(
     host_hint: dict[str, Any] | None = None,
     event_id: str = "",
 ) -> dict[str, Any]:
-    from app.integrations import get_zabbix_client
-    from app.integrations.zabbix.mock import MockZabbixClient
-
-    client = get_zabbix_client()
-    try:
-        return client.query_metrics(
-            asset_id,
-            30,
-            scenario=scenario,
-            trigger=trigger,
-            host_hint=host_hint,
-            event_id=event_id,
-        )
-    except Exception as exc:  # noqa: BLE001
-        data = MockZabbixClient().query_metrics(
-            asset_id, 30, scenario=scenario, trigger=trigger, host_hint=host_hint, event_id=event_id
-        )
-        data["mapped"] = False
-        data["note"] = f"未映射，使用 mock/降级（{exc}）"
-        data["source"] = "zabbix-degraded"
-        data["last_error"] = str(exc)
-        return data
+    _ = (host_hint, event_id)
+    return _mock_metrics(asset_id, scenario, trigger, 30)
 
 
 def _events_via_adapter(
@@ -94,19 +106,14 @@ def _events_via_adapter(
     host_hint: dict[str, Any] | None = None,
     event_id: str = "",
 ) -> dict[str, Any]:
-    from app.integrations import get_zabbix_client
-    from app.integrations.zabbix.mock import MockZabbixClient
-
-    client = get_zabbix_client()
-    try:
-        return client.query_events(asset_id, 20, host_hint=host_hint, event_id=event_id)
-    except Exception as exc:  # noqa: BLE001
-        data = MockZabbixClient().query_events(asset_id, 20, host_hint=host_hint, event_id=event_id)
-        data["mapped"] = False
-        data["note"] = f"未映射，使用 mock/降级（{exc}）"
-        data["source"] = "zabbix-degraded"
-        data["last_error"] = str(exc)
-        return data
+    _ = (asset_id, host_hint)
+    return {
+        "source": "mock",
+        "asset_id": asset_id,
+        "mapped": True,
+        "event_id": event_id or None,
+        "items": [{"event_id": event_id or "mock-1", "name": "CPU usage too high", "severity": "high"}],
+    }
 
 
 def read_logs(asset_id: str, scenario: str) -> dict[str, Any]:

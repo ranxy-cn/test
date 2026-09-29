@@ -43,6 +43,19 @@ def collect_metric_samples() -> dict:
         db.close()
 
 
+@celery_app.task(name="scan_alerts", max_retries=0)
+def scan_alerts() -> dict:
+    """定时告警扫描：按子机/母机策略判定指标「越限持续满窗口」→ 异常事件（站内提示）。"""
+    from app.database import SessionLocal
+    from app.services.alert_engine import run_alert_cycle
+
+    db = SessionLocal()
+    try:
+        return run_alert_cycle(db)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="run_due_backups", max_retries=0)
 def run_due_backups() -> int:
     from app.database import SessionLocal

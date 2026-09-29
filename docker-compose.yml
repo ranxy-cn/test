@@ -4,7 +4,7 @@ x-backend-env: &backend-env
   DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://devops_agent:devops_agent@mysql:3306/devops_agent?charset=utf8mb4}
   REDIS_URL: redis://redis:6379/0
   WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
-  # Zabbix webhook 自动立案开关：默认关闭（只记异常/恢复条目），置 true 走 AI 诊断/策略/预案管线
+  # 告警 webhook 自动立案开关：默认关闭（只记异常/恢复条目），置 true 走 AI 诊断/策略/预案管线
   WEBHOOK_AUTO_TICKET: ${WEBHOOK_AUTO_TICKET:-false}
   USE_CELERY: "true"
   DEMO_MODE: "true"
@@ -13,18 +13,11 @@ x-backend-env: &backend-env
   ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
   ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
   INTEGRATION_MODE: ${INTEGRATION_MODE:-mock}
-  ZABBIX_MODE: ${ZABBIX_MODE:-}
   ANSIBLE_MODE: ${ANSIBLE_MODE:-}
   VAULT_MODE: ${VAULT_MODE:-}
-  ZABBIX_URL: ${ZABBIX_URL:-}
-  ZABBIX_TOKEN: ${ZABBIX_TOKEN:-}
-  ZABBIX_USER: ${ZABBIX_USER:-}
-  ZABBIX_PASSWORD: ${ZABBIX_PASSWORD:-}
-  ZABBIX_VERIFY_SSL: ${ZABBIX_VERIFY_SSL:-true}
-  ZABBIX_TIMEOUT_SECONDS: ${ZABBIX_TIMEOUT_SECONDS:-8}
-  ZABBIX_RETRIES: ${ZABBIX_RETRIES:-2}
-  SEED_DEMO_ASSETS: ${SEED_DEMO_ASSETS:-}
-  PROVISION_ZABBIX_SERVER: ${PROVISION_ZABBIX_SERVER:-}
+  # 平台对外可访问的基础 URL（子机 agent 上报地址由它拼接）
+  PLATFORM_PUBLIC_URL: ${PLATFORM_PUBLIC_URL:-}
+  SEED_DEMO_ASSETS: ${SEED_DEMO_ASSETS:-false}
   VAULT_ADDR: ${VAULT_ADDR:-}
   VAULT_TOKEN: ${VAULT_TOKEN:-}
   ANSIBLE_RUNNER_ENABLED: ${ANSIBLE_RUNNER_ENABLED:-false}

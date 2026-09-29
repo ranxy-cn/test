@@ -225,7 +225,7 @@ class Asset(Base):
     env: Mapped[str] = mapped_column(String(32), default="prod")
     owner: Mapped[str] = mapped_column(String(64))
     group: Mapped[str] = mapped_column(String(64), default="", comment="业务分组，如订单系统/财务系统")
-    kind: Mapped[str] = mapped_column(String(16), default="child", comment="节点角色：mother=母机（Zabbix Server 所在）/ child=子机")
+    kind: Mapped[str] = mapped_column(String(16), default="child", comment="节点角色：mother=母机（agent 上报接入机器）/ child=子机")
     mother_id: Mapped[str] = mapped_column(String(64), default="", comment="归属母机资产 ID（子机字段；母机为空）")
     db_mode: Mapped[str] = mapped_column(String(16), default="bundled", comment="母机数据库模式：bundled=独立 MySQL 容器镜像 / external=复用已有 MySQL（母机字段）")
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -238,6 +238,16 @@ class Asset(Base):
     external_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     zabbix_host: Mapped[str] = mapped_column(String(128), default="")
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AppSetting(Base):
+    """系统级键值配置（如子机 agent 全局默认采集/推送配置）。"""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
 
 
 class MaintenanceWindow(Base):
@@ -357,7 +367,7 @@ class AlertEvent(Base):
 
 
 class AnomalyEvent(Base):
-    """异常告警条目：只有「异常 / 恢复」两种状态，按 Zabbix event_id 幂等更新。"""
+    """异常告警条目：只有「异常 / 恢复」两种状态，按告警 event_id 幂等更新。"""
 
     __tablename__ = "anomaly_events"
 
@@ -385,7 +395,7 @@ class AnomalyEvent(Base):
 
 
 class AnomalyLog(Base):
-    """异常告警原始通知日志：每条 Zabbix webhook 推送（异常/恢复）都留痕，保留完整原始载荷。"""
+    """异常告警原始通知日志：每条 webhook 推送（异常/恢复）都留痕，保留完整原始载荷。"""
 
     __tablename__ = "anomaly_logs"
 
@@ -416,21 +426,23 @@ class MetricSample(Base):
     mem: Mapped[float | None] = mapped_column(Float, nullable=True)
     disk: Mapped[float | None] = mapped_column(Float, nullable=True)
     load1: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # real Zabbix 真实数据 / mock 演示数据
+    # real agent 上报真实数据 / mock 演示数据
     source: Mapped[str] = mapped_column(String(16), default="real")
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
 
 class SystemMetricSample(Base):
-    """本机系统资源实时采样（CPU/内存/磁盘/负载/网速），API 进程启动后每 5 秒落库。
+    """系统资源采样（CPU/内存/磁盘/负载/网速）。
 
-    与资产维度 metric_samples 区分：这里固定记录 DevOpsAgent 所在服务器自身，
-    不回填历史，启动即开始记录；网速为字节/秒。
+    asset_id 为空：母机本机采样（/proc，API 进程启动后固定周期落库）；
+    asset_id 非空：对应子机由自研 Agent 推送上报。不回填历史，
+    网速为字节/秒。
     """
 
     __tablename__ = "system_metric_samples"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     ts: Mapped[datetime] = mapped_column(TZDateTime, index=True)
     cpu: Mapped[float | None] = mapped_column(Float, nullable=True)
     mem: Mapped[float | None] = mapped_column(Float, nullable=True)

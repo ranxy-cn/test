@@ -145,7 +145,7 @@ echo @@TCP@@; ss -s 2>/dev/null | head -n 6;
 echo @@LISTEN@@; ss -tulnpH 2>/dev/null | head -n 40;
 echo @@PROCS@@; ps -eo pid --no-headers 2>/dev/null | wc -l; ps -eo stat --no-headers 2>/dev/null | grep -c '^R'; ps -eo stat --no-headers 2>/dev/null | grep -c '^Z';
 echo @@USERS@@; who 2>/dev/null;
-echo @@AGENT@@; ps -eo args 2>/dev/null | grep -E 'zabbix[_-]agentd?' | grep -v grep | head -n 3; zabbix_agentd --version 2>/dev/null | head -n 1; zabbix_agent -V 2>/dev/null | head -n 1;
+echo @@AGENT@@; ps -eo args 2>/dev/null | grep -E 'devops-agent' | grep -v grep | head -n 3; /opt/devops-agent/agent --version 2>/dev/null | head -n 1;
 echo @@END@@
 """.replace("\n", " ")
 
@@ -490,10 +490,11 @@ def collect_sysinfo(ip: str, port: int, username: str, password: str, key_path: 
     # ---- 登录会话 ----
     users = lines.get("USERS", [])
 
-    # ---- Zabbix Agent ----
+    # ---- 自研 devops-agent ----
     agent_lines = lines.get("AGENT", [])
-    version = next((l for l in agent_lines if "Zabbix" in l and re.search(r"\d+\.\d+", l)), "")
-    procs = [l for l in agent_lines if l != version]
+    # 版本行 = 不含路径分隔符且带版本号（进程行含 /opt/... 绝对路径，另有 uptime 等纯数字字段）
+    version = next((ln for ln in agent_lines if "/" not in ln and re.search(r"\d+\.\d+", ln)), "")
+    procs = [ln for ln in agent_lines if ln != version]
     agent = {"running": bool(procs), "version": version, "processes": procs}
 
     return {
@@ -509,5 +510,5 @@ def collect_sysinfo(ip: str, port: int, username: str, password: str, key_path: 
         "network": network,
         "processes": processes,
         "users": users,
-        "zabbix_agent": agent,
+        "agent": agent,
     }

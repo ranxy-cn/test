@@ -14,9 +14,9 @@ from app.models import DictEntry
 # (dict_type, code, label, sort_order, remark)
 DICT_SEED: list[tuple[str, str, str, int, str]] = [
     # ===== 告警标题（trigger）=====
-    ("trigger", "CPU usage > 85% for 5 minutes", "CPU 使用率持续超 85%（5 分钟）", 10, "Zabbix 触发器"),
-    ("trigger", "CPU usage too high", "CPU 使用率过高", 20, "Zabbix 触发器"),
-    ("trigger", "MySQL replication lag too high", "MySQL 主从复制延迟过高", 30, "Zabbix 触发器"),
+    ("trigger", "CPU usage > 85% for 5 minutes", "CPU 使用率持续超 85%（5 分钟）", 10, "系统触发器"),
+    ("trigger", "CPU usage too high", "CPU 使用率过高", 20, "系统触发器"),
+    ("trigger", "MySQL replication lag too high", "MySQL 主从复制延迟过高", 30, "系统触发器"),
     ("trigger", "mystery native crash", "未知原因进程崩溃", 40, "演练用未知故障"),
     # ===== 资产（asset）=====
     ("asset", "ast-order-app-01", "订单系统-应用01", 10, ""),
@@ -28,7 +28,6 @@ DICT_SEED: list[tuple[str, str, str, int, str]] = [
     ("asset", "ast-order-lb-01", "订单系统-负载均衡01", 70, ""),
     ("asset", "ast-order-redis-01", "订单系统-缓存01", 80, ""),
     ("asset", "ast-order-unreachable", "订单系统-失联节点", 90, "演示：网络不可达"),
-    ("asset", "ast-zabbix-server", "Zabbix 监控服务器", 100, ""),
     # ===== 预案（action）=====
     ("action", "ACT-ROLLING-RESTART", "滚动重启服务", 10, "绿灯预案：分批重启并探活"),
     ("action", "ACT-DB-FAILOVER", "数据库主从切换", 20, "黄灯预案：需人工审批"),

@@ -35,5 +35,10 @@ celery_app.conf.update(
             "task": "collect_metric_samples",
             "schedule": 300.0,
         },
+        # 指标越限告警：每分钟按子机/母机策略判定「越限持续满窗口」→ 异常事件（站内提示）
+        "scan-alerts": {
+            "task": "scan_alerts",
+            "schedule": 60.0,
+        },
     },
 )

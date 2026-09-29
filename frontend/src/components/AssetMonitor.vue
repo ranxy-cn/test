@@ -272,14 +272,14 @@
                   </div>
                 </el-col>
                 <el-col :xs="24" :md="12">
-                  <div class="sub-title">Zabbix Agent</div>
+                  <div class="sub-title">自研 Agent</div>
                   <el-descriptions :column="1" border size="small">
                     <el-descriptions-item label="运行状态">
-                      <el-tag v-if="sysinfo.zabbix_agent.running" size="small" type="success" effect="dark">运行中</el-tag>
+                      <el-tag v-if="sysinfo.agent?.running" size="small" type="success" effect="dark">运行中</el-tag>
                       <el-tag v-else size="small" type="danger" effect="plain">未检测到进程</el-tag>
                     </el-descriptions-item>
-                    <el-descriptions-item label="版本">{{ sysinfo.zabbix_agent.version || '—' }}</el-descriptions-item>
-                    <el-descriptions-item v-for="(p, i) in sysinfo.zabbix_agent.processes" :key="i" :label="`进程 ${i + 1}`">{{ p }}</el-descriptions-item>
+                    <el-descriptions-item label="版本">{{ sysinfo.agent?.version || '—' }}</el-descriptions-item>
+                    <el-descriptions-item v-for="(p, i) in sysinfo.agent?.processes || []" :key="i" :label="`进程 ${i + 1}`">{{ p }}</el-descriptions-item>
                   </el-descriptions>
                 </el-col>
               </el-row>
@@ -344,7 +344,7 @@
         <template #header>
           <div class="row-between">
             <span>实时巡检（类似 top）
-              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）+ Zabbix 趋势图/指标卡（10s 刷新）" placement="top">
+              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）+ Agent 指标卡/趋势图（10s 刷新）" placement="top">
                 <el-icon><QuestionFilled /></el-icon>
               </el-tooltip>
             </span>
@@ -713,7 +713,8 @@ async function tickLive() {
   // 页面不可见时跳过本次轮询，避免无谓请求；恢复可见后下一秒自动续上
   if (document.hidden) return
   try {
-    const { data } = await fetchSystemRealtime()
+    // 传 assetId：子机=该子机 Agent 数据；母机=其本机子机；留空=平台本机
+    const { data } = await fetchSystemRealtime(props.assetId || '')
     live.value = data || {}
     if (!data?.supported) return
     const t = (data.ts || Math.floor(Date.now() / 1000)) * 1000
@@ -813,7 +814,7 @@ async function loadOverview() {
   if (ovLoading.value) return
   ovLoading.value = true
   try {
-    const { data } = await fetchSystemHistory(ovRange.value)
+    const { data } = await fetchSystemHistory(ovRange.value, props.assetId || '')
     ovItems.value = data.items || []
     ovBucket.value = data.bucket_seconds || 0
     await nextTick()

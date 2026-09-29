@@ -1,20 +1,16 @@
 """监控指标采样与趋势分析服务。
 
 - 采集：run_collect_cycle 把每台资产的 CPU/内存/磁盘/负载定时落库（5 分钟粒度，幂等）
+  数据源优先级：子机 agent 上报快照 > 母机本机 /proc > mock 演示序列（仅 mock 模式）
 - 查询：query_series 时间窗口序列（自动降采样）；query_compare 多日对比（平移对齐到当前时间轴）
 - 基线：build_baseline 按「一天内的时段」建立正常范围（P05~P95），历史越充足越准
 - 异常：detect_anomalies 当前序列显著偏离历史基线且连续出现的点
 - 预测：forecast_series 线性回归（OLS）外推未来趋势
-
-这里同时承载 zabbix_client_for / mock_asset_metrics（原 api.py 内的辅助函数），
-供 api 层与 celery 采集任务共用，避免 api -> services -> api 循环导入。
 """
 from __future__ import annotations
 
 import random
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -34,66 +30,11 @@ def _db_col(metric: str) -> str:
     return _DB_FIELD.get(metric, metric)
 
 
-# ===== Zabbix 客户端解析（自 api.py 移入） =====
-
-
-def _zabbix_cfg(mother: Asset | None) -> dict:
-    """母机上登记的 Zabbix 实例连接信息（extra["zabbix"]）。空 dict 表示回落全局配置。"""
-    z = ((mother.extra or {}).get("zabbix") or {}) if mother else {}
-    return z if z.get("url") else {}
-
-
-def zabbix_client_for(db: Session, asset: Asset):
-    """按资产所属母机实例化 Zabbix 客户端：优先母机登记的实例，否则回落全局配置。"""
-    from app.integrations.zabbix.http import build_http_zabbix
-
-    settings = get_settings()
-    mother_id = asset.mother_id or (asset.id if asset.kind == "mother" else "") or settings.mother_asset_id
-    mother = db.get(Asset, mother_id)
-    cfg = _zabbix_cfg(mother)
-    if cfg:
-        from app.integrations.zabbix.http import HttpZabbixClient
-
-        return HttpZabbixClient(
-            cfg["url"],
-            cfg.get("token", ""),
-            username=cfg.get("user", ""),
-            password=cfg.get("password", ""),
-            timeout=settings.zabbix_timeout_seconds,
-            retries=settings.zabbix_retries,
-            verify_ssl=cfg.get("verify_ssl", True),
-        )
-    return build_http_zabbix()
-
-
-def resolve_real_client(db: Session, asset: Asset):
-    """real 模式且存在 Zabbix 配置时返回客户端；否则 None（采集走 mock 演示序列）。"""
-    settings = get_settings()
-    if settings.integration_mode != "real":
-        return None
-    if settings.zabbix_url or _zabbix_cfg(db.get(Asset, _mother_id_of(asset))):
-        return zabbix_client_for(db, asset)
-    return None
-
-
-def _mother_id_of(asset: Asset) -> str:
-    settings = get_settings()
-    return asset.mother_id or (asset.id if asset.kind == "mother" else "") or settings.mother_asset_id
-
-
-def host_hint_of(asset: Asset) -> dict:
-    hint = {"external_id": asset.external_id, "zabbix_host": asset.zabbix_host, "hostname": asset.hostname}
-    if asset.kind == "mother":
-        # 母机自身监控由 Zabbix 栈自带的 agent 容器上报，主机名固定为 "Zabbix server"
-        hint["zabbix_host"] = "Zabbix server"
-    return hint
-
-
 # ===== mock 演示序列（自 api.py 移入） =====
 
 
 def mock_asset_metrics(asset_id: str, minutes: int) -> dict:
-    """Zabbix 未接入（mock 模式）时的演示序列：最近 N 分钟，最多 240 点自适应步长铺满窗口。"""
+    """子机未接入 agent（mock 模式）时的演示序列：最近 N 分钟，最多 240 点自适应步长铺满窗口。"""
     now = int(utcnow().timestamp())
     minutes = max(10, min(int(minutes), 1440))
     n = min(minutes, 240)
@@ -136,18 +77,31 @@ def _latest_values(latest: dict) -> dict:
 
 
 def collect_asset(db: Session, asset: Asset) -> str:
-    """采集单资产一帧指标并落库。返回 stored（已落库）/ unmapped（未接入且 mock）。"""
+    """采集单资产一帧指标并落库。
+
+    数据源优先级：子机 agent 最新快照（真实数据）→ 母机本机 /proc → mock 演示序列
+    （仅 mock 模式）。非母机且无 agent 数据时不再伪造母机数据，返回 skipped。
+    """
     latest: dict = {}
-    source = "real"
-    client = resolve_real_client(db, asset)
-    if client is not None:
-        try:
-            data = client.asset_metrics(asset.id, host_hint_of(asset), 10)
-            if data.get("mapped") and data.get("latest"):
-                latest = data["latest"]
-        except Exception:  # noqa: BLE001  采集失败不阻断整体轮次
-            latest = {}
+    source = "agent"
+    from app.routers.agent_api import LATEST, _LATEST_LOCK
+
+    with _LATEST_LOCK:
+        frame = LATEST.get(asset.id)
+    if frame:
+        latest = {k: frame.get(k) for k in ("cpu", "mem", "disk")}
+        latest["load1"] = frame.get("load1", frame.get("load"))
+    if not latest or all(v is None for v in latest.values()):
+        latest = {}
+    if not latest and (asset.kind == "mother" or asset.id == get_settings().mother_asset_id):
+        from app.services import system_live
+
+        snap = system_live.read_snapshot()
+        latest = {"cpu": snap.get("cpu"), "mem": snap.get("mem"), "disk": snap.get("disk"), "load1": snap.get("load1")}
+        source = "local"
     if not latest:
+        if get_settings().integration_mode != "mock":
+            return "skipped"  # 子机未接入 agent：不再伪造其他机器的数据
         latest = mock_asset_metrics(asset.id, 10)["latest"]
         source = "mock"
 
@@ -167,17 +121,20 @@ def collect_asset(db: Session, asset: Asset) -> str:
 
 def run_collect_cycle(db: Session) -> dict:
     """采集全部资产一轮（celery beat 每 5 分钟调用）。单资产失败不阻断整体。"""
-    stored = failed = 0
+    stored = failed = skipped = 0
     assets = db.scalars(select(Asset)).all()
     for a in assets:
         try:
-            if collect_asset(db, a) == "stored":
+            r = collect_asset(db, a)
+            if r == "stored":
                 stored += 1
+            else:
+                skipped += 1
         except Exception:  # noqa: BLE001
             db.rollback()
             failed += 1
     db.commit()
-    return {"stored": stored, "failed": failed, "total": len(assets)}
+    return {"stored": stored, "failed": failed, "skipped": skipped, "total": len(assets)}
 
 
 # ===== 序列查询 =====

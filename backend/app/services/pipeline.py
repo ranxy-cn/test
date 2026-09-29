@@ -14,7 +14,6 @@ from app.domain.safety import UnsafeExecutionError, parse_diagnosis, validate_to
 from app.domain.state_machine import transition
 from app.executor.verifier import BusinessProbeVerifier
 from app.integrations import get_playbook_runner
-from app.integrations.zabbix.mapping import mapping_from_asset
 from app.models import AlertEvent, Approval, Asset, MaintenanceWindow, Ticket, TicketSource, TicketStatus, utcnow
 from app.schemas import Diagnosis, params_digest
 from app.services.audit import add_audit, add_event
@@ -204,6 +203,10 @@ def run_pipeline(ticket_id: int) -> None:
             alert["host"] = webhook_payload.get("host")
         if webhook_payload.get("hostid"):
             alert["hostid"] = webhook_payload.get("hostid")
+        host_hint: dict[str, str] = {"asset_id": asset.id, "hostname": asset.hostname or ""}
+        for k in ("host", "hostid"):
+            if webhook_payload.get(k):
+                host_hint[f"webhook_{k}"] = str(webhook_payload[k])
         state = run_investigation(
             {
                 "ticket_id": ticket.id,
@@ -212,7 +215,7 @@ def run_pipeline(ticket_id: int) -> None:
                 "asset_tenant_id": asset.tenant_id,
                 "db_ok": asset.db_ok,
                 "alert": alert,
-                "host_hint": mapping_from_asset(asset, webhook_payload),
+                "host_hint": host_hint,
                 "event_id": ticket.event_id,
             }
         )
@@ -417,24 +420,9 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
         if pb.restart_cooldown:
             asset.last_restart_at = utcnow()
 
-        # 执行成功 → 回写 CMDB，形成“部署 → 纳管”闭环
+        # 执行成功 → 回写 CMDB（reachable=true）
         if result["ok"]:
             asset.reachable = True
-            if pb.id == "ACT-DEPLOY-ZABBIX-AGENT":
-                extra = dict(asset.extra or {})
-                extra["zabbix_agent"] = {
-                    "deployed_at": utcnow().isoformat(),
-                    "zabbix_server": (ticket.params or {}).get("zabbix_server") or "",
-                    "ticket": ticket.number,
-                }
-                asset.extra = extra
-                asset.zabbix_host = asset.hostname
-                add_event(
-                    db,
-                    ticket_id=ticket.id,
-                    kind="asset_synced",
-                    message="已回写 CMDB：reachable=true，zabbix_host 已绑定",
-                )
 
         _set_status(ticket, TicketStatus.verifying)
         add_event(db, ticket_id=ticket.id, kind="verification_started", message="开始业务探测与观察期")

@@ -77,17 +77,14 @@ export const fetchMothers = () => http.get('/assets/mothers')
 export const fetchMotherGroups = (id) => http.get(`/assets/mothers/${id}/groups`)
 export const fetchMotherOverviewById = (id) => http.get(`/assets/mothers/${id}/overview`)
 export const createMother = (payload) => http.post('/assets/mothers', payload)
-export const deployMotherStack = (id, payload) => http.post(`/assets/mothers/${id}/deploy`, payload, { timeout: 30000 })
-export const fetchMotherDeployStatus = (id) => http.get(`/assets/mothers/${id}/deploy`)
-export const fetchMotherDeployDetail = (id) => http.get(`/assets/mothers/${id}/deploy-detail`)
-export const uninstallMother = (id, payload) => http.post(`/assets/mothers/${id}/uninstall`, payload, { timeout: 30000 })
 export const renameGroup = (motherId, name, newName) =>
   http.post(`/assets/mothers/${motherId}/groups/rename`, { name, new_name: newName })
 export const deleteGroup = (motherId, name) => http.post(`/assets/mothers/${motherId}/groups/delete`, { name })
-export const verifyZabbix = (payload) => http.post('/assets/verify-zabbix', payload, { timeout: 20000 })
-export const fetchAlertPolicy = (id) => http.get(`/assets/mothers/${id}/alert-policy`, { timeout: 20000 })
+// 告警策略统一端点：asset_id 可为母机或子机（子机自有策略 > 继承母机 > 平台默认）
+export const fetchAlertPolicy = (id) => http.get(`/assets/${id}/alert-policy`, { timeout: 20000 })
 export const updateAlertPolicy = (id, policy) =>
-  http.put(`/assets/mothers/${id}/alert-policy`, policy, { timeout: 60000 })
+  http.put(`/assets/${id}/alert-policy`, policy, { timeout: 60000 })
+export const resetAlertPolicy = (id) => http.delete(`/assets/${id}/alert-policy`, { timeout: 20000 })
 
 export const updateAsset = (id, payload) => http.patch(`/assets/${id}`, payload)
 export const fetchAsset = (id) => http.get(`/assets/${id}`)
@@ -100,13 +97,26 @@ export const importAssets = (file) => {
 }
 export const provisionAsset = (payload) => http.post('/assets/provision', payload)
 export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
-// 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的 zabbix-agent 再删台账
+// 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的自研 agent 再删台账
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })
 export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })
 // 本机系统资源实时监控（类 macOS 活动监视器）：1 秒轮询实时值 / 后台采样落库历史
-export const fetchSystemRealtime = () => http.get('/system/metrics/realtime')
-export const fetchSystemHistory = (minutes = 60) => http.get('/system/metrics/history', { params: { minutes } })
+// assetId：子机=该子机 Agent 上报；母机=其本机子机曲线；留空=平台本机
+export const fetchSystemRealtime = (assetId = '') =>
+  http.get('/system/metrics/realtime', { params: assetId ? { asset_id: assetId } : {} })
+export const fetchSystemHistory = (minutes = 60, assetId = '') =>
+  http.get('/system/metrics/history', { params: assetId ? { minutes, asset_id: assetId } : { minutes } })
+// SSH 连通性测试（新增母机/子机前的「测试连接」按钮）
+export const testSsh = (payload) => http.post('/assets/ssh-test', payload, { timeout: 30000 })
+// 子机 Agent：全局默认配置 + 资产级覆盖 + SSH 部署（py/go）
+export const fetchAgentConfigDefaults = () => http.get('/agent-config/defaults')
+export const updateAgentConfigDefaults = (patch) => http.put('/agent-config/defaults', patch)
+export const updateAgentAssetConfig = (id, patch) => http.put(`/assets/${id}/agent/config`, patch)
+export const resetAgentAssetConfig = (id) => http.delete(`/assets/${id}/agent/config`)
+export const fetchAgentStatus = (id) => http.get(`/assets/${id}/agent/status`)
+export const deployAgent = (id, payload) => http.post(`/assets/${id}/agent/deploy`, payload, { timeout: 30000 })
+export const fetchAgentDeployStatus = (id) => http.get(`/assets/${id}/agent/deploy`)
 export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, payload, { timeout: 20000 })
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
 export const runAction = (payload) => http.post('/actions/run', payload)

@@ -148,7 +148,6 @@ def seed_if_empty(db: Session) -> None:
             Asset(
             id="ast-order-app-01",
             hostname="order-app-01",
-            zabbix_host="order-app-01",
             external_id="10001",
             app="订单系统",
             role="app",
@@ -160,7 +159,6 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-app-02",
             hostname="order-app-02",
-            zabbix_host="order-app-02",
             external_id="10002",
             app="订单系统",
             role="app",
@@ -170,7 +168,6 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-app-03",
             hostname="order-app-03",
-            zabbix_host="order-app-03",
             external_id="10003",
             app="订单系统",
             role="app",
@@ -180,7 +177,6 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-gw-01",
             hostname="order-gateway-01",
-            zabbix_host="order-gateway-01",
             external_id="10011",
             app="订单系统",
             role="gateway",
@@ -190,7 +186,6 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-db-01",
             hostname="order-db-01",
-            zabbix_host="order-db-01",
             external_id="10021",
             app="订单系统",
             role="mysql",
@@ -200,7 +195,6 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-redis-01",
             hostname="order-redis-01",
-            zabbix_host="order-redis-01",
             external_id="10031",
             app="订单系统",
             role="redis",
@@ -210,7 +204,6 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-lb-01",
             hostname="order-lb-01",
-            zabbix_host="order-lb-01",
             external_id="10041",
             app="订单系统",
             role="lb",
@@ -220,7 +213,6 @@ def seed_if_empty(db: Session) -> None:
         Asset(
             id="ast-order-job-01",
             hostname="order-job-01",
-            zabbix_host="order-job-01",
             external_id="10051",
             app="订单系统",
             role="job",
@@ -228,19 +220,8 @@ def seed_if_empty(db: Session) -> None:
             tenant_id="tenant-default",
         ),
         Asset(
-            id="ast-zabbix-server",
-            hostname="Zabbix server",
-            zabbix_host="Zabbix server",
-            external_id="10084",
-            app="监控",
-            role="monitor",
-            owner="张三",
-            tenant_id="tenant-default",
-        ),
-        Asset(
             id="ast-order-unreachable",
             hostname="order-app-down",
-            zabbix_host="order-app-down",
             external_id="",
             app="订单系统",
             role="app",
@@ -264,7 +245,4 @@ def seed_if_empty(db: Session) -> None:
                 )
             )
         seed_backup_jobs(db)
-    for row in db.scalars(select(Asset)).all():
-        if not row.zabbix_host:
-            row.zabbix_host = row.hostname
     db.flush()

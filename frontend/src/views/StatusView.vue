@@ -13,7 +13,7 @@
       </el-table>
       <el-alert
         style="margin-top: 14px"
-        title="无真实凭据或探测失败时保持 mock。Zabbix 只读；Ansible 仅跑 playbooks/ansible 白名单，缺 runner/inventory 会回退 mock 或升级。"
+        title="无真实凭据或探测失败时保持 mock。Ansible 仅跑 playbooks/ansible 白名单，缺 runner/inventory 会回退 mock 或升级。"
         type="info"
         :closable="false"
       />
@@ -39,7 +39,7 @@ const locks = ref([])
 const rows = computed(() => {
   const i = status.value?.integrations || {}
   const p = status.value?.probes || {}
-  return ['zabbix', 'ansible', 'vault'].map((name) => ({
+  return ['ansible', 'vault'].map((name) => ({
     name,
     requested: i[name]?.requested,
     mode: i[name]?.mode,

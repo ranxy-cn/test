@@ -7,33 +7,6 @@ from app.schemas import ToolCall
 
 
 @runtime_checkable
-class ZabbixClient(Protocol):
-    name: str
-
-    def health(self) -> dict[str, Any]: ...
-
-    def query_metrics(
-        self,
-        asset_id: str,
-        window_minutes: int = 30,
-        *,
-        scenario: str = "",
-        trigger: str = "",
-        host_hint: dict[str, Any] | None = None,
-        event_id: str = "",
-    ) -> dict[str, Any]: ...
-
-    def query_events(
-        self,
-        asset_id: str,
-        limit: int = 20,
-        *,
-        host_hint: dict[str, Any] | None = None,
-        event_id: str = "",
-    ) -> dict[str, Any]: ...
-
-
-@runtime_checkable
 class VaultClient(Protocol):
     name: str
 
