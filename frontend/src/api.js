@@ -107,6 +107,14 @@ export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/m
 // 本机系统资源实时监控（类 macOS 活动监视器）：1 秒轮询实时值 / 后台采样落库历史
 export const fetchSystemRealtime = () => http.get('/system/metrics/realtime')
 export const fetchSystemHistory = (minutes = 60) => http.get('/system/metrics/history', { params: { minutes } })
+// 子机 Agent：全局默认配置 + 资产级覆盖 + SSH 部署（py/go）
+export const fetchAgentConfigDefaults = () => http.get('/agent-config/defaults')
+export const updateAgentConfigDefaults = (patch) => http.put('/agent-config/defaults', patch)
+export const updateAgentAssetConfig = (id, patch) => http.put(`/assets/${id}/agent/config`, patch)
+export const resetAgentAssetConfig = (id) => http.delete(`/assets/${id}/agent/config`)
+export const fetchAgentStatus = (id) => http.get(`/assets/${id}/agent/status`)
+export const deployAgent = (id, payload) => http.post(`/assets/${id}/agent/deploy`, payload, { timeout: 30000 })
+export const fetchAgentDeployStatus = (id) => http.get(`/assets/${id}/agent/deploy`)
 export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, payload, { timeout: 20000 })
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
 export const runAction = (payload) => http.post('/actions/run', payload)

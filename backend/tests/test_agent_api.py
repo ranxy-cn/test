@@ -110,6 +110,70 @@ def test_agent_config_roundtrip(client, auth_token, db):
     assert set(cfg["collect_items"]) == set(DEFAULT_AGENT_CONFIG["collect_items"])
 
 
+def test_global_defaults_roundtrip_merge_and_reset(client, auth_token, db):
+    """全局默认可调：未覆盖子机即时生效；子机覆盖优先；清除覆盖回到全局默认。"""
+    _child(db)
+    _child(db, "ch-agent-02")
+    h = {"Authorization": f"Bearer {auth_token}"}
+
+    # 初始：全局默认 = 代码内置，无覆盖
+    r = client.get("/api/v1/agent-config/defaults", headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["config"] == DEFAULT_AGENT_CONFIG
+    assert body["built_in"] == DEFAULT_AGENT_CONFIG
+    assert body["overrides"] == []
+
+    # 修改全局默认
+    r = client.put(
+        "/api/v1/agent-config/defaults",
+        json={"report_interval": 15, "collect_items": ["cpu", "mem"]},
+        headers=h,
+    )
+    assert r.status_code == 200
+    assert r.json()["config"]["report_interval"] == 15
+    # 未覆盖子机：agent 拉取 → 全局默认生效
+    token2 = _mk_token(client, auth_token, "ch-agent-02")
+    r = client.get("/api/v1/agent/config", params={"asset_id": "ch-agent-02"}, headers={"X-Agent-Token": token2})
+    cfg = r.json()["config"]
+    assert cfg["report_interval"] == 15 and cfg["collect_items"] == ["cpu", "mem"]
+
+    # 子机级覆盖优先于全局默认
+    client.put("/api/v1/assets/ch-agent-02/agent/config", json={"report_interval": 60}, headers=h)
+    r = client.get("/api/v1/agent/config", params={"asset_id": "ch-agent-02"}, headers={"X-Agent-Token": token2})
+    assert r.json()["config"]["report_interval"] == 60
+
+    # defaults 接口给出覆盖清单
+    r = client.get("/api/v1/agent-config/defaults", headers=h)
+    assert [o["asset_id"] for o in r.json()["overrides"]] == ["ch-agent-02"]
+
+    # 清除覆盖 → 回到全局默认
+    r = client.delete("/api/v1/assets/ch-agent-02/agent/config", headers=h)
+    assert r.json()["config"]["report_interval"] == 15
+    r = client.get("/api/v1/agent-config/defaults", headers=h)
+    assert r.json()["overrides"] == []
+
+
+def test_agent_config_defaults_validation(client, auth_token, db):
+    """全局默认写入收敛：越界 clamp、白名单外采集项剔除、空集合回全集。"""
+    _child(db)
+    h = {"Authorization": f"Bearer {auth_token}"}
+    r = client.put(
+        "/api/v1/agent-config/defaults",
+        json={"report_interval": 999999, "collect_items": ["cpu", "hack"]},
+        headers=h,
+    )
+    cfg = r.json()["config"]
+    assert cfg["report_interval"] == 86400
+    assert cfg["collect_items"] == ["cpu"]
+    # 采集项全被过滤 → 回全集
+    r = client.put("/api/v1/agent-config/defaults", json={"collect_items": ["nope"]}, headers=h)
+    assert set(r.json()["config"]["collect_items"]) == set(DEFAULT_AGENT_CONFIG["collect_items"])
+    # 非法数值忽略
+    r = client.put("/api/v1/agent-config/defaults", json={"report_interval": "abc"}, headers=h)
+    assert r.json()["config"] == DEFAULT_AGENT_CONFIG
+
+
 def test_offline_detection(client, auth_token, db):
     extra = {"agent": {"last_seen": (utcnow() - timedelta(seconds=120)).isoformat(), "version": "1.0.0-py"}}
     _child(db, extra=extra)

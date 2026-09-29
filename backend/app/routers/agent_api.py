@@ -4,7 +4,9 @@
 - GET  /api/v1/agent/config        子机 agent 拉取自身采集/推送配置
 - POST /api/v1/assets/{id}/agent/token    管理端：生成/重置令牌
 - GET  /api/v1/assets/{id}/agent/status   管理端：在线状态 + 最新指标
-- PUT  /api/v1/assets/{id}/agent/config   管理端：更新采集/推送配置
+- PUT  /api/v1/assets/{id}/agent/config   管理端：更新采集/推送配置（资产级覆盖）
+- DEL  /api/v1/assets/{id}/agent/config   管理端：清除覆盖，回到全局默认
+- GET/PUT /api/v1/agent-config/defaults   管理端：全局默认采集/推送配置
 - POST /api/v1/assets/{id}/agent/deploy   管理端：经 SSH 向子机下发部署（py/go）
 
 认证：请求头 X-Agent-Token 与资产 extra["agent_token"] 匹配。
@@ -23,8 +25,10 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import Asset, SystemMetricSample, utcnow
-from app.routers.deps import require_perm
+from app.models import AppSetting, Asset, SystemMetricSample, utcnow
+from app.routers.deps import CurrentUser, require_perm
+from app.services.audit import add_audit
+from sqlalchemy import select
 
 router = APIRouter()
 
@@ -42,10 +46,45 @@ DEFAULT_AGENT_CONFIG = {
 }
 
 
-def agent_cfg_of(asset: Asset) -> dict:
+# 系统级全局默认配置的 kv 键（app_settings 表）；无记录时用代码内置默认
+GLOBAL_CFG_KEY = "agent_config_default"
+
+# 数值配置项（秒/条），管理端写入时收敛到 [1, 86400]
+_INT_KEYS = ("report_interval", "collect_interval", "buffer_max", "config_refresh", "offline_after")
+_COLLECT_ITEMS = ("cpu", "mem", "disk", "load", "net")
+
+
+def _global_cfg(db: Session | None) -> dict:
+    if db is None:
+        return {}
+    row = db.get(AppSetting, GLOBAL_CFG_KEY)
+    return dict(row.value or {}) if row else {}
+
+
+def agent_cfg_of(asset: Asset, db: Session | None = None) -> dict:
+    """生效配置 = 代码内置默认 ← 全局默认（管理员可调） ← 资产级覆盖。"""
     cfg = dict(DEFAULT_AGENT_CONFIG)
+    cfg.update(_global_cfg(db))
     cfg.update((asset.extra or {}).get("agent_config") or {})
     return cfg
+
+
+def _sanitize_cfg(patch: dict) -> dict:
+    """管理端配置项收敛：数值 clamp 到 [1, 86400]，采集项白名单过滤（空则全集）。"""
+    out: dict = {}
+    for k in DEFAULT_AGENT_CONFIG:
+        if k not in patch:
+            continue
+        v = patch[k]
+        if k in _INT_KEYS:
+            try:
+                v = max(1, min(int(v), 86400))
+            except (TypeError, ValueError):
+                continue
+        elif k == "collect_items":
+            v = sorted({x for x in (v or []) if x in _COLLECT_ITEMS}, key=_COLLECT_ITEMS.index) or list(_COLLECT_ITEMS)
+        out[k] = v
+    return out
 
 
 def _get_asset_by_token(db: Session, asset_id: str, token: str) -> Asset:
@@ -122,13 +161,13 @@ def agent_config(
 ):
     _get_asset_by_token(db, asset_id, x_agent_token)
     asset = db.get(Asset, asset_id)
-    return {"config": agent_cfg_of(asset)}
+    return {"config": agent_cfg_of(asset, db)}
 
 
-def agent_status_of(asset: Asset) -> dict:
+def agent_status_of(asset: Asset, db: Session | None = None) -> dict:
     """计算 agent 在线状态（查询时判定，无需后台任务）。"""
     info = (asset.extra or {}).get("agent") or {}
-    cfg = agent_cfg_of(asset)
+    cfg = agent_cfg_of(asset, db)
     last_seen = info.get("last_seen")
     online = False
     if last_seen:
@@ -169,26 +208,100 @@ def agent_status(asset_id: str, db: Session = Depends(get_db)):
     asset = db.get(Asset, asset_id)
     if not asset:
         raise HTTPException(404, "资产不存在")
-    return agent_status_of(asset)
+    return agent_status_of(asset, db)
 
 
-@router.put("/api/v1/assets/{asset_id}/agent/config", dependencies=[Depends(require_perm("assets:write"))])
-def agent_update_config(asset_id: str, body: dict, db: Session = Depends(get_db)):
+@router.put("/api/v1/assets/{asset_id}/agent/config")
+def agent_update_config(
+    asset_id: str,
+    body: dict,
+    current: CurrentUser = Depends(require_perm("assets:write")),
+    db: Session = Depends(get_db),
+):
+    """更新单台子机的采集/推送配置（资产级覆盖全局默认）。"""
     asset = db.get(Asset, asset_id)
     if not asset:
         raise HTTPException(404, "资产不存在")
-    merged = agent_cfg_of(asset)
-    for k in DEFAULT_AGENT_CONFIG:
-        if k in body:
-            v = body[k]
-            if k in ("report_interval", "collect_interval", "buffer_max", "config_refresh", "offline_after"):
-                v = max(1, min(int(v), 86400))
-            elif k == "collect_items":
-                v = [x for x in (v or []) if x in ("cpu", "mem", "disk", "load", "net")] or ["cpu", "mem", "disk", "load", "net"]
-            merged[k] = v
+    patch = _sanitize_cfg(body)
+    merged = agent_cfg_of(asset, db)
+    merged.update(patch)
     asset.extra = {**(asset.extra or {}), "agent_config": merged}
     db.commit()
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="agent_config_update",
+        actor=current.username,
+        result={"asset_id": asset_id, "config": merged},
+    )
+    db.commit()
     return {"asset_id": asset_id, "config": merged}
+
+
+@router.delete("/api/v1/assets/{asset_id}/agent/config")
+def agent_reset_config(
+    asset_id: str,
+    current: CurrentUser = Depends(require_perm("assets:write")),
+    db: Session = Depends(get_db),
+):
+    """清除子机级覆盖，回到全局默认配置（agent 下轮 config_refresh 自动生效）。"""
+    asset = db.get(Asset, asset_id)
+    if not asset:
+        raise HTTPException(404, "资产不存在")
+    extra = dict(asset.extra or {})
+    removed = extra.pop("agent_config", None)
+    if removed is not None:
+        asset.extra = extra
+        db.commit()
+        add_audit(
+            db,
+            ticket_id=None,
+            event_type="agent_config_reset",
+            actor=current.username,
+            result={"asset_id": asset_id, "removed": removed},
+        )
+        db.commit()
+    return {"asset_id": asset_id, "config": agent_cfg_of(asset, db)}
+
+
+@router.get("/api/v1/agent-config/defaults", dependencies=[Depends(require_perm("assets:read"))])
+def agent_config_defaults(db: Session = Depends(get_db)):
+    """全局默认采集/推送配置 + 各子机覆盖清单（配置管理界面数据源）。"""
+    overrides = [
+        {"asset_id": a.id, "hostname": a.hostname, "config": (a.extra or {}).get("agent_config") or {}}
+        for a in db.scalars(select(Asset)).all()
+        if (a.extra or {}).get("agent_config")
+    ]
+    return {
+        "config": {**DEFAULT_AGENT_CONFIG, **_global_cfg(db)},
+        "built_in": dict(DEFAULT_AGENT_CONFIG),
+        "overrides": overrides,
+    }
+
+
+@router.put("/api/v1/agent-config/defaults")
+def agent_update_config_defaults(
+    body: dict,
+    current: CurrentUser = Depends(require_perm("assets:write")),
+    db: Session = Depends(get_db),
+):
+    """保存全局默认配置（对未单独覆盖的子机生效，agent 定期拉取自动应用）。"""
+    sanitized = _sanitize_cfg(body)
+    row = db.get(AppSetting, GLOBAL_CFG_KEY)
+    if row is None:
+        row = AppSetting(key=GLOBAL_CFG_KEY, value={})
+        db.add(row)
+    row.value = sanitized
+    db.commit()
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="agent_config_defaults_update",
+        actor=current.username,
+        result={"config": sanitized},
+    )
+    db.commit()
+    return {"config": {**DEFAULT_AGENT_CONFIG, **sanitized}}
 
 
 class AgentDeployIn(BaseModel):
@@ -232,7 +345,7 @@ def agent_deploy(asset_id: str, body: AgentDeployIn, db: Session = Depends(get_d
                 ssh_password=body.ssh_password,
                 token=token,
                 server_url=body.server_url,
-                cfg=agent_cfg_of(db2.get(Asset, asset_id)),
+                cfg=agent_cfg_of(db2.get(Asset, asset_id), db2),
             )
         except Exception as exc:  # noqa: BLE001 进度落库
             asset2 = db2.get(Asset, asset_id)

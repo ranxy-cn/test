@@ -1155,7 +1155,7 @@ def provision_asset(
 
     # 后台线程执行部署（SSH 下发约 1 分钟），接口立即返回
     server_url = (get_settings().platform_public_url or str(request.base_url).rstrip("/")).strip()
-    cfg = agent_cfg_of(asset)
+    cfg = agent_cfg_of(asset, db)
 
     def _run_deploy() -> None:
         from app.database import SessionLocal

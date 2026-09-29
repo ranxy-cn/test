@@ -50,7 +50,7 @@ def _asset_latest(db: Session, asset_id: str) -> dict:
     asset = db.get(Asset, asset_id)
     if not asset:
         return {"supported": False, "note": "资产不存在"}
-    status = agent_status_of(asset)
+    status = agent_status_of(asset, db)
     latest = status["latest"]
     return {
         "supported": bool(status["enabled"]),

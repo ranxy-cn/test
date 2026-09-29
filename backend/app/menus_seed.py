@@ -25,6 +25,7 @@ MENU_TREE: list[tuple] = [
     ]),
     ("menu:employee", "数字员工", "menu", "/employee", "catalog:read", "user", 20, []),
     ("menu:assets", "资产台账", "menu", "/assets", "assets:read", "grid", 30, []),
+    ("menu:agent-config", "Agent 配置", "menu", "/agent-config", "assets:read", "monitor", 35, []),
     ("menu:backups", "备份管理", "menu", "/backups", "backups:read", "box", 40, [
         ("btn:backup-run", "立即备份", "button", "", "backups:operate", "", 10, []),
         ("btn:backup-verify", "恢复演练", "button", "", "backups:operate", "", 20, []),

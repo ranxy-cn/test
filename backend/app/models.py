@@ -240,6 +240,16 @@ class Asset(Base):
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class AppSetting(Base):
+    """系统级键值配置（如子机 agent 全局默认采集/推送配置）。"""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+
+
 class MaintenanceWindow(Base):
     __tablename__ = "maintenance_windows"
 

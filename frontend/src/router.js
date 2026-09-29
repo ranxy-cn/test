@@ -5,6 +5,7 @@ import TicketDetailView from './views/TicketDetailView.vue'
 import EmployeeView from './views/EmployeeView.vue'
 import ReportView from './views/ReportView.vue'
 import AssetsView from './views/AssetsView.vue'
+import AgentConfigView from './views/AgentConfigView.vue'
 import StatusView from './views/StatusView.vue'
 import NotificationsView from './views/NotificationsView.vue'
 import BackupsView from './views/BackupsView.vue'
@@ -33,6 +34,7 @@ const router = createRouter({
     { path: '/employee', component: EmployeeView, meta: { perm: 'catalog:read' } },
     { path: '/report', component: ReportView, meta: { perm: 'reports:read' } },
     { path: '/assets', component: AssetsView, meta: { perm: 'assets:read' } },
+    { path: '/agent-config', component: AgentConfigView, meta: { perm: 'assets:read' } },
     { path: '/status', component: StatusView, meta: { perm: 'status:read' } },
     { path: '/knowledge', component: KnowledgeView, meta: { perm: 'knowledge:read' } },
     { path: '/chat', component: ChatView, meta: { perm: 'knowledge:chat' } },
