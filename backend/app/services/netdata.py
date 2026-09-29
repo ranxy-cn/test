@@ -189,7 +189,11 @@ def _chart_snapshot(client: httpx.Client, base_url: str, chart_id: str | None, m
 
 def collect_snapshot(asset: Asset, minutes: int = 5) -> dict[str, Any]:
     """读取一台资产的实时指标；所有连接错误均转成 offline 结果。"""
-    base_url, reason = _base_url(asset)
+    try:
+        base_url, reason = _base_url(asset)
+    except NetdataConfigError as exc:
+        # 非法地址（如回环/链路本地）按未配置降级，不让异常冒泡
+        base_url, reason = "", str(exc)
     result: dict[str, Any] = {
         "asset_id": asset.id,
         "hostname": asset.hostname,
