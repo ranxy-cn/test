@@ -102,6 +102,12 @@ class FakeSftp:
     def rename(self, a: str, b: str):
         self.renames.append((a, b))
 
+    def posix_rename(self, a: str, b: str):
+        self.renames.append((a, b))
+
+    def remove(self, remote: str):
+        pass
+
     def open(self, remote: str, mode: str = "r"):
         buf = FakeRemoteFile()
         self.written[remote] = buf

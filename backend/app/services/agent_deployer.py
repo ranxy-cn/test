@@ -88,7 +88,15 @@ def deploy_to_host(
         try:
             remote = f"{AGENT_DIR}/{dst_name}"
             sftp.put(src, remote + ".tmp")
-            sftp.rename(remote + ".tmp", remote)
+            # posix_rename 原子覆盖旧文件（SFTPv3 rename 目标已存在会报 Failure，重装必挂）
+            try:
+                sftp.posix_rename(remote + ".tmp", remote)
+            except (AttributeError, OSError, IOError):
+                try:
+                    sftp.remove(remote)
+                except (OSError, IOError):
+                    pass
+                sftp.rename(remote + ".tmp", remote)
             if lang == "go":
                 _run(ssh, f"chmod +x {remote}", 15, steps)
             cfg_data = {
