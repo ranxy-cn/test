@@ -34,8 +34,11 @@
               <el-tag v-if="liveNote" size="small" type="warning">{{ liveNote }}</el-tag>
               <el-tag v-else size="small" type="success">1 秒/次实时刷新</el-tag>
             </span>
-            <span class="live-src">
-              DevOpsAgent 所在服务器<template v-if="live?.net_iface"> · 网口 {{ live.net_iface }}</template> · 自打开起实时记录
+            <span class="row-gap">
+              <span class="live-src">
+                DevOpsAgent 所在服务器<template v-if="live?.net_iface"> · 网口 {{ live.net_iface }}</template> · 自打开起实时记录
+              </span>
+              <el-button size="small" plain @click="openOverview">历史全揽</el-button>
             </span>
           </div>
         </template>
@@ -57,6 +60,45 @@
 
         <div ref="liveChartEl" class="chart live-chart" />
       </el-card>
+
+      <!-- 历史全揽：落库数据（最长 2 个月）时间范围切换 + 五指标小图网格 -->
+      <el-dialog
+        v-model="ovVisible"
+        title="历史全揽 · 系统资源落库数据"
+        width="94%"
+        top="4vh"
+        append-to-body
+        destroy-on-close
+      >
+        <div class="row-between ov-toolbar">
+          <el-radio-group v-model="ovRange" size="small" @change="loadOverview">
+            <el-radio-button v-for="r in OV_RANGES" :key="r.m" :value="r.m">{{ r.label }}</el-radio-button>
+          </el-radio-group>
+          <span class="live-src">
+            落库粒度 5 秒 · {{ ovBucketNote }} · 保留 60 天（过期自动清理）
+          </span>
+        </div>
+
+        <div class="ov-summary">
+          <div v-for="s in ovSummary" :key="s.label" class="ov-kpi">
+            <div class="ov-kpi-label">{{ s.label }}</div>
+            <div class="ov-kpi-value" :style="{ color: s.color }">
+              {{ s.value }}<span v-if="s.unit" class="ov-kpi-unit">{{ s.unit }}</span>
+            </div>
+            <div class="ov-kpi-sub">峰值 {{ s.max }}</div>
+          </div>
+        </div>
+
+        <div class="ov-grid">
+          <div v-for="c in OV_DEFS" :key="c.key" class="ov-cell">
+            <div class="ov-cell-title">
+              <span :style="{ color: c.color }">■</span>
+              {{ c.name }}<span v-if="ovBucketNote" class="ov-cell-gran">（{{ ovBucketNote }}）</span>
+            </div>
+            <div :ref="(el) => setOvEl(c.key, el)" class="ov-chart" />
+          </div>
+        </div>
+      </el-dialog>
 
       <!-- 服务器详情：SSH 全景采集（系统 / 硬件 / 内存 / 磁盘 / 网络 / 进程） -->
       <el-card shadow="never" class="block">
@@ -384,7 +426,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import * as echarts from 'echarts'
-import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchSystemRealtime, inspectAsset } from '../api'
+import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchSystemHistory, fetchSystemRealtime, inspectAsset } from '../api'
 import { cnTrigger } from '../trigger-cn'
 import { fmtTimeCol } from '../time'
 import AnomalyDetailDrawer from './AnomalyDetailDrawer.vue'
@@ -734,6 +776,183 @@ function tabValue(key) {
 
 const liveNote = computed(() => live.value?.note || '')
 
+// ===== 历史全揽：落库数据最长 2 个月；≤2h 原始粒度，更长窗口后端自动分桶（avg/max） =====
+const OV_RANGES = [
+  { m: 60, label: '1 小时' },
+  { m: 1440, label: '24 小时' },
+  { m: 10080, label: '7 天' },
+  { m: 43200, label: '30 天' },
+  { m: 86400, label: '60 天' },
+]
+const OV_DEFS = [
+  { key: 'cpu', name: 'CPU 使用率', color: '#0a84ff', pct: true },
+  { key: 'mem', name: '内存使用率', color: '#34c759', pct: true },
+  { key: 'disk', name: '磁盘使用率', color: '#ff9500', pct: true },
+  { key: 'load1', name: '系统负载', color: '#ff3b30', pct: false },
+  { key: 'net', name: '网络流量', color: '#5e5ce6', net: true },
+]
+const ovVisible = ref(false)
+const ovRange = ref(1440)
+const ovLoading = ref(false)
+const ovItems = ref([])
+const ovBucket = ref(0)
+const ovEls = {}
+let ovCharts = {}
+
+function setOvEl(key, el) {
+  if (el) ovEls[key] = el
+}
+
+async function openOverview() {
+  ovVisible.value = true
+  await nextTick()
+  loadOverview()
+}
+
+async function loadOverview() {
+  if (ovLoading.value) return
+  ovLoading.value = true
+  try {
+    const { data } = await fetchSystemHistory(ovRange.value)
+    ovItems.value = data.items || []
+    ovBucket.value = data.bucket_seconds || 0
+    await nextTick()
+    renderOverview()
+  } catch {
+    /* 拉取失败保留旧图 */
+  } finally {
+    ovLoading.value = false
+  }
+}
+
+const ovBucketNote = computed(() => {
+  if (!ovBucket.value) return '原始 5 秒粒度'
+  if (ovBucket.value < 3600) return `按 ${ovBucket.value / 60} 分钟分桶聚合`
+  return '按 1 小时分桶聚合'
+})
+
+// 顶部 KPI：窗口内均值 + 峰值一览
+const ovSummary = computed(() => {
+  const its = ovItems.value
+  if (!its.length) return []
+  const col = (f) => its.map((x) => x[f]).filter((v) => v != null)
+  const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null)
+  const mx = (xs) => (xs.length ? Math.max(...xs) : null)
+  const f2 = (v) => (v == null ? '—' : v.toFixed(1))
+  const cpuAvg = avg(col('cpu'))
+  const cpuPeak = mx(col('cpu_max'))
+  const memAvg = avg(col('mem'))
+  const memPeak = mx(col('mem_max'))
+  const diskNow = col('disk').slice(-1)[0]
+  const netPeak = Math.max(mx(col('net_rx_bps_max')) || 0, mx(col('net_tx_bps_max')) || 0)
+  return [
+    { label: 'CPU 均值', value: f2(cpuAvg), max: `${f2(cpuPeak)}%`, unit: '%', color: '#0a84ff' },
+    { label: '内存均值', value: f2(memAvg), max: `${f2(memPeak)}%`, unit: '%', color: '#34c759' },
+    { label: '磁盘当前', value: f2(diskNow), max: `${f2(mx(col('disk_max')))}%`, unit: '%', color: '#ff9500' },
+    { label: '负载均值', value: f2(avg(col('load1'))), max: `${f2(mx(col('load1_max')))}（load1 峰值）`, unit: '', color: '#ff3b30' },
+    { label: '网络峰值', value: speedText(netPeak), max: '↓/↑ 合计', unit: '', color: '#5e5ce6' },
+  ]
+})
+
+function disposeOvCharts() {
+  for (const k of Object.keys(ovCharts)) {
+    ovCharts[k]?.dispose()
+  }
+  ovCharts = {}
+}
+
+function renderOverview() {
+  const its = ovItems.value
+  const long = ovRange.value >= 10080
+  const timeFmt = (v) =>
+    long
+      ? new Date(v).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      : new Date(v).toLocaleTimeString('zh-CN', { hour12: false })
+  const grad = (c) => new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+    { offset: 0, color: `${c}33` },
+    { offset: 1, color: `${c}05` },
+  ])
+  for (const d of OV_DEFS) {
+    const el = ovEls[d.key]
+    if (!el) continue
+    ovCharts[d.key] = ovCharts[d.key] || echarts.init(el)
+    const chart = ovCharts[d.key]
+    const mk = (name, field, color, dashed) => ({
+      name,
+      type: 'line',
+      showSymbol: false,
+      smooth: true,
+      data: its.map((x) => [x.ts * 1000, x[field]]).filter(([, v]) => v != null),
+      itemStyle: { color },
+      lineStyle: { color, width: dashed ? 1 : 2, ...(dashed ? { type: 'dashed', opacity: 0.55 } : {}) },
+      areaStyle: dashed ? undefined : { color: grad(color) },
+    })
+    let series
+    if (d.net) {
+      series = [mk('下载均值', 'net_rx_bps', '#34c759'), mk('上传均值', 'net_tx_bps', '#ff9500')]
+    } else {
+      series = [mk('均值', d.key, d.color), mk('峰值', `${d.key}_max`, d.color, true)]
+    }
+    const fmtVal = (v) => (d.net ? speedText(v) : d.pct ? `${v.toFixed(2)}%` : v.toFixed(2))
+    chart.setOption(
+      {
+        animation: false,
+        tooltip: {
+          trigger: 'axis',
+          confine: true,
+          formatter: (params) => {
+            const list = Array.isArray(params) ? params : [params]
+            if (!list.length) return ''
+            const rows = list
+              .filter((p) => p.value?.[1] != null)
+              .map((p) => `<div style="display:flex;justify-content:space-between;gap:14px"><span>${p.marker}${p.seriesName}</span><b>${fmtVal(p.value[1])}</b></div>`)
+              .join('')
+            return `<div style="font-weight:600;margin-bottom:4px">${timeFmt(list[0].value[0])}</div>${rows}`
+          },
+        },
+        grid: { left: 56, right: 14, top: 24, bottom: 24 },
+        xAxis: {
+          type: 'time',
+          axisLine: { lineStyle: { color: '#d2d2d7' } },
+          axisLabel: { hideOverlap: true, formatter: (v) => (long ? fmtDay(v) : fmtTime(v)) },
+        },
+        yAxis: d.pct
+          ? { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%' }, splitLine: { lineStyle: { color: '#ececf0' } } }
+          : {
+              type: 'value',
+              min: 0,
+              scale: true,
+              axisLabel: { formatter: (v) => (d.net && v >= 1024 ? speedText(v).replace(' ', '') : v) },
+              splitLine: { lineStyle: { color: '#ececf0' } },
+            },
+        series,
+      },
+      true,
+    )
+    if (!its.length) {
+      chart.setOption({
+        graphic: [{ type: 'text', left: 'center', top: 'middle', style: { text: '该窗口暂无落库数据（自应用启动起记录）', fill: '#86868b', fontSize: 13 } }],
+      })
+    } else {
+      chart.setOption({ graphic: [] })
+    }
+    chart.resize()
+  }
+}
+
+function fmtDay(v) {
+  const d = new Date(v)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function fmtTime(v) {
+  const d = new Date(v)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+watch(ovVisible, (v) => {
+  if (!v) disposeOvCharts()
+})
+
 // ===== 实时曲线渲染：当前选项卡对应序列，1 秒增量追加（animation 关闭保证流畅） =====
 
 function renderLiveChart() {
@@ -993,5 +1212,79 @@ watch(autoRefresh, (on) => {
 }
 .live-chart {
   height: 320px;
+}
+/* ===== 历史全揽弹窗 ===== */
+.ov-toolbar {
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.ov-summary {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ov-kpi {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--el-fill-color-lighter);
+}
+.ov-kpi-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ov-kpi-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin: 2px 0;
+}
+.ov-kpi-unit {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 2px;
+}
+.ov-kpi-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+.ov-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.ov-cell {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  padding: 10px 12px 4px;
+}
+.ov-cell:last-child {
+  grid-column: span 2;
+}
+.ov-cell-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.ov-cell-gran {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.ov-chart {
+  height: 190px;
+}
+@media (max-width: 900px) {
+  .ov-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .ov-grid {
+    grid-template-columns: 1fr;
+  }
+  .ov-cell:last-child {
+    grid-column: auto;
+  }
 }
 </style>

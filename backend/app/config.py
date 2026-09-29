@@ -46,9 +46,9 @@ class Settings(BaseSettings):
     restart_cooldown_seconds: int = 1800
     action_fail_cooldown_seconds: int = 1800
     lock_ttl_seconds: int = 120
-    # 本机系统资源实时监控：后台采样落库间隔与保留天数
+    # 本机系统资源实时监控：后台采样落库间隔与保留天数（2 个月，过期自动清理）
     system_sample_seconds: int = 5
-    system_sample_retention_days: int = 7
+    system_sample_retention_days: int = 60
 
     integration_mode: str = "mock"
     zabbix_mode: str = ""

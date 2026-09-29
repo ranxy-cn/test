@@ -147,8 +147,46 @@ def test_realtime_and_history_api(auth_token, client, db, fakeroot):
 
 
 def test_history_api_param_bounds(auth_token, client):
-    """minutes 边界：1~1440，越界 422。"""
+    """minutes 边界：1~86400（2 个月），越界 422。"""
     assert client.get("/api/v1/system/metrics/history", params={"minutes": 1}).status_code == 200
-    assert client.get("/api/v1/system/metrics/history", params={"minutes": 1440}).status_code == 200
-    assert client.get("/api/v1/system/metrics/history", params={"minutes": 1441}).status_code == 422
+    assert client.get("/api/v1/system/metrics/history", params={"minutes": 86400}).status_code == 200
+    assert client.get("/api/v1/system/metrics/history", params={"minutes": 86401}).status_code == 422
     assert client.get("/api/v1/system/metrics/history", params={"minutes": 0.5}).status_code == 422
+
+
+def test_history_default_retention_is_60_days(db):
+    """保留期默认 2 个月：cleanup_old 不传天数时按 60 天清理。"""
+    from app.config import get_settings
+
+    assert get_settings().system_sample_retention_days == 60
+    now = utcnow()
+    db.add(SystemMetricSample(ts=now - timedelta(days=61), source="real"))
+    db.add(SystemMetricSample(ts=now - timedelta(days=59), source="real"))
+    db.commit()
+    assert system_live.cleanup_old(db) == 1
+    assert db.query(SystemMetricSample).count() == 1
+
+
+def test_history_api_bucket_aggregation(auth_token, client, db):
+    """长窗口自动分桶：桶内 avg/max 聚合；≤2h 窗口保持原始粒度。"""
+    from datetime import datetime, timezone
+
+    now = utcnow()
+    h0 = int(now.timestamp()) - int(now.timestamp()) % 3600  # 当前小时起点（同桶确定性）
+    db.add(SystemMetricSample(ts=datetime.fromtimestamp(h0 + 60, tz=timezone.utc), cpu=10.0, mem=50.0, source="real"))
+    db.add(SystemMetricSample(ts=datetime.fromtimestamp(h0 + 120, tz=timezone.utc), cpu=30.0, mem=70.0, source="real"))
+    db.commit()
+    # 3 天窗口 → 1 小时桶
+    body = client.get("/api/v1/system/metrics/history", params={"minutes": 4320}).json()
+    assert body["bucket_seconds"] == 3600
+    assert body["count"] == 2
+    it = body["items"][-1]
+    assert it["cpu"] == 20.0 and it["cpu_max"] == 30.0
+    assert it["mem"] == 60.0 and it["mem_max"] == 70.0
+    assert it["cpu"] <= it["cpu_max"]
+    # 1 小时窗口 → 原始粒度，*_max 与均值相同
+    body2 = client.get("/api/v1/system/metrics/history", params={"minutes": 60}).json()
+    assert body2["bucket_seconds"] == 0
+    assert body2["count"] == 2
+    it2 = body2["items"][0]
+    assert it2["cpu"] == it2["cpu_max"] == 10.0
