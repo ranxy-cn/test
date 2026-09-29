@@ -135,6 +135,7 @@ export const fetchStressTargets = () => http.get('/tools/stress-targets')
 export const fetchRemoteStress = () => http.get('/tools/remote-stress')
 export const stopRemoteStress = (assetId) => http.post('/tools/stress/stop', { asset_id: assetId })
 export const fetchDashboardOverview = () => http.get('/dashboard/overview')
+export const fetchDashboardNetdata = (params) => http.get('/dashboard/netdata', { params: params || { limit: 12, minutes: 5 } })
 export const fetchKnowledgeDocuments = () => http.get('/knowledge/documents')
 export const searchKnowledge = (q, limit = 6) => http.get('/knowledge/search', { params: { q, limit } })
 export const uploadKnowledgeDocument = (file) => {
