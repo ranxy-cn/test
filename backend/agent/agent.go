@@ -272,7 +272,8 @@ func collect(items []string) map[string]interface{} {
 type Agent struct {
 	server, token, assetID string
 	cfg                    AgentCfg
-	buf                    [][]map[string]interface{}
+	// buf 平铺存储待补发样本，与平台 samples: list[dict] 结构对齐（勿改回二维批次）
+	buf                    []map[string]interface{}
 	bufLock                sync.Mutex
 	client                 *http.Client
 }
@@ -312,11 +313,11 @@ func (a *Agent) syncConfig() {
 
 func (a *Agent) flush(ready []map[string]interface{}) {
 	a.bufLock.Lock()
-	samples := append([][]map[string]interface{}{}, a.buf...)
+	samples := append([]map[string]interface{}{}, a.buf...)
 	a.buf = a.buf[:0]
 	a.bufLock.Unlock()
-	if ready != nil {
-		samples = append(samples, ready)
+	if len(ready) > 0 {
+		samples = append(samples, ready...)
 	}
 	if len(samples) == 0 {
 		return

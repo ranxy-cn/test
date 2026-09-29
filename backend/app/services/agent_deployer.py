@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -54,6 +55,9 @@ def deploy_to_host(
     asset = db.get(Asset, asset_id)
     if not asset:
         raise ProvisionError("资产不存在")
+    # 首帧确认基准：部署前记录平台侧 last_seen，部署后必须出现"新"上报（防历史残留误判）
+    report_t0 = time.time()
+    old_seen = ((asset.extra or {}).get("agent") or {}).get("last_seen") or ""
 
     src_name, dst_name = ASSET_FILES["py" if lang == "py" else "go"]
     src = os.path.join(_asset_dir(), src_name)
@@ -65,14 +69,18 @@ def deploy_to_host(
     try:
         sudo = _detect_sudo(ssh, steps)
         if lang == "py":
-            _step(asset_id, db, steps, "检测 python3")
+            _step(asset_id, db, steps, "检测 python3（需 3.7+）")
             code, out = _run(ssh, "command -v python3 && python3 --version", 20, steps)
-            if code != 0 or "Python 3" not in out:
-                _step(asset_id, db, steps, "python3 缺失，尝试安装")
+            m = re.search(r"Python 3\.(\d+)", out) if code == 0 else None
+            if not (m and int(m.group(1)) >= 7):
+                # 缺失或过低（CentOS 7 自带 3.6 不兼容）都尝试安装后复验
+                _step(asset_id, db, steps, "python3 缺失或版本过低，尝试安装")
                 pkg = "apt-get install -y python3" if _has_cmd(ssh, "apt-get") else "yum install -y python3"
                 code, _ = _run(ssh, f"{sudo} {pkg}".strip(), 300, steps)
-                if code != 0:
-                    raise ProvisionError("目标机无 python3 且自动安装失败，可改用 Go 版 agent（零依赖）")
+                code2, out2 = _run(ssh, "python3 --version", 20, steps)
+                m2 = re.search(r"Python 3\.(\d+)", out2) if code2 == 0 else None
+                if code != 0 or not (m2 and int(m2.group(1)) >= 7):
+                    raise ProvisionError("目标机 python3 需要 3.7+（3.6 不兼容），建议改用 Go 版 agent（零依赖静态二进制）")
 
         _step(asset_id, db, steps, f"上传 {dst_name} 与配置")
         _run(ssh, f"{sudo} mkdir -p {AGENT_DIR}".strip(), 20, steps)
@@ -112,13 +120,20 @@ def deploy_to_host(
             raise ProvisionError(f"agent 拉起失败：{out[-200:]}")
         _step(asset_id, db, steps, f"已启动 pid={pid}，等待首帧上报")
 
-        # 平台侧验证：10 秒内收到上报即成功
+        # 平台侧验证：10 秒内出现"新"上报即成功（last_seen 变化 或 新样本 ts > 部署开始）
         deadline = time.time() + 10
         ok = False
         while time.time() < deadline:
+            db.expire_all()  # 强制重读最新 extra.agent.last_seen（上报端点在另一会话写入）
+            cur = db.get(Asset, asset_id)
+            now_seen = (((cur.extra or {}).get("agent") or {}).get("last_seen") or "") if cur else ""
+            if now_seen and now_seen != old_seen:
+                ok = True
+                break
             with _LATEST_LOCK:
-                ok = asset_id in LATEST
-            if ok:
+                latest_ts = float((LATEST.get(asset_id) or {}).get("ts") or 0)
+            if latest_ts > report_t0:
+                ok = True
                 break
             time.sleep(1)
         state = "success" if ok else "partial"

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """DevOpsAgent 子机采集探针（Python 实现，零第三方依赖，纯标准库）。
 
+兼容 python3.6+（CentOS 7 等老系统自带 3.6：复杂类型标注一律字符串化，
+运行时不求值；禁用 from __future__ import annotations）。
+
 常驻运行：按配置间隔采集本机 /proc 指标（CPU/内存/磁盘/负载/网络速率），
 推送到平台 /api/v1/agent/report；断网时本地环形缓存，恢复后按序补发；
 定期拉取 /api/v1/agent/config 同步平台侧配置。
@@ -9,8 +12,6 @@
   python3 agent.py --server http://<母机IP>:8000 --token <令牌> --asset-id <资产ID>
 也可用 --config /opt/devops-agent/config.json 承载以上参数。
 """
-
-from __future__ import annotations
 
 import argparse
 import collections
@@ -55,7 +56,7 @@ def _primary_iface() -> str:
     return "eth0"
 
 
-def _cpu() -> float | None:
+def _cpu() -> "float | None":
     line = _read(PROC + "/stat").splitlines()[0]
     vals = [float(x) for x in line.split()[1:]]
     # user nice system idle iowait irq softirq steal ...
@@ -72,7 +73,7 @@ def _cpu() -> float | None:
     return round(max(0.0, min(100.0, (1 - di / dt) * 100)), 2)
 
 
-def _mem() -> float | None:
+def _mem() -> "float | None":
     info = {}
     for line in _read(PROC + "/meminfo").splitlines():
         parts = line.split(":")
@@ -84,7 +85,7 @@ def _mem() -> float | None:
     return round((total - avail) / total * 100, 2)
 
 
-def _disk() -> float | None:
+def _disk() -> "float | None":
     import shutil  # 标准库
 
     for path in ("/",):
@@ -97,14 +98,14 @@ def _disk() -> float | None:
     return None
 
 
-def _load() -> float | None:
+def _load() -> "float | None":
     try:
         return float(_read(PROC + "/loadavg").split()[0])
     except (OSError, ValueError, IndexError):
         return None
 
 
-def _net() -> tuple[float, float] | None:
+def _net() -> "tuple[float, float] | None":
     iface = _primary_iface()
     rx = tx = None
     for line in _read(PROC + "/net/dev").splitlines()[2:]:
@@ -127,7 +128,7 @@ def _net() -> tuple[float, float] | None:
     return round(max(0.0, rx - prev[1]) / dt, 1), round(max(0.0, tx - prev[2]) / dt, 1)
 
 
-def collect(items: list[str]) -> dict:
+def collect(items: "list[str]") -> dict:
     sample: dict = {"ts": time.time()}
     if "cpu" in items:
         sample["cpu"] = _cpu()
@@ -154,7 +155,7 @@ class Agent:
         self.pending = 0  # 已入队待发条数（含补发）
 
     # ---- HTTP ----
-    def _req(self, method: str, path: str, body: dict | None = None, timeout: float = 5.0):
+    def _req(self, method: str, path: str, body: "dict | None" = None, timeout: float = 5.0):
         req = urllib.request.Request(
             self.server + path,
             data=json.dumps(body).encode() if body is not None else None,
@@ -174,7 +175,7 @@ class Agent:
         except (urllib.error.URLError, OSError, ValueError):
             pass
 
-    def flush(self, extra: list[dict] | None = None):
+    def flush(self, extra: "list[dict] | None" = None):
         """把缓存与即时样本一次性上报；失败则回填缓存。"""
         samples = list(self.buffer)
         if extra:
@@ -197,7 +198,7 @@ class Agent:
         collect_iv = max(1, int(self.cfg.get("collect_interval", 5)))
         next_collect = 0.0
         next_report = 0.0
-        ready: list[dict] = []
+        ready: "list[dict]" = []
         print(f"[agent] v{AGENT_VERSION} start -> {self.server} asset={self.asset_id}", flush=True)
         while not _stop.is_set():
             now = time.time()

@@ -184,7 +184,7 @@ def test_deploy_to_host_py_success(db, monkeypatch):
 
     aid = "node-10-5-5-5"
     _make_asset(db, aid)
-    monkeypatch.setitem(LATEST, aid, {"cpu_pct": 1.0})  # 平台已收到首帧 → 验证立即通过
+    monkeypatch.setitem(LATEST, aid, {"cpu_pct": 1.0, "ts": time.time() + 30})  # 新样本 ts > 部署开始 → 首帧确认立即通过
 
     ssh = FakeSsh(
         [
@@ -237,6 +237,7 @@ def test_deploy_to_host_py_without_python3_fails_clearly(db, monkeypatch):
             ("", 127),  # python3 缺失
             ("", 0),  # command -v apt-get（有 apt）
             ("", 1),  # apt-get 安装 python3 失败
+            ("", 127),  # 复验 python3 --version 仍缺失
         ]
     )
     monkeypatch.setattr(dep_mod, "_connect_ssh", lambda *a, **kw: ssh)  # deployer 是 from-import
