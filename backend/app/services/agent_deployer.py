@@ -125,8 +125,11 @@ def deploy_to_host(
         _step(asset_id, db, steps, "首帧上报确认" if ok else "已启动但暂未收到上报（检查网络回连）")
         asset = db.get(Asset, asset_id)
         if asset:
+            # 部署收尾：同步回写纳管状态（卡片"安装中→已纳管"依赖此字段）
+            prov = (asset.extra or {}).get("provision") or {}
             asset.extra = {
                 **(asset.extra or {}),
+                "provision": {**prov, "status": "registered"},
                 "agent_deploy": {
                     "state": state,
                     "lang": lang,

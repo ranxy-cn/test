@@ -272,14 +272,14 @@
                   </div>
                 </el-col>
                 <el-col :xs="24" :md="12">
-                  <div class="sub-title">Zabbix Agent</div>
+                  <div class="sub-title">自研 Agent</div>
                   <el-descriptions :column="1" border size="small">
                     <el-descriptions-item label="运行状态">
-                      <el-tag v-if="sysinfo.zabbix_agent.running" size="small" type="success" effect="dark">运行中</el-tag>
+                      <el-tag v-if="sysinfo.agent?.running" size="small" type="success" effect="dark">运行中</el-tag>
                       <el-tag v-else size="small" type="danger" effect="plain">未检测到进程</el-tag>
                     </el-descriptions-item>
-                    <el-descriptions-item label="版本">{{ sysinfo.zabbix_agent.version || '—' }}</el-descriptions-item>
-                    <el-descriptions-item v-for="(p, i) in sysinfo.zabbix_agent.processes" :key="i" :label="`进程 ${i + 1}`">{{ p }}</el-descriptions-item>
+                    <el-descriptions-item label="版本">{{ sysinfo.agent?.version || '—' }}</el-descriptions-item>
+                    <el-descriptions-item v-for="(p, i) in sysinfo.agent?.processes || []" :key="i" :label="`进程 ${i + 1}`">{{ p }}</el-descriptions-item>
                   </el-descriptions>
                 </el-col>
               </el-row>
@@ -344,7 +344,7 @@
         <template #header>
           <div class="row-between">
             <span>实时巡检（类似 top）
-              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）+ Zabbix 趋势图/指标卡（10s 刷新）" placement="top">
+              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）+ Agent 指标卡/趋势图（10s 刷新）" placement="top">
                 <el-icon><QuestionFilled /></el-icon>
               </el-tooltip>
             </span>

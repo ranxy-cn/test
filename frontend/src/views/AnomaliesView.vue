@@ -158,8 +158,8 @@
           {{ selectedTarget ? `${selectedTarget.hostname}（${selectedTarget.ip}）SSH 上机压测` : '本机（API 容器所在机器）' }}
         </el-descriptions-item>
         <el-descriptions-item label="原理">{{ stressPrinciple }}</el-descriptions-item>
-        <el-descriptions-item label="异常">持续超阈值 5 分钟 → Zabbix 触发告警 → Webhook 推送 → 本页出现「异常」条目</el-descriptions-item>
-        <el-descriptions-item label="恢复">停止压测 → 触发器恢复 → 条目自动变「恢复」</el-descriptions-item>
+        <el-descriptions-item label="异常">持续超阈值 5 分钟 → 自研 Agent 上报越限 → 平台判定告警 → 本页出现「异常」条目</el-descriptions-item>
+        <el-descriptions-item label="恢复">停止压测 → 指标回落 → 条目自动变「恢复」</el-descriptions-item>
       </el-descriptions>
       <el-form label-width="90px">
         <el-form-item label="目标机器">
@@ -275,8 +275,8 @@ const stressAlertText = computed(() => {
 const stressPrinciple = computed(() => {
   const where = selectedTarget.value ? `在 ${selectedTarget.value.hostname}（${selectedTarget.value.ip}）上` : '在 API 容器内'
   return stressType.value === 'cpu'
-    ? `${where}按核数拉起死循环进程（timeout 到期自灭），Zabbix 采集到真实 CPU 利用率`
-    : `${where}分配内存到目标利用率（tmpfs 文件，退出自动清理），Zabbix 采集到真实内存利用率`
+    ? `${where}按核数拉起死循环进程（timeout 到期自灭），自研 Agent 采集到真实 CPU 利用率`
+    : `${where}分配内存到目标利用率（tmpfs 文件，退出自动清理），自研 Agent 采集到真实内存利用率`
 })
 
 const SEV_LABELS = {

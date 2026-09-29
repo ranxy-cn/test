@@ -349,11 +349,14 @@ def agent_deploy(asset_id: str, body: AgentDeployIn, db: Session = Depends(get_d
             )
         except Exception as exc:  # noqa: BLE001 进度落库
             asset2 = db2.get(Asset, asset_id)
-            asset2.extra = {
-                **(asset2.extra or {}),
-                "agent_deploy": {**(asset2.extra or {}).get("agent_deploy", {}), "state": "failed", "error": str(exc)[:500]},
-            }
-            db2.commit()
+            if asset2:
+                prov = (asset2.extra or {}).get("provision") or {}
+                asset2.extra = {
+                    **(asset2.extra or {}),
+                    "provision": {**prov, "status": "failed", "error": str(exc)[:500]},
+                    "agent_deploy": {**(asset2.extra or {}).get("agent_deploy", {}), "state": "failed", "error": str(exc)[:500]},
+                }
+                db2.commit()
         finally:
             db2.close()
 

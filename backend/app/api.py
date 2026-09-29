@@ -107,7 +107,9 @@ def _asset_row(a: Asset) -> dict:
         "external_id": a.external_id,
         "ip": prov.get("ip", ""),
         "provision_status": prov.get("status", ""),
-        "provision_logs": "\n".join(prov.get("logs", [])[-8:]),
+        "provision_logs": "\n".join(
+            (prov.get("logs") or ((a.extra or {}).get("agent_deploy") or {}).get("steps", []))[-8:]
+        ),
         "install_info": prov.get("install_info") or None,
         "last_seen_at": a.last_seen_at,
         "last_check_at": a.last_check_at,
@@ -752,6 +754,7 @@ def get_asset_provision(asset_id: str, db: Session = Depends(get_db)):
     if a is None:
         raise HTTPException(404, "资产不存在")
     prov = (a.extra or {}).get("provision") or {}
+    dep = (a.extra or {}).get("agent_deploy") or {}
     return {
         "asset_id": asset_id,
         "status": prov.get("status", ""),
@@ -760,9 +763,12 @@ def get_asset_provision(asset_id: str, db: Session = Depends(get_db)):
         "username": prov.get("username", ""),
         "started_at": prov.get("started_at", ""),
         "finished_at": prov.get("finished_at", ""),
-        "error": prov.get("error", ""),
+        "error": prov.get("error") or dep.get("error", ""),
         "install_info": prov.get("install_info") or None,
-        "logs": prov.get("logs", []),
+        "lang": dep.get("lang", ""),
+        "pid": dep.get("pid", ""),
+        "deploy_state": dep.get("state", ""),
+        "logs": prov.get("logs") or dep.get("steps", []),
     }
 
 
@@ -1175,6 +1181,20 @@ def provision_asset(
                 port=body.port,
                 requested_by=current.username,
             )
+        except Exception as exc:  # noqa: BLE001 失败落库，避免状态永远停在"安装中"
+            asset2 = db2.get(Asset, aid)
+            if asset2:
+                prov = (asset2.extra or {}).get("provision") or {}
+                asset2.extra = {
+                    **(asset2.extra or {}),
+                    "provision": {**prov, "status": "failed", "error": str(exc)[:500]},
+                    "agent_deploy": {
+                        **(asset2.extra or {}).get("agent_deploy", {}),
+                        "state": "failed",
+                        "error": str(exc)[:500],
+                    },
+                }
+                db2.commit()
         finally:
             db2.close()
 

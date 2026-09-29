@@ -77,14 +77,9 @@ export const fetchMothers = () => http.get('/assets/mothers')
 export const fetchMotherGroups = (id) => http.get(`/assets/mothers/${id}/groups`)
 export const fetchMotherOverviewById = (id) => http.get(`/assets/mothers/${id}/overview`)
 export const createMother = (payload) => http.post('/assets/mothers', payload)
-export const deployMotherStack = (id, payload) => http.post(`/assets/mothers/${id}/deploy`, payload, { timeout: 30000 })
-export const fetchMotherDeployStatus = (id) => http.get(`/assets/mothers/${id}/deploy`)
-export const fetchMotherDeployDetail = (id) => http.get(`/assets/mothers/${id}/deploy-detail`)
-export const uninstallMother = (id, payload) => http.post(`/assets/mothers/${id}/uninstall`, payload, { timeout: 30000 })
 export const renameGroup = (motherId, name, newName) =>
   http.post(`/assets/mothers/${motherId}/groups/rename`, { name, new_name: newName })
 export const deleteGroup = (motherId, name) => http.post(`/assets/mothers/${motherId}/groups/delete`, { name })
-export const verifyZabbix = (payload) => http.post('/assets/verify-zabbix', payload, { timeout: 20000 })
 export const fetchAlertPolicy = (id) => http.get(`/assets/mothers/${id}/alert-policy`, { timeout: 20000 })
 export const updateAlertPolicy = (id, policy) =>
   http.put(`/assets/mothers/${id}/alert-policy`, policy, { timeout: 60000 })
@@ -100,7 +95,7 @@ export const importAssets = (file) => {
 }
 export const provisionAsset = (payload) => http.post('/assets/provision', payload)
 export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
-// 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的 zabbix-agent 再删台账
+// 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的自研 agent 再删台账
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })
 export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })

@@ -96,12 +96,12 @@
       />
     </div>
 
-    <el-dialog v-model="stressVisible" title="真实 CPU 压测（让 Zabbix 采到真数据）" width="580px">
+    <el-dialog v-model="stressVisible" title="真实 CPU 压测（让自研 Agent 采到真数据）" width="580px">
       <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
         title="压测会把服务器全部 CPU 核打满，确认当前无人依赖服务器性能" />
       <el-descriptions :column="1" border size="small" style="margin-bottom: 12px">
-        <el-descriptions-item label="原理">在 API 容器内按核数拉起死循环进程，Zabbix agent 采集到真实 system.cpu.util</el-descriptions-item>
-        <el-descriptions-item label="告警">CPU 持续高于阈值 5 分钟 → 触发 High CPU utilization → Webhook 自动立案</el-descriptions-item>
+        <el-descriptions-item label="原理">在 API 容器内按核数拉起死循环进程，自研 Agent 采集到真实 CPU 利用率</el-descriptions-item>
+        <el-descriptions-item label="告警">CPU 持续高于阈值 5 分钟 → 平台越限判定自动立案</el-descriptions-item>
         <el-descriptions-item label="预计">压测启动后约 6~9 分钟出现新任务单，并自动走绿灯修复</el-descriptions-item>
       </el-descriptions>
       <el-form label-width="90px">
