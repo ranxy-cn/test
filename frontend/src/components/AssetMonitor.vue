@@ -713,7 +713,8 @@ async function tickLive() {
   // 页面不可见时跳过本次轮询，避免无谓请求；恢复可见后下一秒自动续上
   if (document.hidden) return
   try {
-    const { data } = await fetchSystemRealtime()
+    // 传 assetId：子机=该子机 Agent 数据；母机=其本机子机；留空=平台本机
+    const { data } = await fetchSystemRealtime(props.assetId || '')
     live.value = data || {}
     if (!data?.supported) return
     const t = (data.ts || Math.floor(Date.now() / 1000)) * 1000
