@@ -1158,6 +1158,12 @@ def get_asset(asset_id: str, db: Session = Depends(get_db)):
         zcfg["db"] = {**zcfg["db"], "password": "******"}
     if zcfg:
         extra["zabbix"] = zcfg
+    ncfg = dict(extra.get("netdata") or {})
+    for secret_key in ("token", "bearer_token"):
+        if ncfg.get(secret_key):
+            ncfg[secret_key] = "******"
+    if ncfg:
+        extra["netdata"] = ncfg
     row["extra"] = extra
     row["tickets"] = db.query(Ticket).filter(Ticket.asset_id == asset_id).count()
     row["maintenance_windows"] = db.query(MaintenanceWindow).filter(MaintenanceWindow.asset_id == asset_id).count()

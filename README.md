@@ -21,6 +21,47 @@ Zabbix WH/API    →  LangGraph 排查 + Mock/可选 LLM    Celery Worker + Beat
 
 数字员工岗位工号：**DE-OPS-001**（运维数字员工·小维），与执行器技术账号分离，审计中全程关联。
 
+## 当前已落地能力
+
+- **知识库**：支持上传运维文档，进行文本解析、规则检索和 AI 分析；公司不同的运维规范可以通过文档沉淀，不写死在代码中。
+- **AI 对话面板**：`/chat` 类 Chatbox 交互，回答时结合知识库、资产台账和平台状态；涉及变更的请求仍必须经过策略、审批和固定 Playbook。
+- **独立领导大屏**：`/screen` 可脱离普通工作台独立打开，展示资产健康、告警趋势、任务闭环、知识文档和数字员工运行态势。
+- **Netdata 实时监控**：在 Zabbix 长周期告警之外，补充秒级 CPU、内存、磁盘和网络指标；Netdata 不可用时自动降级为离线状态，不影响 Zabbix 和原有大屏。
+
+## Netdata 实时监控
+
+Netdata 采用“后端受控代理 + 前端大屏展示”方式接入，不直接把 Agent 的 `19999` 端口暴露给公网。后端从资产登记的 IP 自动访问 Netdata Agent，也支持在资产 `extra.netdata` 中覆盖地址、端口、启停状态和 Bearer Token。
+
+接口如下：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/v1/dashboard/netdata` | 独立大屏聚合多台资产的实时指标 |
+| `GET /api/v1/assets/{asset_id}/netdata` | 查询单台资产的 Netdata 指标和时间序列 |
+
+默认配置：
+
+```dotenv
+NETDATA_ENABLED=true
+NETDATA_PORT=19999
+NETDATA_TIMEOUT_SECONDS=2.5
+NETDATA_MAX_ASSETS=12
+```
+
+单台资产可使用以下扩展配置：
+
+```json
+{
+  "netdata": {
+    "enabled": true,
+    "url": "http://10.0.0.10:19999",
+    "token": "Bearer <netdata-token>"
+  }
+}
+```
+
+安全边界：后端拒绝本机回环、未指定、链路本地和云元数据地址；资产详情接口会脱敏 Netdata Token；连接超时、HTTP 错误或指标缺失都会返回结构化离线结果。
+
 ## 安全红线（代码强制）
 
 - 大模型**不持有**生产管理员凭据；Vault 短凭证只在执行器内使用，进入 LLM 前会剥离 secret 类字段。
