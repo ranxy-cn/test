@@ -13,9 +13,8 @@ from app.models import Asset
 
 """真实 CPU / 内存压测工具。
 
-用途：让 Zabbix agent 采集到真实的 system.cpu.util 攀升 / 内存利用率攀升，从而触发
-「High CPU utilization (over {$CPU.UTIL.CRIT}% for 5m)」/「High memory utilization
-(>{$MEMORY.UTIL.MAX}% for 5m)」告警并推送 DevOps。
+用途：让子机 agent 采集到真实的 CPU 利用率攀升 / 内存利用率攀升，从而触发
+平台「CPU 使用率过高」「内存使用率过高」告警并推送 DevOps。
 
 机制：
 - CPU：在 API 进程内按可用核数拉起死循环子进程（fork），把整机 CPU 打满

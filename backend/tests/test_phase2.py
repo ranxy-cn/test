@@ -1,12 +1,10 @@
 from datetime import timedelta
 
 from app.config import get_settings
-from app.integrations import describe_integrations, get_playbook_runner, get_vault_client, get_zabbix_client
+from app.integrations import describe_integrations, get_playbook_runner, get_vault_client
 from app.integrations.ansible.mock import MockPlaybookRunner
 from app.integrations.vault.http import HttpVaultClient
 from app.integrations.vault.mock import MockVaultClient
-from app.integrations.zabbix.http import HttpZabbixClient
-from app.integrations.zabbix.mock import MockZabbixClient
 from app.models import ResourceLock, utcnow
 from app.services.cooldowns import record_action_failure
 from app.services.notify import InboxNotifier, LogNotifier, WebhookNotifier, build_notifiers
@@ -15,10 +13,8 @@ from tests.conftest import auth_headers
 
 def test_factory_defaults_to_mock():
     info = describe_integrations()
-    assert info["zabbix"]["mode"] == "mock"
     assert info["ansible"]["mode"] == "mock"
     assert info["vault"]["mode"] == "mock"
-    assert isinstance(get_zabbix_client(), MockZabbixClient)
     assert isinstance(get_vault_client(), MockVaultClient)
     assert isinstance(get_playbook_runner(), MockPlaybookRunner)
 
@@ -28,10 +24,9 @@ def test_factory_real_without_creds_falls_back(monkeypatch):
     get_settings.cache_clear()
     try:
         info = describe_integrations()
-        assert info["zabbix"]["requested"] == "real"
-        assert info["zabbix"]["mode"] == "mock"
-        assert info["zabbix"]["fallback_reason"]
+        assert info["vault"]["requested"] == "real"
         assert info["vault"]["mode"] == "mock"
+        assert info["vault"]["fallback_reason"]
         assert info["ansible"]["mode"] == "mock"
     finally:
         monkeypatch.setenv("INTEGRATION_MODE", "mock")
@@ -139,23 +134,20 @@ def test_fail_cooldown_blocks_auto_retry(client, db):
 
 def test_status_endpoint(client):
     body = client.get("/api/v1/status").json()
-    assert body["integrations"]["zabbix"]["mode"] == "mock"
-    assert body["probes"]["zabbix"]["ok"] is True
+    assert body["integrations"]["ansible"]["mode"] == "mock"
+    assert body["integrations"]["vault"]["mode"] == "mock"
+    assert body["probes"]["ansible"]["ok"] is True
 
 
 def test_factory_real_with_creds_selects_http(monkeypatch):
     monkeypatch.setenv("INTEGRATION_MODE", "real")
-    monkeypatch.setenv("ZABBIX_URL", "http://zabbix.example/api_jsonrpc.php")
-    monkeypatch.setenv("ZABBIX_TOKEN", "zabbix-token")
     monkeypatch.setenv("VAULT_ADDR", "http://vault.example")
     monkeypatch.setenv("VAULT_TOKEN", "vault-token")
     monkeypatch.setenv("ANSIBLE_RUNNER_ENABLED", "true")
     get_settings.cache_clear()
     try:
         info = describe_integrations()
-        assert info["zabbix"]["mode"] == "real"
         assert info["vault"]["mode"] == "real"
-        assert isinstance(get_zabbix_client(), HttpZabbixClient)
         assert isinstance(get_vault_client(), HttpVaultClient)
         if info["ansible"]["mode"] == "real":
             from app.integrations.ansible.real import AnsiblePlaybookRunner
@@ -166,31 +158,9 @@ def test_factory_real_with_creds_selects_http(monkeypatch):
             assert info["ansible"]["fallback_reason"]
     finally:
         monkeypatch.setenv("INTEGRATION_MODE", "mock")
-        monkeypatch.delenv("ZABBIX_URL", raising=False)
-        monkeypatch.delenv("ZABBIX_TOKEN", raising=False)
         monkeypatch.delenv("VAULT_ADDR", raising=False)
         monkeypatch.delenv("VAULT_TOKEN", raising=False)
         monkeypatch.setenv("ANSIBLE_RUNNER_ENABLED", "false")
-        get_settings.cache_clear()
-
-
-def test_per_item_mode_override(monkeypatch):
-    monkeypatch.setenv("INTEGRATION_MODE", "mock")
-    monkeypatch.setenv("ZABBIX_MODE", "real")
-    monkeypatch.setenv("ZABBIX_URL", "http://zabbix.example/api_jsonrpc.php")
-    monkeypatch.setenv("ZABBIX_TOKEN", "tok")
-    get_settings.cache_clear()
-    try:
-        info = describe_integrations()
-        assert info["zabbix"]["requested"] == "real"
-        assert info["zabbix"]["mode"] == "real"
-        assert info["ansible"]["mode"] == "mock"
-        assert info["vault"]["mode"] == "mock"
-        assert isinstance(get_zabbix_client(), HttpZabbixClient)
-    finally:
-        monkeypatch.setenv("ZABBIX_MODE", "")
-        monkeypatch.delenv("ZABBIX_URL", raising=False)
-        monkeypatch.delenv("ZABBIX_TOKEN", raising=False)
         get_settings.cache_clear()
 
 

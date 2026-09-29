@@ -22,14 +22,10 @@ os.environ["ADMIN_INITIAL_PASSWORD"] = "Admin@123456"
 # 服务器 .env 的 SEED_DEMO_ASSETS=0 会渗入测试，演示资产是多数用例的前置数据，测试强制开启
 os.environ["SEED_DEMO_ASSETS"] = "true"
 # 压平开发者本地 .env 中的真实集成凭据，保证测试确定性（env 变量优先于 dotenv）
-# 注意：不要设置 ZABBIX_MODE/ANSIBLE_MODE/VAULT_MODE，其优先级高于 INTEGRATION_MODE，会影响工厂用例
+# 注意：不要设置 ANSIBLE_MODE/VAULT_MODE，其优先级高于 INTEGRATION_MODE，会影响工厂用例
 # （服务器容器可能注入这些变量，测试环境一律剔除以保确定性）
-for _k in ("ZABBIX_MODE", "ANSIBLE_MODE", "VAULT_MODE"):
+for _k in ("ANSIBLE_MODE", "VAULT_MODE"):
     os.environ.pop(_k, None)
-os.environ["ZABBIX_URL"] = ""
-os.environ["ZABBIX_USER"] = ""
-os.environ["ZABBIX_PASSWORD"] = ""
-os.environ["ZABBIX_TOKEN"] = ""
 os.environ["VAULT_ADDR"] = ""
 os.environ["VAULT_TOKEN"] = ""
 os.environ["STRESS_TOOLS_ENABLED"] = "false"
@@ -55,9 +51,6 @@ from app.main import app  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_db():
     get_settings.cache_clear()
-    from app.integrations import clear_integration_probe_cache
-
-    clear_integration_probe_cache()
     from app.domain.catalog import load_catalog
 
     load_catalog.cache_clear()

@@ -86,12 +86,13 @@ def test_flatten_zabbix50_dotted_macros():
     assert parsed.clock == "2026.09.17 10:15:32"
 
 
-def test_webhook_zabbix50_macros_map_zabbix_server(client):
+def test_webhook_host_macros_map_to_asset(client):
+    """Zabbix 5.x 宏格式：HOST.NAME 按资产 hostname（不区分大小写）解析归属。"""
     resp = client.post(
         "/api/v1/webhooks/zabbix",
         json={
             "EVENT.ID": "evt-zbx-50-1",
-            "HOST.NAME": "Zabbix server",
+            "HOST.NAME": "Order-App-01",  # seed 资产 hostname，大小写不敏感
             "HOST.ID": "10084",
             "TRIGGER.NAME": "CPU usage > 85% for 5 minutes",
             "EVENT.SEVERITY": "High",
@@ -103,5 +104,5 @@ def test_webhook_zabbix50_macros_map_zabbix_server(client):
     )
     assert resp.status_code == 200
     ticket = resp.json()["ticket"]
-    assert ticket["asset_id"] == "ast-zabbix-server"
+    assert ticket["asset_id"] == "ast-order-app-01"
     assert ticket["status"] in {"recovered", "pending_approval", "escalated"}

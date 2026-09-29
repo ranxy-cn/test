@@ -6,7 +6,7 @@ import io
 import threading
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -33,12 +33,11 @@ from app.routers.deps import CurrentUser, require_perm
 from app.schemas import AnomalyOut, ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services import provision as provision_svc
 from app.services import diagnostics as diagnostics_svc
-from app.services.alert_policy import DEFAULT_POLICY, apply_policy, normalize_policy, read_applied_policy
+from app.services.alert_policy import DEFAULT_POLICY, normalize_policy
 from app.services.audit import add_audit, add_event
 from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
 from app.services.tickets import make_idempotency_key, next_ticket_number
-from app.integrations.zabbix.mapping import find_asset_by_zabbix
 from pydantic import BaseModel, Field
 
 router = APIRouter()
@@ -106,7 +105,6 @@ def _asset_row(a: Asset) -> dict:
         "reachable": a.reachable,
         "db_ok": a.db_ok,
         "external_id": a.external_id,
-        "zabbix_host": a.zabbix_host,
         "ip": prov.get("ip", ""),
         "provision_status": prov.get("status", ""),
         "provision_logs": "\n".join(prov.get("logs", [])[-8:]),
@@ -126,7 +124,7 @@ def list_assets(
     env: str = Query(default="", max_length=32),
     role: str = Query(default="", max_length=64),
 ):
-    """资产台账：分页 + 关键字（id/主机名/Zabbix host/应用/负责人）+ 环境/角色过滤。"""
+    """资产台账：分页 + 关键字（id/主机名/应用/负责人）+ 环境/角色过滤。"""
     q = db.query(Asset)
     if keyword.strip():
         kw = f"%{keyword.strip()}%"
@@ -134,7 +132,6 @@ def list_assets(
             or_(
                 Asset.id.like(kw),
                 Asset.hostname.like(kw),
-                Asset.zabbix_host.like(kw),
                 Asset.app.like(kw),
                 Asset.owner.like(kw),
             )
@@ -148,7 +145,7 @@ def list_assets(
     return {"items": [_asset_row(a) for a in rows], "total": total, "page": page, "page_size": page_size}
 
 
-ASSET_CSV_COLUMNS = ["id", "hostname", "zabbix_host", "external_id", "app", "role", "env", "owner"]
+ASSET_CSV_COLUMNS = ["id", "hostname", "external_id", "app", "role", "env", "owner"]
 
 
 @router.get("/api/v1/assets/export", dependencies=[Depends(require_perm("assets:read"))])
@@ -215,127 +212,44 @@ def import_assets(file: UploadFile, db: Session = Depends(get_db)) -> AssetImpor
     return result
 
 
-# Zabbix 客户端解析与 mock 演示序列实现在 app/services/metrics_store.py（api 与 celery 采集任务共用）
+# mock 演示序列实现在 app/services/metrics_store.py（api 与 celery 采集任务共用）
 from app.services.metrics_store import (  # noqa: E402
-    _zabbix_cfg,
     baseline_bands,
     build_baseline,
     detect_anomalies,
     forecast_series,
-    host_hint_of,
     mock_asset_metrics as _mock_asset_metrics,
     query_compare,
     query_series,
-    resolve_real_client,
-    zabbix_client_for,
 )
 
 
-def _children_metrics_summary(client: Any, rows: list[dict]) -> dict[str, dict[str, float | None]]:
-    """批量取子机 4 项指标最新值（item.get 自带 lastvalue，N 台子机仅 5 次 RPC）。
+def _children_agent_summary(rows: list[dict]) -> dict[str, dict[str, float | None]]:
+    """批量取子机 4 项指标最新值（来自子机 agent 上报的内存缓存，无外部 RPC）。
 
-    返回 {asset_id: {cpu, mem, disk, load}}；任何失败都静默降级（前端显示 "-"）。
+    返回 {asset_id: {cpu, mem, disk, load}}；无 agent 数据的子机为 None（前端显示 "-"）。
     """
+    from app.routers.agent_api import LATEST, _LATEST_LOCK
+
     out: dict[str, dict[str, float | None]] = {}
-    try:
-        hosts = client._rpc("host.get", {"output": ["hostid", "host", "name"]}) or []
-        by_name: dict[str, str] = {}
-        for h in hosts:
-            by_name[str(h.get("host"))] = str(h["hostid"])
-            by_name[str(h.get("name"))] = str(h["hostid"])
-        hid_to_assets: dict[str, list[str]] = {}
+    with _LATEST_LOCK:
         for r in rows:
-            hid = by_name.get(str(r.get("zabbix_host") or "")) or by_name.get(str(r.get("hostname") or ""))
-            if hid:
-                hid_to_assets.setdefault(hid, []).append(r["id"])
-        if not hid_to_assets:
-            return out
-        hostids = list(hid_to_assets)
-
-        def fetch(key_frag: str) -> dict[str, list[dict]]:
-            items = client._rpc(
-                "item.get",
-                {
-                    "output": ["itemid", "hostid", "key_", "lastvalue"],
-                    "hostids": hostids,
-                    "monitored": True,
-                    "search": {"key_": key_frag},
-                    "limit": 1000,
-                },
-            ) or []
-            grouped: dict[str, list[dict]] = {}
-            for it in items:
-                grouped.setdefault(str(it.get("hostid")), []).append(it)
-            return grouped
-
-        def val_of(it: dict) -> float | None:
-            try:
-                v = float(it.get("lastvalue"))
-            except (TypeError, ValueError):
-                return None
-            return round(v, 2) if -1e12 < v < 1e12 else None
-
-        def pick(items: list[dict], prefers: list[str]) -> float | None:
-            for p in prefers:
-                for it in items:
-                    if p in str(it.get("key_", "")) and val_of(it) is not None:
-                        return val_of(it)
-            for it in items:
-                if val_of(it) is not None:
-                    return val_of(it)
-            return None
-
-        cpu_g, mem_g, disk_g, load_g = (
-            fetch("system.cpu.util"),
-            fetch("vm.memory"),
-            fetch("vfs.fs.size"),
-            fetch("system.cpu.load"),
-        )
-
-        def mem_used(items: list[dict]) -> float | None:
-            # 与监控详情口径一致：统一为"已用%"。utilization 直接是已用；
-            # pavailable 是剩余%，需 100 - x（旧逻辑直接取 pavailable，卡片误显示成"可用%"）
-            for it in items:
-                if "utilization" in str(it.get("key_", "")) and val_of(it) is not None:
-                    return val_of(it)
-            for it in items:
-                if "pavailable" in str(it.get("key_", "")) and val_of(it) is not None:
-                    return round(100.0 - val_of(it), 2)
-            return None
-
-        def load1(items: list[dict]) -> float | None:
-            # 与监控详情口径一致：1 分钟平均负载（system.cpu.load[all,avg1]），
-            # 旧逻辑取任意 load 项（可能是 avg5/avg15），与详情 load1 对不上
-            return pick(items, ["avg1"])
-
-        def disk_used(items: list[dict]) -> float | None:
-            # 与监控详情口径一致：优先根分区已用%（[/,pused]），否则任意 pused 挂载点；
-            # 不再回退到 vfs.fs.size 的 total/used 等字节值（会被误当百分比）
-            for pref in ("[/,pused]", "pused"):
-                for it in items:
-                    if pref in str(it.get("key_", "")) and val_of(it) is not None:
-                        return val_of(it)
-            return None
-
-        for hid, aids in hid_to_assets.items():
-            snap = {
-                "cpu": pick(cpu_g.get(hid, []), ["system.cpu.util"]),
-                "mem": mem_used(mem_g.get(hid, [])),
-                "disk": disk_used(disk_g.get(hid, [])),
-                "load": load1(load_g.get(hid, [])),
+            frame = LATEST.get(r["id"])
+            if not frame:
+                continue
+            out[r["id"]] = {
+                "cpu": frame.get("cpu"),
+                "mem": frame.get("mem"),
+                "disk": frame.get("disk"),
+                "load": frame.get("load1", frame.get("load")),
             }
-            for aid in aids:
-                out[aid] = snap
-        return out
-    except Exception:  # noqa: BLE001
-        return out
+    return out
 
 
 def _overview_payload(db: Session, mother: Asset | None) -> dict:
     """母机总览：母机本体 + 其子机按业务分组的统计。
 
-    子机口径：mother_id 指向该母机的子机 + 母机自身（Zabbix 栈自带的 agent 容器
-    监控，行上 is_mother=True，不可删除/编辑）。归属规则：存量未指定母机的子机
+    子机口径：mother_id 指向该母机的子机。归属规则：存量未指定母机的子机
     归默认母机，保证平滑升级。
     """
     default_mother_id = get_settings().mother_asset_id
@@ -351,62 +265,12 @@ def _overview_payload(db: Session, mother: Asset | None) -> dict:
         row = _asset_row(a)
         row.setdefault("metrics", None)
         rows.append(row)
-    # 母机自身：部署时自带 agent 容器（Zabbix "Zabbix server" 主机），默认显示为一台子机。
-    # 仅当母机已绑定 Zabbix 实例（绑定模式登记或部署成功写回 url）才显示；
-    # 未部署/部署失败的母机没有该主机，显示出来就是一台删不掉的 127.0.0.1 假子机
-    if mother is not None and bool(((mother.extra or {}).get("zabbix") or {}).get("url")):
-        prov = (mother.extra or {}).get("provision") or {}
-        mrow = {
-            "id": f"{mother.id}:self",
-            "hostname": mother.hostname or mother.id,
-            "app": prov.get("app") or "监控平台",
-            "role": "other",
-            "env": "prod",
-            "owner": mother.owner,
-            "group": mother.group or "",
-            "kind": "mother_self",
-            "mother_id": mother.id,
-            "db_mode": "",
-            "tenant_id": mother.tenant_id,
-            "reachable": bool(mother.reachable),
-            "db_ok": None,
-            "external_id": "",
-            "zabbix_host": "Zabbix server",
-            "zabbix_hostid": "",
-            "ip": prov.get("ip", ""),
-            "provision_status": "",
-            "provision_logs": "",
-            "last_seen_at": mother.last_seen_at,
-            "last_check_at": mother.last_check_at,
-            "unreachable_reason": "",
-            "metrics": None,
-            "is_mother": True,
-        }
-        # 补 Zabbix 侧主机 ID（监控详情跳转用）与可达状态
-        try:
-            hosts = zabbix_client_for(db, mother)._rpc(
-                "host.get", {"filter": {"host": ["Zabbix server"]}, "selectInterfaces": ["ip", "available"]}
-            )
-            if hosts:
-                mrow["zabbix_hostid"] = hosts[0]["hostid"]
-                ifc = (hosts[0].get("interfaces") or [{}])[0]
-                if ifc.get("available"):
-                    mrow["reachable"] = str(ifc["available"]) != "2"
-                # IP 优先显示登记的母机地址；Zabbix 自监控主机的 interface 常是 127.0.0.1，仅作兜底
-                if ifc.get("ip") and not mrow["ip"]:
-                    mrow["ip"] = ifc["ip"]
-        except Exception:  # noqa: BLE001
-            pass
-        rows.insert(0, mrow)
-    # 子机实时指标摘要（CPU/内存/磁盘/负载最新值）；Zabbix 不可达时为 None，前端显示 "-"
-    if rows and mother is not None:
-        try:
-            summary = _children_metrics_summary(zabbix_client_for(db, mother), rows)
-            for r in rows:
-                if r["id"] in summary:
-                    r["metrics"] = summary[r["id"]]
-        except Exception:  # noqa: BLE001
-            pass
+    # 子机实时指标摘要（CPU/内存/磁盘/负载最新值，来自子机 agent 上报缓存）；无数据为 None，前端显示 "-"
+    if rows:
+        summary = _children_agent_summary(rows)
+        for r in rows:
+            if r["id"] in summary:
+                r["metrics"] = summary[r["id"]]
     groups: dict[str, dict[str, int]] = {}
     for row in rows:
         g = groups.setdefault(row["group"] or "", {"total": 0, "reachable": 0})
@@ -418,8 +282,8 @@ def _overview_payload(db: Session, mother: Asset | None) -> dict:
         for gname in (mother.extra or {}).get("custom_groups") or []:
             if gname and gname not in groups:
                 groups[gname] = {"total": 0, "reachable": 0}
-    # 未恢复告警数（子机卡片红色徽标）：母机自身行 id 带 ":self" 后缀，按真实资产 id 统计
-    real_ids = [r["id"][: -len(":self")] if r["id"].endswith(":self") else r["id"] for r in rows]
+    # 未恢复告警数（子机卡片红色徽标）
+    real_ids = [r["id"] for r in rows]
     abnormal: dict[str, int] = {}
     if real_ids:
         qres = (
@@ -430,8 +294,7 @@ def _overview_payload(db: Session, mother: Asset | None) -> dict:
         )
         abnormal = {aid: int(n) for aid, n in qres}
     for r in rows:
-        real_id = r["id"][: -len(":self")] if r["id"].endswith(":self") else r["id"]
-        r["abnormal_count"] = abnormal.get(real_id, 0)
+        r["abnormal_count"] = abnormal.get(r["id"], 0)
     return {
         "mother": _asset_row(mother) if mother else None,
         "children": rows,
@@ -451,17 +314,7 @@ def list_mothers(db: Session = Depends(get_db)):
         # 未归属母机的存量子机只计入默认母机
         q = db.query(Asset).filter(Asset.id != a.id, Asset.kind != "mother")
         q = q.filter(or_(Asset.mother_id == a.id, Asset.mother_id == "")) if is_default else q.filter(Asset.mother_id == a.id)
-        # 子机计数含母机自身（overview 会显示一台"本机·母机"子机）；
-        # 但未绑定 Zabbix（未部署/部署失败）的母机没有该合成子机，不能 +1，否则母机永远删不掉
-        self_ready = bool(((a.extra or {}).get("zabbix") or {}).get("url"))
-        row["children_count"] = q.count() + (1 if self_ready else 0)
-        z = _zabbix_cfg(a)
-        row["zabbix_url"] = z.get("url", "")
-        row["zabbix_mode"] = "bound" if z else "global"
-        zraw = (a.extra or {}).get("zabbix") or {}
-        row["zabbix_web_port"] = int(zraw.get("web_port") or 8081)
-        row["zabbix_trapper_port"] = int(zraw.get("trapper_port") or 10051)
-        row["deploy"] = _deploy_brief(a)
+        row["children_count"] = q.count()
         items.append(row)
     return {"items": items, "default_id": settings.mother_asset_id}
 
@@ -474,11 +327,10 @@ def mother_overview(db: Session = Depends(get_db)):
 
 
 class MotherCreateIn(BaseModel):
-    """新增母机（一期登记 + 绑定 Zabbix 实例；自动安装 Zabbix 栈为二期能力）。
+    """新增母机（纯业务登记）。
 
-    db_mode：bundled=独立部署 MySQL 容器（默认，官方镜像，干净隔离）
-             external=复用目标机已有 MySQL（需 MySQL 5.7~8.0、独立 zabbix 库与账号）。
-    ack_risk：必须显式确认知晓部署影响（装 Docker、占端口、持续磁盘写入等）。
+    母机是子机 agent 数据汇聚的业务归属节点：子机 agent 按 mother_id 归属上报，
+    平台不再在母机上部署任何监控栈。登记仅写台账，不触碰目标服务器。
     """
 
     hostname: str = Field(min_length=1, max_length=128)
@@ -486,17 +338,6 @@ class MotherCreateIn(BaseModel):
     ssh_port: int = Field(default=22, ge=1, le=65535)
     env: str = Field(default="prod", max_length=32)
     owner: str = Field(default="", max_length=64)
-    db_mode: str = Field(default="bundled", pattern="^(bundled|external)$")
-    external_db: dict | None = None
-    zabbix_web_port: int = Field(default=8081, ge=1024, le=65535)
-    zabbix_trapper_port: int = Field(default=10051, ge=1024, le=65535)
-    zabbix_url: str = Field(default="", max_length=256)
-    zabbix_user: str = Field(default="", max_length=64)
-    zabbix_password: str = Field(default="", max_length=128)
-    deploy_now: bool = False
-    ssh_username: str = Field(default="root", max_length=64)
-    ssh_password: str = Field(default="", max_length=128)
-    ack_risk: bool
     alert_policy: dict | None = None  # 告警策略（阈值/窗口），缺省字段用平台默认值
 
 
@@ -515,29 +356,11 @@ def create_mother(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """登记一台母机（Zabbix Server 部署地）。
-
-    一期仅登记与 Zabbix 实例绑定（支持绑定目标机已有 Zabbix）；
-    一键安装 Zabbix 栈（server+db+web+agent）由二期"部署母机"预案提供。
-    """
-    if not body.ack_risk:
-        raise HTTPException(400, "请先确认部署风险与注意事项（勾选“已知晓”）")
-    if body.db_mode == "external":
-        ext = body.external_db or {}
-        if not (ext.get("host") and ext.get("database") and ext.get("user")):
-            raise HTTPException(400, "复用已有 MySQL 需提供 host / database / user")
-    if body.deploy_now and not body.ssh_password:
-        raise HTTPException(400, "自动部署需要 SSH 密码（仅本次使用，不落库）")
-    if body.zabbix_web_port == body.zabbix_trapper_port:
-        raise HTTPException(400, "Web 端口与 Agent 上报端口不能相同")
+    """登记一台母机（纯业务登记，不触碰目标服务器）。"""
     try:
         alert_policy = normalize_policy(body.alert_policy)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
-    reserved = {8000, 8080, 3306}
-    for p, name in ((body.zabbix_web_port, "Web 端口"), (body.zabbix_trapper_port, "Agent 上报端口")):
-        if p in reserved:
-            raise HTTPException(400, f"{name} {p} 是平台保留端口，请换一个")
 
     aid = f"mother-{body.ip.replace('.', '-')}"
     exists = db.get(Asset, aid)
@@ -546,96 +369,36 @@ def create_mother(
     if db.query(Asset).filter(Asset.hostname == body.hostname).first():
         raise HTTPException(409, f"主机名已被资产占用：{body.hostname}")
 
-    zcfg: dict = {"web_port": body.zabbix_web_port, "trapper_port": body.zabbix_trapper_port}
-    if body.zabbix_url:
-        zcfg.update({
-            "url": body.zabbix_url.strip(),
-            "user": body.zabbix_user,
-            "password": body.zabbix_password,
-        })
-    if body.db_mode == "external":
-        ext = body.external_db or {}
-        zcfg["db"] = {
-            "mode": "external",
-            "host": ext.get("host", ""),
-            "port": int(ext.get("port") or 3306),
-            "user": ext.get("user", ""),
-            "password": ext.get("password", ""),
-            "database": ext.get("database", "zabbix"),
-        }
-    else:
-        zcfg["db"] = {"mode": "bundled"}
-
     asset = Asset(
         id=aid,
         hostname=body.hostname.strip(),
-        app="Zabbix Server",
+        app="",
         role="mother",
         env=body.env,
         owner=body.owner,
         kind="mother",
-        db_mode=body.db_mode,
         tenant_id=get_settings().tenant_id,
-        reachable=False,
+        reachable=True,  # 纯业务登记，默认可达（母机即平台汇聚节点）
         extra={
-            "zabbix": zcfg,
             "alert_policy": alert_policy,
-            # 记录母机 IP：新增节点时 Agent 的 Server= 地址默认取这里（hostname 可能不是 IP）
             "provision": {"ip": body.ip, "port": body.ssh_port, "status": "registered"},
         },
     )
     db.add(asset)
-    if body.deploy_now:
-        asset.extra = {
-            **(asset.extra or {}),
-            "deploy": {
-                "status": "running",
-                "ip": body.ip,
-                "port": body.ssh_port,
-                "username": body.ssh_username,
-                "requested_by": current.username,
-                "started_at": utcnow().isoformat(),
-                "finished_at": "",
-                "error": "",
-                "logs": [],
-            },
-        }
     db.commit()
     add_audit(
         db,
         ticket_id=None,
         event_type="mother_create",
         actor=current.username,
-        result={"asset_id": aid, "ip": body.ip, "db_mode": body.db_mode, "deploy_now": body.deploy_now},
+        result={"asset_id": aid, "ip": body.ip},
     )
     db.commit()
-    if body.deploy_now:
-        import threading
-
-        from app.services.mother_deploy import deploy_mother
-
-        threading.Thread(
-            target=deploy_mother,
-            kwargs=dict(
-                asset_id=aid,
-                ip=body.ip,
-                port=body.ssh_port,
-                username=body.ssh_username,
-                password=body.ssh_password,
-                requested_by=current.username,
-                web_port=body.zabbix_web_port,
-                trapper_port=body.zabbix_trapper_port,
-            ),
-            daemon=True,
-        ).start()
-    row = _asset_row(asset)
-    row["zabbix_url"] = zcfg.get("url", "")
-    row["zabbix_mode"] = "bound" if zcfg.get("url") else "global"
-    return row
+    return _asset_row(asset)
 
 
 class AlertPolicyIn(BaseModel):
-    """母机告警策略：阈值（%）与触发窗口（分钟），作用于母机 Zabbix 的监控模板。"""
+    """母机告警策略：阈值（%）与触发窗口（分钟），平台纯存储（供本地越限判定与展示）。"""
 
     cpu_threshold: int = Field(ge=1, le=99)
     cpu_window_minutes: int = Field(ge=1, le=120)
@@ -645,46 +408,16 @@ class AlertPolicyIn(BaseModel):
     load_window_minutes: int = Field(ge=1, le=120)
 
 
-def _mother_zabbix_write_client(mother: Asset):
-    """母机绑定的 Zabbix 写客户端（模板宏/触发器更新需要非只读）。"""
-    from app.config import get_settings as _gs
-    from app.integrations.zabbix.http import HttpZabbixClient
-
-    cfg = _zabbix_cfg(mother)
-    s = _gs()
-    return HttpZabbixClient(
-        cfg["url"],
-        cfg.get("token", ""),
-        username=cfg.get("user") or "Admin",
-        password=cfg.get("password") or "zabbix",
-        timeout=s.zabbix_timeout_seconds,
-        retries=s.zabbix_retries,
-        verify_ssl=s.zabbix_verify_ssl,
-        readonly=False,
-    )
-
-
 @router.get("/api/v1/assets/mothers/{mother_id}/alert-policy", dependencies=[Depends(require_perm("assets:read"))])
 def get_alert_policy(mother_id: str, db: Session = Depends(get_db)):
-    """母机告警策略：平台存储值 + 默认值；若已绑定 Zabbix 再附带模板当前生效值。"""
+    """母机告警策略：平台存储值 + 默认值（纯存储，供本地越限判定与展示）。"""
     mother = db.get(Asset, mother_id)
     if mother is None or mother.kind != "mother":
         raise HTTPException(404, "母机不存在")
-    resp: dict = {
+    return {
         "policy": normalize_policy((mother.extra or {}).get("alert_policy")),
         "defaults": dict(DEFAULT_POLICY),
-        "has_zabbix": False,
-        "applied": None,
-        "apply_error": "",
     }
-    if _zabbix_cfg(mother):
-        resp["has_zabbix"] = True
-        try:
-            zc = _mother_zabbix_write_client(mother)
-            resp["applied"] = read_applied_policy(zc)
-        except Exception as exc:  # noqa: BLE001
-            resp["apply_error"] = str(exc)
-    return resp
 
 
 @router.put("/api/v1/assets/mothers/{mother_id}/alert-policy", dependencies=[Depends(require_perm("assets:write"))])
@@ -694,241 +427,53 @@ def update_alert_policy(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """保存母机告警策略；若该母机已绑定 Zabbix，则同步应用到监控模板（母机与子机统一生效）。"""
+    """保存母机告警策略（纯存储）。"""
     mother = db.get(Asset, mother_id)
     if mother is None or mother.kind != "mother":
         raise HTTPException(404, "母机不存在")
     policy = normalize_policy(body.model_dump())
     mother.extra = {**(mother.extra or {}), "alert_policy": policy}
-
-    applied = None
-    apply_error = ""
-    if _zabbix_cfg(mother):
-        try:
-            zc = _mother_zabbix_write_client(mother)
-            applied = apply_policy(zc, policy)
-        except Exception as exc:  # noqa: BLE001
-            apply_error = str(exc)
     db.commit()
     add_audit(
         db,
         ticket_id=None,
         event_type="alert_policy_update",
         actor=current.username,
-        result={"mother_id": mother_id, "policy": policy, "applied": applied, "error": apply_error},
+        result={"mother_id": mother_id, "policy": policy},
     )
     db.commit()
-    return {"policy": policy, "applied": applied, "apply_error": apply_error}
-
-
-class MotherDeployIn(BaseModel):
-    """在母机上自动安装 Zabbix 栈。SSH 密码仅本次使用，不落库、不写日志。
-
-    zabbix_web_port/zabbix_trapper_port：本次部署实例的端口，传 0 表示沿用母机已登记端口；
-    换端口可在同一母机上并行部署多个实例（独立目录/compose 项目名/数据卷）。
-    """
-
-    ip: str = Field(min_length=3, max_length=64)
-    port: int = Field(default=22, ge=1, le=65535)
-    username: str = Field(default="root", max_length=64)
-    password: str = Field(min_length=1, max_length=128)
-    zabbix_web_port: int = Field(default=0, ge=0, le=65535)
-    zabbix_trapper_port: int = Field(default=0, ge=0, le=65535)
-
-
-def _deploy_brief(a: Asset) -> dict:
-    d = (a.extra or {}).get("deploy") or {}
-    keys = ("status", "ip", "started_at", "finished_at", "error", "version", "web_url", "logs")
-    return {k: d.get(k, [] if k == "logs" else "") for k in keys}
-
-
-@router.get("/api/v1/assets/mothers/{mother_id}/deploy", dependencies=[Depends(require_perm("assets:read"))])
-def mother_deploy_status(mother_id: str, db: Session = Depends(get_db)):
-    """部署状态查询（前端轮询）。"""
-    a = db.get(Asset, mother_id)
-    if a is None or a.kind != "mother":
-        raise HTTPException(404, "母机不存在")
-    return _deploy_brief(a)
-
-
-@router.post("/api/v1/assets/mothers/{mother_id}/deploy", dependencies=[Depends(require_perm("assets:write"))])
-def deploy_mother_stack(
-    mother_id: str,
-    body: MotherDeployIn,
-    current: CurrentUser = Depends(require_perm("assets:write")),
-    db: Session = Depends(get_db),
-):
-    """一键在母机上安装 Zabbix 栈（server+db+web+agent），后台执行。"""
-    import threading
-
-    from app.services.mother_deploy import deploy_mother
-
-    a = db.get(Asset, mother_id)
-    if a is None or a.kind != "mother":
-        raise HTTPException(404, "母机不存在")
-    if ((a.extra or {}).get("deploy") or {}).get("status") == "running":
-        raise HTTPException(409, "该母机已有部署任务在执行中")
-    # 端口校验：显式指定（非 0）时互斥且避开平台保留端口；0 由 deploy_mother 回退母机已登记端口
-    zcfg = dict((a.extra or {}).get("zabbix") or {})
-    web_port = body.zabbix_web_port or int(zcfg.get("web_port") or 8081)
-    trapper_port = body.zabbix_trapper_port or int(zcfg.get("trapper_port") or 10051)
-    if web_port == trapper_port:
-        raise HTTPException(400, "Web 端口与 Agent 上报端口不能相同")
-    reserved = {8000, 8080, 3306}
-    for p, name in ((web_port, "Web 端口"), (trapper_port, "Agent 上报端口")):
-        if p in reserved:
-            raise HTTPException(400, f"{name} {p} 是平台保留端口，请换一个")
-    a.extra = {
-        **(a.extra or {}),
-        "deploy": {
-            "status": "running",
-            "ip": body.ip,
-            "port": body.port,
-            "username": body.username,
-            "requested_by": current.username,
-            "started_at": utcnow().isoformat(),
-            "finished_at": "",
-            "error": "",
-            "logs": [],
-        },
-    }
-    db.add(a)
-    db.commit()
-    threading.Thread(
-        target=deploy_mother,
-        kwargs=dict(
-            asset_id=mother_id,
-            ip=body.ip,
-            port=body.port,
-            username=body.username,
-            password=body.password,
-            requested_by=current.username,
-            web_port=body.zabbix_web_port,
-            trapper_port=body.zabbix_trapper_port,
-        ),
-        daemon=True,
-    ).start()
-    return {"status": "running", "asset_id": mother_id}
-
-
-class MotherUninstallIn(BaseModel):
-    """删除母机并（可选）远程卸载 Zabbix 栈。SSH 密码仅本次使用，不落库、不写日志。"""
-
-    ip: str = Field(min_length=3, max_length=64)
-    port: int = Field(default=22, ge=1, le=65535)
-    username: str = Field(default="root", max_length=64)
-    password: str = Field(min_length=1, max_length=128)
+    return {"policy": policy}
 
 
 @router.post("/api/v1/assets/mothers/{mother_id}/uninstall", dependencies=[Depends(require_perm("assets:write"))])
 def uninstall_mother(
     mother_id: str,
-    body: MotherUninstallIn,
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除母机：先 SSH 到目标机卸载 Zabbix 栈（停止容器+删除安装目录），成功后级联删除母机及名下全部子机台账。
+    """删除母机：级联删除名下全部子机台账（纯台账操作，不触碰任何服务器）。
 
-    任一步失败均不删除记录，避免"台账删了但服务器上还装着"的脏状态；
     母机或任一子机被工单/维护窗口/备份任务引用时直接拒绝（提交时校验）。
     """
-    import threading as _threading
-
-    from app.services.mother_deploy import ProvisionError, uninstall_stack
-
     a = db.get(Asset, mother_id)
     if a is None or a.kind != "mother":
         raise HTTPException(404, "母机不存在")
-    # 未部署成功（未绑定 Zabbix 实例）的母机，服务器上没有 Zabbix 栈可卸载：
-    # SSH 卸载只会白白失败（还常因凭据问题报 Authentication failed），直接引导走仅删记录
-    if not (((a.extra or {}).get("zabbix") or {}).get("url") or "").strip():
-        raise HTTPException(
-            400,
-            "该母机未部署成功，服务器上没有 Zabbix 栈可卸载；请取消勾选「卸载」，直接删除记录即可",
-        )
-    # 级联范围：卸载成功后母机连同名下全部子机一起删（整栈下线，子机不悬空）
+    # 级联范围：母机连同名下全部子机一起删（子机不悬空）
     cascade_children = _mother_children(db, mother_id)
     _assert_refs_free(db, [a, *cascade_children])
     cascade_ids = [c.id for c in cascade_children]
-
-    # 卸载是长耗时 SSH 操作（compose down 最长 3 分钟），放后台线程执行，前端轮询进度
-    a.extra = {
-        **(a.extra or {}),
-        "deploy": {
-            "status": "uninstalling",
-            "ip": body.ip,
-            "port": body.port,
-            "username": body.username,
-            "requested_by": current.username,
-            "started_at": utcnow().isoformat(),
-            "finished_at": "",
-            "error": "",
-            "logs": [],
-        },
-    }
-    db.add(a)
+    for cid in cascade_ids:
+        db.delete(db.get(Asset, cid))
+    db.delete(a)
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="mother_uninstall",
+        actor=current.username,
+        result={"asset_id": mother_id, "status": "deleted", "cascade_children": cascade_ids},
+    )
     db.commit()
-
-    def _do_uninstall() -> None:
-        from app.database import SessionLocal
-
-        logs: list[str] = []
-        ok = False
-        err = ""
-        try:
-            uninstall_stack(body.ip, body.port, body.username, body.password, logs)
-            ok = True
-        except Exception as exc:  # noqa: BLE001
-            err = str(exc)[:300]
-            logs.append(f"卸载失败：{err}")
-        db2 = SessionLocal()
-        try:
-            a2 = db2.get(Asset, mother_id)
-            if a2 is None:
-                return
-            if ok:
-                # 级联删除：母机 Zabbix 栈已卸载，名下子机监控随栈消失，台账一并移除
-                for cid in cascade_ids:
-                    c2 = db2.get(Asset, cid)
-                    if c2 is not None:
-                        db2.delete(c2)
-                db2.delete(a2)
-            else:
-                # 卸载失败保留记录，状态回 failed 供用户重试或改为仅删记录
-                a2.extra = {
-                    **(a2.extra or {}),
-                    "deploy": {
-                        "status": "failed",
-                        "ip": body.ip,
-                        "port": body.port,
-                        "username": body.username,
-                        "requested_by": current.username,
-                        "started_at": utcnow().isoformat(),
-                        "finished_at": utcnow().isoformat(),
-                        "error": f"卸载失败（记录未删除）：{err}",
-                        "logs": logs[-300:],
-                    },
-                }
-                db2.add(a2)
-            add_audit(
-                db2,
-                ticket_id=None,
-                event_type="mother_uninstall",
-                actor=current.username,
-                result={
-                    "asset_id": mother_id,
-                    "ip": body.ip,
-                    "status": "deleted" if ok else "failed",
-                    "error": err,
-                    "cascade_children": cascade_ids,
-                },
-            )
-            db2.commit()
-        finally:
-            db2.close()
-
-    threading.Thread(target=_do_uninstall, daemon=True).start()
-    return {"status": "uninstalling", "asset_id": mother_id}
+    return {"deleted": mother_id, "cascade_children": cascade_ids}
 
 
 class GroupRenameIn(BaseModel):
@@ -1012,90 +557,6 @@ def mother_group_options(mother_id: str, db: Session = Depends(get_db)):
     return {"items": items}
 
 
-@router.get("/api/v1/assets/mothers/{mother_id}/deploy-detail", dependencies=[Depends(require_perm("assets:read"))])
-def mother_deploy_detail(mother_id: str, db: Session = Depends(get_db)):
-    """母机安装详情：安装位置、端口、容器清单、Zabbix 控制台账号密码等完整信息。"""
-    from app.services.mother_deploy import DEFAULT_TRAPPER_PORT, DEFAULT_WEB_PORT, stack_name_for
-
-    a = db.get(Asset, mother_id)
-    if a is None or a.kind != "mother":
-        raise HTTPException(404, "母机不存在")
-    extra = dict(a.extra or {})
-    z = dict(extra.get("zabbix") or {})
-    d = dict(extra.get("deploy") or {})
-    dbcfg = dict(z.get("db") or {})
-    # 资产 IP 不在列上：纳管登记 > 部署登记
-    asset_ip = str(d.get("ip") or (extra.get("provision") or {}).get("ip") or "")
-    web_port = int(z.get("web_port") or DEFAULT_WEB_PORT)
-    trapper_port = int(z.get("trapper_port") or DEFAULT_TRAPPER_PORT)
-    stack_dir = stack_name_for(web_port)
-    web_url = str(z.get("url") or d.get("web_url") or (f"http://{asset_ip}:{web_port}" if asset_ip else ""))
-    db_mode = dbcfg.get("mode") or a.db_mode or "bundled"
-    bundled = db_mode == "bundled"
-    return {
-        "id": a.id,
-        "hostname": a.hostname,
-        "ip": asset_ip,
-        "env": a.env,
-        "owner": a.owner,
-        "group": a.group,
-        "reachable": a.reachable,
-        "deploy": {
-            "status": d.get("status", ""),
-            "version": d.get("version", ""),
-            "started_at": d.get("started_at", ""),
-            "finished_at": d.get("finished_at", ""),
-            "error": d.get("error", ""),
-        },
-        "ssh": {"ip": d.get("ip") or asset_ip, "port": int(d.get("port") or 22), "username": d.get("username", "")},
-        "install": {
-            "method": "Docker Compose（Zabbix 官方 5.0 LTS alpine 镜像）",
-            "dir": f"~/{stack_dir}",
-            "compose_file": f"~/{stack_dir}/docker-compose.yml",
-            "env_file": f"~/{stack_dir}/.env",
-            "data_dir": f"~/{stack_dir}/mysql-data" if bundled else "—（使用外部数据库）",
-            "containers": (
-                ["mysql", "zabbix-server", "zabbix-web", "zabbix-agent"] if bundled else ["zabbix-server", "zabbix-web", "zabbix-agent"]
-            ),
-        },
-        "ports": {"web": web_port, "trapper": trapper_port},
-        "zabbix": {
-            "web_url": web_url,
-            "api_url": f"{web_url}/api_jsonrpc.php",
-            "user": z.get("user", ""),
-            "password": z.get("password", ""),
-        },
-        "db": {
-            "mode": db_mode,
-            "host": dbcfg.get("host") or ("mysql（本机容器）" if bundled else ""),
-            "port": int(dbcfg.get("port") or 3306),
-            "database": dbcfg.get("database") or "zabbix",
-            "user": dbcfg.get("user") or ("zabbix" if bundled else ""),
-        },
-        "logs": d.get("logs") or [],
-    }
-
-
-class VerifyZabbixIn(BaseModel):
-    """校验 Zabbix API 连通性（新增母机表单"测试连接"）。凭据仅本次使用，不落库。"""
-
-    url: str = Field(min_length=3, max_length=256)
-    user: str = Field(default="", max_length=64)
-    password: str = Field(default="", max_length=128)
-
-
-@router.post("/api/v1/assets/verify-zabbix", dependencies=[Depends(require_perm("assets:write"))])
-def verify_zabbix(body: VerifyZabbixIn):
-    from app.integrations.zabbix.http import HttpZabbixClient
-
-    client = HttpZabbixClient(body.url, username=body.user, password=body.password, retries=1)
-    try:
-        health = client.health()
-        return {"ok": bool(health.get("ok")), "version": health.get("version"), "error": health.get("last_error") or ""}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "version": None, "error": str(exc)}
-
-
 class AssetUpdateIn(BaseModel):
     """资产编辑：基础信息 + 业务分组（group 传空串表示移出分组）。
 
@@ -1150,15 +611,7 @@ def get_asset(asset_id: str, db: Session = Depends(get_db)):
     if a is None:
         raise HTTPException(404, "资产不存在")
     row = _asset_row(a)
-    extra = dict(a.extra or {})
-    zcfg = dict(extra.get("zabbix") or {})
-    if zcfg.get("password"):
-        zcfg["password"] = "******"
-    if isinstance(zcfg.get("db"), dict) and zcfg["db"].get("password"):
-        zcfg["db"] = {**zcfg["db"], "password": "******"}
-    if zcfg:
-        extra["zabbix"] = zcfg
-    row["extra"] = extra
+    row["extra"] = dict(a.extra or {})
     row["tickets"] = db.query(Ticket).filter(Ticket.asset_id == asset_id).count()
     row["maintenance_windows"] = db.query(MaintenanceWindow).filter(MaintenanceWindow.asset_id == asset_id).count()
     row["backup_jobs"] = db.query(BackupJob).filter(BackupJob.asset_id == asset_id).count()
@@ -1182,36 +635,15 @@ def _assert_refs_free(db: Session, assets: list[Asset]) -> None:
         raise HTTPException(409, f"资产被引用，先处理关联数据: {refs}")
 
 
-def _zabbix_delete_host_best_effort(db: Session, a: Asset) -> str:
-    """Zabbix 侧注销监控主机（最佳努力，失败不阻断删除）。返回说明文本。"""
-    try:
-        client = zabbix_client_for(db, a)
-        hostid = a.external_id or ""
-        if not hostid and a.zabbix_host:
-            hosts = client._rpc("host.get", {"filter": {"host": [a.zabbix_host]}, "output": ["hostid"]}) or []
-            hostid = str(hosts[0]["hostid"]) if hosts else ""
-        if hostid:
-            client._rpc("host.delete", [hostid])
-            return f"已在 Zabbix 注销主机（hostid={hostid}）"
-    except Exception as exc:  # noqa: BLE001
-        return f"Zabbix 注销失败（不影响删除）：{str(exc)[:200]}"
-    return ""
-
-
 @router.delete("/api/v1/assets/{asset_id}", dependencies=[Depends(require_perm("assets:write"))])
 def delete_asset(asset_id: str, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("assets:write"))):
     """删除资产；母机级联删除名下全部子机；母机或任一子机被引用时拒绝（不产生部分删除）。"""
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    # 级联范围：母机 → 名下全部子机一起删（整个监控栈下线，避免子机悬空产生脏数据）
+    # 级联范围：母机 → 名下全部子机一起删（避免子机悬空产生脏数据）
     cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
     _assert_refs_free(db, [a, *cascade_children])
-    zbx_notes = []
-    for c in cascade_children:
-        note = _zabbix_delete_host_best_effort(db, c)
-        if note:
-            zbx_notes.append(f"{c.id}: {note}")
     for t in [a, *cascade_children]:
         db.delete(t)
     add_audit(
@@ -1223,7 +655,6 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db), current: CurrentU
             "asset_id": asset_id,
             "hostname": a.hostname,
             "cascade_children": [c.id for c in cascade_children],
-            "zabbix": zbx_notes,
         },
     )
     db.commit()
@@ -1239,7 +670,7 @@ def probe_assets_now(db: Session = Depends(get_db)):
 
 
 class AssetRemoveIn(BaseModel):
-    """删除子机：可选先 SSH 卸载远端 zabbix-agent（安装密码不落库）。"""
+    """删除子机：可选先 SSH 卸载远端自研 agent（安装密码不落库）。"""
 
     uninstall: bool = False
     ssh_password: str = Field(default="", max_length=128)
@@ -1252,22 +683,22 @@ def remove_asset(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除子机资产；勾选卸载时先 SSH 到来源机卸载 zabbix-agent 并从 Zabbix 注销主机。
+    """删除子机资产；勾选卸载时先 SSH 到来源机停止并清理自研 agent。
 
     母机走"仅删除记录"时级联删除名下全部子机（与 DELETE /assets/{id} 行为一致）。
     """
+    from app.services import agent_deployer
+
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    # 母机允许"仅删除记录"（卸载 Zabbix 栈走 /mothers/{id}/uninstall 专用接口）；
-    # 未部署成功的母机没有可卸载的东西，必须能直接删除，否则永远删不掉
     if a.kind == "mother" and body.uninstall:
-        raise HTTPException(400, "母机卸载请走「删除母机」弹窗的「卸载并删除」流程")
+        raise HTTPException(400, "母机删除请走「删除母机」流程（纯台账级联删除，无需卸载）")
     # 级联范围：母机 → 名下全部子机一起删，引用检查覆盖全部删除对象
     cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
     _assert_refs_free(db, [a, *cascade_children])
 
-    # 1) 远程卸载 zabbix-agent（纳管来源机；密码仅本次使用）
+    # 1) 远程卸载自研 agent（纳管来源机；密码仅本次使用）
     uninstall_logs: list[str] = []
     prov = (a.extra or {}).get("provision") or {}
     if body.uninstall:
@@ -1277,11 +708,11 @@ def remove_asset(
         if not ip:
             raise HTTPException(400, "该资产没有纳管来源（ip/端口），无法远程卸载；请取消勾选「卸载 agent」后直接删除")
         if not body.ssh_password:
-            raise HTTPException(400, "请输入该服务器的 SSH 密码用于卸载 zabbix-agent")
+            raise HTTPException(400, "请输入该服务器的 SSH 密码用于卸载 agent")
         try:
             ssh = provision_svc._connect_ssh(ip, port, username, body.ssh_password)
             try:
-                provision_svc.uninstall_agent_via_ssh(ssh, password=body.ssh_password, logs=uninstall_logs)
+                agent_deployer.uninstall_via_ssh(ssh, logs=uninstall_logs)
             finally:
                 ssh.close()
         except provision_svc.ProvisionError as exc:
@@ -1289,14 +720,6 @@ def remove_asset(
             raise HTTPException(502, f"远程卸载失败：{exc}" + (f"（最近日志：{tail}）" if tail else ""))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"SSH 连接失败（{ip}:{port}）：{exc}")
-
-    # 2) Zabbix 侧注销监控主机（最佳努力，失败不阻断删除；级联子机一并注销）
-    zbx_notes: list[str] = []
-    for t in [a, *cascade_children]:
-        note = _zabbix_delete_host_best_effort(db, t)
-        if note:
-            zbx_notes.append(f"{t.id}: {note}")
-    zbx_note = "；".join(zbx_notes)
 
     for t in [a, *cascade_children]:
         db.delete(t)
@@ -1311,7 +734,6 @@ def remove_asset(
             "uninstalled": body.uninstall,
             "uninstall_logs": uninstall_logs[-8:],
             "cascade_children": [c.id for c in cascade_children],
-            "zabbix": zbx_note,
         },
     )
     db.commit()
@@ -1319,7 +741,6 @@ def remove_asset(
         "deleted": asset_id,
         "uninstalled": body.uninstall,
         "uninstall_logs": uninstall_logs[-8:],
-        "zabbix": zbx_note,
         "cascade_children": [c.id for c in cascade_children],
     }
 
@@ -1337,7 +758,6 @@ def get_asset_provision(asset_id: str, db: Session = Depends(get_db)):
         "ip": prov.get("ip", ""),
         "port": prov.get("port", 22),
         "username": prov.get("username", ""),
-        "zabbix_server": prov.get("zabbix_server", ""),
         "started_at": prov.get("started_at", ""),
         "finished_at": prov.get("finished_at", ""),
         "error": prov.get("error", ""),
@@ -1358,39 +778,29 @@ class AssetMetricsOut(BaseModel):
 
 @router.get("/api/v1/assets/{asset_id}/metrics", dependencies=[Depends(require_perm("assets:read"))])
 def asset_metrics(asset_id: str, db: Session = Depends(get_db), minutes: int = Query(default=60, ge=5, le=1440)) -> AssetMetricsOut:
-    """资产监控大盘：CPU/内存/磁盘/负载 折线（已注册机器走 Zabbix，未接入返回演示序列）。"""
+    """资产监控大盘：CPU/内存/磁盘/负载 折线。
+
+    数据源：本地落库的 5 分钟趋势样本（子机来自 agent 上报，母机来自本机 /proc）；
+    本地无样本时（未接入 agent 且非母机）回落 mock 演示序列。
+    """
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    settings = get_settings()
-    if settings.integration_mode == "real" and (settings.zabbix_url or _zabbix_cfg(
-        db.get(Asset, a.mother_id or (a.id if a.kind == "mother" else "") or settings.mother_asset_id)
-    )):
-        try:
-            client = zabbix_client_for(db, a)
-            hint = {"external_id": a.external_id, "zabbix_host": a.zabbix_host, "hostname": a.hostname}
-            if a.kind == "mother":
-                # 母机自身监控由 Zabbix 栈自带的 agent 容器上报，主机名固定为 "Zabbix server"
-                hint["zabbix_host"] = "Zabbix server"
-            data = client.asset_metrics(asset_id, hint, minutes)
-            return AssetMetricsOut(
-                mapped=bool(data.get("mapped")),
-                real=True,
-                asset_id=asset_id,
-                minutes=minutes,
-                latest=data.get("latest") or {},
-                series=data.get("series") or {},
-                note="" if data.get("mapped") else str(data.get("note") or "未在 Zabbix 中匹配到主机"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            mock = _mock_asset_metrics(asset_id, minutes)
-            return AssetMetricsOut(mapped=True, real=False, asset_id=asset_id, minutes=minutes,
-                                   latest=mock["latest"], series=mock["series"],
-                                   note=f"Zabbix 拉取失败，展示演示数据：{exc}")
+    stored = query_series(db, asset_id, minutes / 60.0)
+    if stored["count"]:
+        latest = {k: (s[-1]["v"] if s else None) for k, s in stored["series"].items()}
+        return AssetMetricsOut(
+            mapped=True,
+            real=True,
+            asset_id=asset_id,
+            minutes=minutes,
+            latest=latest,
+            series=stored["series"],
+        )
     mock = _mock_asset_metrics(asset_id, minutes)
     return AssetMetricsOut(mapped=True, real=False, asset_id=asset_id, minutes=minutes,
                            latest=mock["latest"], series=mock["series"],
-                           note="Zabbix 未接入（mock 模式），展示演示数据")
+                           note="暂无监控样本（子机未部署 agent），展示演示数据")
 
 
 class AssetTrendsOut(BaseModel):
@@ -1454,17 +864,22 @@ def asset_trends(
         raise HTTPException(404, "资产不存在")
 
     stored = query_series(db, asset_id, hours)
-    realtime_note = ""
     realtime: dict = {}
-    client = resolve_real_client(db, a)
-    if client is not None:
-        try:
-            data = client.asset_metrics(asset_id, host_hint_of(a), min(int(hours * 60), 1440))
-            if data.get("mapped"):
-                realtime = data.get("series") or {}
-        except Exception as exc:  # noqa: BLE001
-            realtime_note = f"Zabbix 实时拉取失败：{str(exc)[:120]}"
-    else:
+    # 实时补尾：优先子机 agent 最新一帧（单点）；mock 模式下无落库样本时回演示序列
+    from app.routers.agent_api import LATEST, _LATEST_LOCK
+
+    with _LATEST_LOCK:
+        frame = LATEST.get(asset_id)
+    if frame:
+        t = int(utcnow().timestamp())
+        realtime = {
+            k: [{"t": t, "v": round(float(frame[k]), 2)}]
+            for k in ("cpu", "mem", "disk")
+            if frame.get(k) is not None
+        }
+        if frame.get("load1") is not None:
+            realtime["load"] = [{"t": int(utcnow().timestamp()), "v": round(float(frame["load1"]), 2)}]
+    elif stored["count"] == 0 and get_settings().integration_mode == "mock":
         realtime = _mock_asset_metrics(asset_id, min(int(hours * 60), 1440))["series"]
 
     series = _merge_series(stored["series"], realtime)
@@ -1487,8 +902,6 @@ def asset_trends(
     notes = []
     if not stored["count"]:
         notes.append("本地暂无落库样本（采集任务每 5 分钟落库），展示实时/演示序列")
-    if realtime_note:
-        notes.append(realtime_note)
     return AssetTrendsOut(
         asset_id=asset_id,
         hours=hours,
@@ -1581,7 +994,7 @@ def asset_sysinfo(asset_id: str, body: AssetInspectIn, db: Session = Depends(get
 
 
 class AssetUpsertIn(BaseModel):
-    """登记/更新资产（供 add-node.sh 自动纳管回写，id 建议用主机名）。"""
+    """登记/更新资产（供脚本自动纳管回写，id 建议用主机名）。"""
 
     id: str = Field(min_length=1, max_length=64)
     hostname: str = ""
@@ -1589,8 +1002,6 @@ class AssetUpsertIn(BaseModel):
     role: str = "app"
     env: str = "prod"
     owner: str = ""
-    zabbix_host: str = ""
-    zabbix_server: str = ""
     source: str = "add-node"
 
 
@@ -1598,6 +1009,7 @@ class AssetUpsertIn(BaseModel):
 def upsert_asset(body: AssetUpsertIn, db: Session = Depends(get_db)):
     settings = get_settings()
     asset = db.get(Asset, body.id)
+    created = False
     if asset is None:
         asset = Asset(
             id=body.id,
@@ -1608,22 +1020,19 @@ def upsert_asset(body: AssetUpsertIn, db: Session = Depends(get_db)):
             owner=body.owner,
             tenant_id=settings.tenant_id,
             reachable=True,
-            zabbix_host=body.zabbix_host,
         )
         db.add(asset)
+        created = True
     else:
         if body.hostname:
             asset.hostname = body.hostname
         if body.owner:
             asset.owner = body.owner
-        if body.zabbix_host:
-            asset.zabbix_host = body.zabbix_host
         asset.reachable = True
     extra = dict(asset.extra or {})
-    extra["zabbix_agent"] = {
-        **(extra.get("zabbix_agent") or {}),
+    extra["upsert"] = {
+        **(extra.get("upsert") or {}),
         "source": body.source,
-        "zabbix_server": body.zabbix_server,
         "synced_at": utcnow().isoformat(),
     }
     asset.extra = extra
@@ -1632,46 +1041,52 @@ def upsert_asset(body: AssetUpsertIn, db: Session = Depends(get_db)):
         ticket_id=None,
         event_type="asset_upsert",
         actor=body.source,
-        result={"asset_id": asset.id, "zabbix_host": asset.zabbix_host},
+        result={"asset_id": asset.id},
     )
     db.commit()
     return {
         "id": asset.id,
         "hostname": asset.hostname,
-        "zabbix_host": asset.zabbix_host,
         "reachable": asset.reachable,
-        "created": asset.extra["zabbix_agent"]["synced_at"],
+        "created": created,
+        "synced_at": extra["upsert"]["synced_at"],
     }
 
 
 class AssetProvisionIn(BaseModel):
-    """资产页一键纳管：SSH 密码直连新机装 Zabbix Agent。密码仅本次安装使用，不落库。"""
+    """资产页一键纳管：SSH 密码直连新机下发自研 agent。密码仅本次部署使用，不落库。"""
 
     display_name: str = Field(default="", max_length=64, description="子机显示名；空=用安装后的真实主机名")
     ip: str = Field(min_length=3, max_length=64)
     port: int = Field(default=22, ge=1, le=65535)
     username: str = Field(default="root", max_length=64)
     password: str = Field(min_length=1, max_length=128)
-    zabbix_server: str = Field(default="", max_length=128)
+    lang: str = Field(default="py", pattern="^(py|go)$", description="agent 实现语言：py=Python（自动装环境），go=静态二进制")
     app: str = Field(default="", max_length=64)
     role: str = Field(default="app", max_length=64)
     env: str = Field(default="prod", max_length=32)
     owner: str = Field(default="", max_length=64)
     group: str = Field(default="", max_length=64)
     mother_id: str = Field(default="", max_length=64, description="归属母机；空=默认母机")
-    agent_refresh_seconds: int | None = Field(
-        default=None, ge=60, le=3600, description="agent 上报间隔（RefreshActiveChecks，秒，合法区间 60~3600）；空=用全局默认"
-    )
 
 
 @router.post("/api/v1/assets/provision")
 def provision_asset(
     body: AssetProvisionIn,
+    request: Request,
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    # 归属母机：显式指定 → 校验存在；未指定 → 默认母机（不存在则留空，兼容存量流程）。
-    # Zabbix Server 地址默认指向母机 IP。
+    """资产页一键纳管：SSH 登录新机部署自研 agent（采集并上报本机指标）。
+
+    归属母机：显式指定 → 校验存在；未指定 → 默认母机（不存在则留空）。
+    """
+    import secrets as _secrets
+
+    from app.routers.agent_api import agent_cfg_of
+    from app.services import agent_deployer
+
+    # 归属母机
     requested_mother = body.mother_id.strip()
     mother_id = requested_mother or get_settings().mother_asset_id
     mother = db.get(Asset, mother_id)
@@ -1680,24 +1095,10 @@ def provision_asset(
     if mother is not None and mother.kind != "mother":
         raise HTTPException(400, f"资产 {mother_id} 不是母机")
     if mother is not None:
-        # 母机自身已随部署附带 agent 容器（Zabbix "Zabbix server" 主机），禁止重复纳管
+        # 母机即平台自身（或登记的汇聚节点），不需要也不可以重复纳管
         mother_ip = str(((mother.extra or {}).get("provision") or {}).get("ip") or mother.hostname or "").strip()
         if mother_ip and body.ip.strip() == mother_ip:
-            raise HTTPException(
-                400, f"{body.ip} 是母机「{mother.hostname or mother.id}」自身，已自带监控 agent，无需也不可重复纳管"
-            )
-    zserver = provision_svc.resolve_zabbix_server(body.zabbix_server)
-    if mother is not None and not body.zabbix_server.strip():
-        zcfg = (mother.extra or {}).get("zabbix") or {}
-        mother_ip = str(((mother.extra or {}).get("provision") or {}).get("ip") or mother.hostname or "")
-        if mother_ip and "." in mother_ip:
-            trap = int(zcfg.get("trapper_port") or 10051)
-            # Agent 脚本兼容 ip 与 ip:port 两种形式；非默认端口必须显式带上
-            zserver = mother_ip if trap == 10051 else f"{mother_ip}:{trap}"
-    if not zserver:
-        raise HTTPException(
-            400, "Zabbix Server 地址未提供且系统未配置（ZABBIX_URL / PROVISION_ZABBIX_SERVER），请在表单里填写"
-        )
+            raise HTTPException(400, f"{body.ip} 是母机「{mother.hostname or mother.id}」自身，无需也不可重复纳管")
     mother_id = mother.id if mother is not None else ""
     # 唯一性按 (地址, 端口) 判定：同 IP 不同 SSH 端口是不同资产；
     # 已存在（兼容旧格式不含端口的 id）则复用原资产幂等重跑，避免重复建卡
@@ -1727,10 +1128,11 @@ def provision_asset(
             env=body.env,
             owner=body.owner,
             group=body.group.strip(),
+            kind="child",
             mother_id=mother_id,
             tenant_id=get_settings().tenant_id,
             reachable=False,
-            extra={"provision": {"status": "running", "ip": body.ip, "port": body.port}},
+            extra={"provision": {"status": "running", "ip": body.ip, "port": body.port, "username": body.username}},
         )
     else:
         asset.role = body.role
@@ -1743,34 +1145,62 @@ def provision_asset(
         if body.group.strip():
             asset.group = body.group.strip()
         extra = dict(asset.extra or {})
-        extra["provision"] = {"status": "running", "ip": body.ip, "port": body.port}
+        extra["provision"] = {"status": "running", "ip": body.ip, "port": body.port, "username": body.username}
         asset.extra = extra
+    # 签发 agent 令牌（上报认证用）
+    token = _secrets.token_urlsafe(24)
+    asset.extra = {**(asset.extra or {}), "agent_token": token}
     db.add(asset)
     db.commit()
 
-    # 后台线程执行装机（SSH 安装约 1 分钟），接口立即返回
-    threading.Thread(
-        target=provision_svc.provision_node,
-        kwargs=dict(
-            asset_id=aid,
-            display_name=body.display_name.strip(),
-            ip=body.ip,
-            port=body.port,
-            username=body.username,
-            password=body.password,
-            zabbix_server=zserver,
-            requested_by=current.username,
-            refresh_seconds=body.agent_refresh_seconds,
-        ),
-        daemon=True,
-        name=f"provision-{aid}",
-    ).start()
+    # 后台线程执行部署（SSH 下发约 1 分钟），接口立即返回
+    server_url = (get_settings().platform_public_url or str(request.base_url).rstrip("/")).strip()
+    cfg = agent_cfg_of(asset)
+
+    def _run_deploy() -> None:
+        from app.database import SessionLocal
+
+        db2 = SessionLocal()
+        try:
+            agent_deployer.deploy_to_host(
+                db2,
+                aid,
+                ip=body.ip,
+                lang=body.lang,
+                ssh_user=body.username,
+                ssh_password=body.password,
+                token=token,
+                server_url=server_url,
+                cfg=cfg,
+                port=body.port,
+                requested_by=current.username,
+            )
+        finally:
+            db2.close()
+
+    threading.Thread(target=_run_deploy, daemon=True, name=f"provision-{aid}").start()
     return {
         "id": aid,
         "status": "running",
-        "zabbix_server": zserver,
-        "message": "开始纳管：正在连接新机安装 Zabbix Agent（约 1~3 分钟），资产列表将自动刷新",
+        "server_url": server_url,
+        "message": "开始纳管：正在连接新机部署自研 agent（约 1 分钟），资产列表将自动刷新",
     }
+
+
+def _find_asset_for_alert(db: Session, body: ZabbixWebhookIn) -> Asset | None:
+    """按 asset_id → hostname（大小写不敏感）→ external_id 解析告警归属资产。"""
+    if (body.asset_id or "").strip():
+        row = db.get(Asset, body.asset_id.strip())
+        if row is not None:
+            return row
+    for name in (body.hostname, body.host):
+        if (name or "").strip():
+            row = db.scalar(select(Asset).where(func.lower(Asset.hostname) == name.strip().lower()))
+            if row is not None:
+                return row
+    if (body.hostid or "").strip():
+        return db.scalar(select(Asset).where(Asset.external_id == body.hostid.strip()))
+    return None
 
 
 def _check_webhook_secret(
@@ -1793,24 +1223,12 @@ def zabbix_webhook(
     db: Session = Depends(get_db),
     _: None = Depends(_check_webhook_secret),
 ):
-    """Zabbix 告警入口：记录「异常/恢复」两态条目（按 event_id 幂等更新）。
+    """告警入口（兼容原 Zabbix webhook 路径与字段）：记录「异常/恢复」两态条目（按 event_id 幂等更新）。
 
     默认不自动立案；WEBHOOK_AUTO_TICKET=true 时兼容旧的自动立案管线。
     """
     recovered = str(body.value or "").upper() in {"OK", "RESOLVED"}
-    asset = find_asset_by_zabbix(
-        db,
-        asset_id=body.asset_id,
-        host=body.host,
-        hostname=body.hostname,
-        hostid=body.hostid,
-    )
-    # 母机自身监控由 Zabbix 栈自带 agent 容器上报，主机名固定为 "Zabbix server"，
-    # 资产台账里没有对应子机记录时，归属到母机自身。
-    if asset is None and (body.host or body.hostname or "").strip().lower() == "zabbix server":
-        asset = db.get(Asset, get_settings().mother_asset_id) or db.scalar(
-            select(Asset).where(Asset.kind == "mother").limit(1)
-        )
+    asset = _find_asset_for_alert(db, body)
 
     now = utcnow()
     anomaly = db.scalar(select(AnomalyEvent).where(AnomalyEvent.event_id == body.event_id))
@@ -1921,7 +1339,7 @@ def _auto_ticket_from_webhook(body: ZabbixWebhookIn, db: Session, asset: Asset) 
     db.add(ticket)
     db.flush()
     alert.ticket_id = ticket.id
-    add_event(db, ticket_id=ticket.id, kind="alert_received", message=f"Zabbix 告警立案 {ticket.number}")
+    add_event(db, ticket_id=ticket.id, kind="alert_received", message=f"告警立案 {ticket.number}")
     add_audit(
         db,
         ticket_id=ticket.id,
@@ -1968,7 +1386,7 @@ def _attach_asset_hierarchy(db: Session, rows: list[AnomalyEvent]) -> list[dict]
         d = AnomalyOut.model_validate(r).model_dump()
         asset = assets.get(r.asset_id)
         if asset is not None and asset.kind == "mother":
-            # 母机自身 agent（"Zabbix server" 主机）上报：母机自身也是一台子机（本机·母机）
+            # 母机自身 agent 上报：母机自身也是一台子机（本机·母机）
             d["mother_id"] = asset.id
             d["mother_name"] = asset.hostname or asset.id
             d["group"] = asset.group or ""

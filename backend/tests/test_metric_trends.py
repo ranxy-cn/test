@@ -170,8 +170,8 @@ def test_trends_api_source_stored_with_compare_baseline_forecast(auth_token, cli
     db.add(_mk_asset("a-9"))
     _seed_baseline_history(db, "a-9")
     now = utcnow()
-    # 当前窗口：cpu=95 连续偏离 → 应被标记异常
-    for i in range(3):
+    # 当前窗口：cpu=95 连续偏离 → 应被标记异常；6 点 ≥ forecast 最少样本数（5）
+    for i in range(6):
         db.add(_sample("a-9", now - timedelta(minutes=30 - 5 * i), cpu=95.0))
     db.commit()
     r = client.get(

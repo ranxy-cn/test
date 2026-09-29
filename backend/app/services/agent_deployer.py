@@ -48,6 +48,7 @@ def deploy_to_host(
     server_url: str,
     cfg: dict,
     port: int = 22,
+    requested_by: str = "",
 ) -> None:
     steps: list[str] = []
     asset = db.get(Asset, asset_id)
@@ -126,7 +127,14 @@ def deploy_to_host(
         if asset:
             asset.extra = {
                 **(asset.extra or {}),
-                "agent_deploy": {"state": state, "lang": lang, "pid": pid, "finished": utcnow().isoformat(), "steps": steps[-30:]},
+                "agent_deploy": {
+                    "state": state,
+                    "lang": lang,
+                    "pid": pid,
+                    "requested_by": requested_by,
+                    "finished": utcnow().isoformat(),
+                    "steps": steps[-30:],
+                },
             }
             db.commit()
     finally:
@@ -134,6 +142,17 @@ def deploy_to_host(
             ssh.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def uninstall_via_ssh(ssh: Any, logs: list[str] | None = None) -> None:
+    """停止目标机上的自研 agent 进程并删除安装目录（删除资产时的远程清理）。"""
+    out: list[str] = logs if logs is not None else []
+    sudo = _detect_sudo(ssh, out)
+    _run(ssh, "pkill -f 'devops-agent/agent' 2>/dev/null; true", 15, out)
+    code, text = _run(ssh, f"{sudo} rm -rf {AGENT_DIR} && echo REMOVED".strip(), 30, out)
+    if code != 0 or "REMOVED" not in text:
+        raise ProvisionError(f"清理安装目录失败：{text[-200:]}")
+    out.append(f"已停止 agent 进程并清理 {AGENT_DIR}")
 
 
 def _has_cmd(ssh: Any, cmd: str) -> bool:

@@ -225,7 +225,7 @@ class Asset(Base):
     env: Mapped[str] = mapped_column(String(32), default="prod")
     owner: Mapped[str] = mapped_column(String(64))
     group: Mapped[str] = mapped_column(String(64), default="", comment="业务分组，如订单系统/财务系统")
-    kind: Mapped[str] = mapped_column(String(16), default="child", comment="节点角色：mother=母机（Zabbix Server 所在）/ child=子机")
+    kind: Mapped[str] = mapped_column(String(16), default="child", comment="节点角色：mother=母机（agent 上报接入机器）/ child=子机")
     mother_id: Mapped[str] = mapped_column(String(64), default="", comment="归属母机资产 ID（子机字段；母机为空）")
     db_mode: Mapped[str] = mapped_column(String(16), default="bundled", comment="母机数据库模式：bundled=独立 MySQL 容器镜像 / external=复用已有 MySQL（母机字段）")
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -357,7 +357,7 @@ class AlertEvent(Base):
 
 
 class AnomalyEvent(Base):
-    """异常告警条目：只有「异常 / 恢复」两种状态，按 Zabbix event_id 幂等更新。"""
+    """异常告警条目：只有「异常 / 恢复」两种状态，按告警 event_id 幂等更新。"""
 
     __tablename__ = "anomaly_events"
 
@@ -385,7 +385,7 @@ class AnomalyEvent(Base):
 
 
 class AnomalyLog(Base):
-    """异常告警原始通知日志：每条 Zabbix webhook 推送（异常/恢复）都留痕，保留完整原始载荷。"""
+    """异常告警原始通知日志：每条 webhook 推送（异常/恢复）都留痕，保留完整原始载荷。"""
 
     __tablename__ = "anomaly_logs"
 
@@ -416,7 +416,7 @@ class MetricSample(Base):
     mem: Mapped[float | None] = mapped_column(Float, nullable=True)
     disk: Mapped[float | None] = mapped_column(Float, nullable=True)
     load1: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # real Zabbix 真实数据 / mock 演示数据
+    # real agent 上报真实数据 / mock 演示数据
     source: Mapped[str] = mapped_column(String(16), default="real")
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 

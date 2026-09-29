@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     database_url: str = "mysql+pymysql://devops_agent:devops_agent@127.0.0.1:3306/devops_agent?charset=utf8mb4"
     redis_url: str = "redis://localhost:6379/0"
     webhook_secret: str = "dev-webhook-secret"
-    # Zabbix webhook 是否继续自动立案（AI 诊断/策略/预案）。
+    # 告警 webhook 是否继续自动立案（AI 诊断/策略/预案）。
     # 默认关闭：只记录异常条目（异常/恢复两态），供「异常告警」页展示。
     webhook_auto_ticket: bool = False
     use_celery: bool = False
@@ -33,12 +33,9 @@ class Settings(BaseSettings):
     # 是否种入演示资产/维护窗口（订单系统等示例数据）；
     # 生产环境设 SEED_DEMO_ASSETS=0 只保留真实登记的资产
     seed_demo_assets: bool = True
-    # 资产页「新增节点」一键纳管：目标机 agent 指向的 Zabbix Server（IP/域名）。
-    # 为空时自动从 ZABBIX_URL 解析 host；两者都没有则需在表单里手填
-    provision_zabbix_server: str = ""
-    # agent 主动检查的上报间隔（RefreshActiveChecks，秒）。全局默认，纳管接口可用
-    # agent_refresh_seconds 覆盖。120 = 2 分钟（Zabbix 官方默认）。
-    zabbix_agent_refresh_seconds: int = 120
+    # 平台对外可访问的基础 URL（如 http://1.2.3.4:8000）。
+    # 子机 agent 上报地址由它拼接；未配置时回退为请求的 base_url。
+    platform_public_url: str = ""
 
     observation_seconds: float = 10.0
     probe_required_passes: int = 3
@@ -51,17 +48,9 @@ class Settings(BaseSettings):
     system_sample_retention_days: int = 60
 
     integration_mode: str = "mock"
-    zabbix_mode: str = ""
     ansible_mode: str = ""
     vault_mode: str = ""
 
-    zabbix_url: str = ""
-    zabbix_token: str = ""
-    zabbix_user: str = ""
-    zabbix_password: str = ""
-    zabbix_verify_ssl: bool = True
-    zabbix_timeout_seconds: float = 8.0
-    zabbix_retries: int = 2
     vault_addr: str = ""
     vault_token: str = ""
     ansible_runner_enabled: bool = False
@@ -75,7 +64,7 @@ class Settings(BaseSettings):
     ansible_timeout_seconds: int = 120
     ansible_host_key_checking: bool = True
     notify_webhook_url: str = ""
-    # 真实 CPU 压测工具：仅服务器部署（有真实 Zabbix）时打开
+    # 真实 CPU 压测工具：仅服务器部署时打开
     stress_tools_enabled: bool = False
     stress_max_seconds: int = 1200
     # 异常诊断上机采集的 SSH 密码兜底（优先用资产 extra.provision.password）
@@ -95,7 +84,7 @@ class Settings(BaseSettings):
     mock_model_version: str = "mock-diagnoser-v1"
     tenant_id: str = "tenant-default"
     employee_id: str = "DE-OPS-001"
-    # 母机（Zabbix Server + Agent 所在的接入机器）资产 ID，总览页以它为根展示子机拓扑
+    # 母机（子机 agent 上报的接入机器）资产 ID，总览页以它为根展示子机拓扑
     mother_asset_id: str = "devops-mother-186"
 
     playbooks_dir: Path = Path("/app/playbooks")

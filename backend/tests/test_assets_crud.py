@@ -17,7 +17,6 @@ def _mk(aid: str, hostname: str = "", **kw) -> Asset:
         env=kw.get("env", "prod"),
         owner=kw.get("owner", "张三"),
         tenant_id="tenant-default",
-        zabbix_host=kw.get("zabbix_host", ""),
         external_id=kw.get("external_id", ""),
     )
 
@@ -49,12 +48,11 @@ def test_list_assets_paginated_and_filtered(client, db):
 
 
 def test_get_asset_detail(client, db):
-    db.add(_mk("ast-detail-01", zabbix_host="web-01"))
+    db.add(_mk("ast-detail-01"))
     db.commit()
 
     row = client.get("/api/v1/assets/ast-detail-01").json()
     assert row["id"] == "ast-detail-01"
-    assert row["zabbix_host"] == "web-01"
     assert row["tickets"] == 0 and row["backup_jobs"] == 0
     assert row["extra"] == {}
 
@@ -81,7 +79,7 @@ def test_delete_asset(client, db):
 
 
 def test_export_assets_csv(client, db):
-    db.add(_mk("ast-exp-01", zabbix_host="exp-01", external_id="10099", owner="王五"))
+    db.add(_mk("ast-exp-01", external_id="10099", owner="王五"))
     db.commit()
 
     r = client.get("/api/v1/assets/export")
@@ -92,7 +90,7 @@ def test_export_assets_csv(client, db):
     reader = list(csv.DictReader(io.StringIO(text)))
     row = next(r for r in reader if r["id"] == "ast-exp-01")
     assert row["hostname"] == "ast-exp-01"
-    assert row["zabbix_host"] == "exp-01" and row["external_id"] == "10099" and row["owner"] == "王五"
+    assert row["external_id"] == "10099" and row["owner"] == "王五"
 
 
 def test_import_assets_upsert(client, db):
@@ -100,11 +98,11 @@ def test_import_assets_upsert(client, db):
     db.commit()
 
     csv_text = (
-        "id,hostname,zabbix_host,external_id,app,role,env,owner\n"
-        "ast-imp-old,updated-host,,,订单系统,app,prod,新负责人\n"
-        "ast-imp-new,new-host,imp-01,10088,缓存系统,cache,prod,赵六\n"
-        "bad-row,,,,,,,\n"  # id 缺失
-        "no-host,,x,,,,,\n"  # hostname 缺失
+        "id,hostname,external_id,app,role,env,owner\n"
+        "ast-imp-old,updated-host,,订单系统,app,prod,新负责人\n"
+        "ast-imp-new,new-host,10088,缓存系统,cache,prod,赵六\n"
+        "bad-row,,,,,,\n"  # id 缺失
+        "no-host,,,,,,\n"  # hostname 缺失
     )
     r = client.post(
         "/api/v1/assets/import",
@@ -117,12 +115,12 @@ def test_import_assets_upsert(client, db):
     old = db.get(Asset, "ast-imp-old")
     assert old.hostname == "updated-host" and old.owner == "新负责人"
     new = db.get(Asset, "ast-imp-new")
-    assert new.zabbix_host == "imp-01" and new.external_id == "10088" and new.role == "cache"
+    assert new.external_id == "10088" and new.role == "cache"
     assert new.reachable is False  # 导入不假设可达
 
     # 往返一致：导入的内容可原样导出
     exported = client.get("/api/v1/assets/export").content.decode("utf-8-sig")
-    assert "ast-imp-new,new-host,imp-01,10088,缓存系统,cache,prod,赵六" in exported
+    assert "ast-imp-new,new-host,10088,缓存系统,cache,prod,赵六" in exported
 
 
 def test_import_rejects_bad_header(client):

@@ -1,9 +1,11 @@
-"""多母机管控一期：母机列表 / 登记母机 / 按母机总览 / 子机归属 / Zabbix 连通校验。"""
+"""多母机管控：母机列表 / 纯业务登记母机 / 按母机总览 / 子机归属 / 级联删除。
+
+母机为纯业务归属节点：子机 agent 按 mother_id 归属上报，平台不在母机上部署任何监控栈。
+"""
 from __future__ import annotations
 
-from sqlalchemy import or_
-
-from app.models import Asset
+from app.models import Asset, AuditLog, Ticket
+from app.services import alert_policy
 
 
 def _h(token: str) -> dict:
@@ -32,300 +34,211 @@ def test_default_mother_is_kind_mother(auth_token, client, db):
     assert row is not None and row.kind == "mother"
 
 
-def test_create_mother_requires_risk_ack(auth_token, client, db):
+def test_create_mother_pure_registration(auth_token, client, db):
+    """登记母机：纯台账不碰服务器、id 规则 mother-<ip>、审计留痕。"""
     r = client.post(
         "/api/v1/assets/mothers",
-        json={"hostname": "ops-zbx-02", "ip": "10.0.0.9", "ack_risk": False},
-        headers=_h(auth_token),
-    )
-    assert r.status_code == 400
-
-
-def test_create_mother_bundled_and_overview(auth_token, client, db):
-    # 默认母机模拟线上已部署状态（zabbix.url 已写回）→ 显示"母机自身"合成子机
-    db.add(
-        _mk(
-            "devops-mother-186",
-            kind="mother",
-            ip="124.221.251.186",
-            extra={"zabbix": {"url": "http://124.221.251.186:8081"}, "provision": {"ip": "124.221.251.186", "port": 22}},
-        )
-    )
-    db.add(_mk("node-legacy"))  # 存量未归属子机 → 默认母机
-    db.commit()
-
-    r = client.post(
-        "/api/v1/assets/mothers",
-        json={"hostname": "ops-zbx-02", "ip": "10.0.0.9", "db_mode": "bundled", "ack_risk": True},
+        json={"hostname": "ops-m-02", "ip": "10.0.0.9", "owner": "ops"},
         headers=_h(auth_token),
     )
     assert r.status_code == 200
-    assert r.json()["id"] == "mother-10-0-0-9"
-    assert r.json()["kind"] == "mother"
-    assert r.json()["db_mode"] == "bundled"
+    body = r.json()
+    assert body["id"] == "mother-10-0-0-9"
+    assert body["kind"] == "mother"
+    assert body["reachable"] is True  # 纯业务登记，默认可达（汇聚节点）
 
-    # 列表：两台母机，默认母机带存量子机计数
-    r2 = client.get("/api/v1/assets/mothers", headers=_h(auth_token))
-    assert r2.status_code == 200
-    items = {i["id"]: i for i in r2.json()["items"]}
+    row = db.get(Asset, "mother-10-0-0-9")
+    assert row.extra["provision"] == {"ip": "10.0.0.9", "port": 22, "status": "registered"}
+    assert row.extra["alert_policy"] == alert_policy.normalize_policy(None)  # 默认策略
+    assert db.query(AuditLog).filter(AuditLog.event_type == "mother_create").count() == 1
+
+
+def test_create_mother_duplicate_and_hostname_conflict(auth_token, client, db):
+    """同 IP 重复登记 → 409；hostname 与已有资产撞名 → 409。"""
+    db.add(_mk("devops-mother-186", kind="mother", ip="124.221.251.186"))
+    db.commit()
+    r = client.post(
+        "/api/v1/assets/mothers",
+        json={"hostname": "ops-m-02", "ip": "10.0.0.9"},
+        headers=_h(auth_token),
+    )
+    assert r.status_code == 200
+
+    r2 = client.post(
+        "/api/v1/assets/mothers",
+        json={"hostname": "ops-m-03", "ip": "10.0.0.9"},
+        headers=_h(auth_token),
+    )
+    assert r2.status_code == 409
+    assert "已登记为母机" in r2.json()["detail"]
+
+    r3 = client.post(
+        "/api/v1/assets/mothers",
+        json={"hostname": "ops-m-02", "ip": "10.0.1.9"},
+        headers=_h(auth_token),
+    )
+    assert r3.status_code == 409
+    assert "主机名已被资产占用" in r3.json()["detail"]
+
+
+def test_create_mother_alert_policy(auth_token, client, db):
+    """告警策略：合法值入库（缺省补默认）；非法值 400。"""
+    policy = {"cpu_threshold": 90, "cpu_window_minutes": 5}
+    r = client.post(
+        "/api/v1/assets/mothers",
+        json={"hostname": "m-pol", "ip": "10.1.1.1", "alert_policy": policy},
+        headers=_h(auth_token),
+    )
+    assert r.status_code == 200
+    row = db.get(Asset, "mother-10-1-1-1")
+    assert row.extra["alert_policy"]["cpu_threshold"] == 90
+    assert row.extra["alert_policy"]["cpu_window_minutes"] == 5
+    assert row.extra["alert_policy"]["mem_threshold"] == alert_policy.DEFAULT_POLICY["mem_threshold"]
+
+    r2 = client.post(
+        "/api/v1/assets/mothers",
+        json={"hostname": "m-pol2", "ip": "10.1.1.2", "alert_policy": {"cpu_threshold": 200}},
+        headers=_h(auth_token),
+    )
+    assert r2.status_code == 400
+    assert "1~99" in r2.json()["detail"]
+
+
+def test_mothers_list_children_count(auth_token, client, db):
+    """默认母机计存量未归属子机；非默认母机只计自己名下。"""
+    db.add(_mk("devops-mother-186", kind="mother", ip="124.221.251.186"))
+    db.add(_mk("node-legacy"))  # mother_id="" → 归默认母机
+    db.add(_mk("node-a", mother_id="devops-mother-186"))
+    db.commit()
+    client.post("/api/v1/assets/mothers", json={"hostname": "ops-m-09", "ip": "10.0.0.9"}, headers=_h(auth_token))
+    db.add(_mk("node-b", mother_id="mother-10-0-0-9"))
+    db.commit()
+
+    r = client.get("/api/v1/assets/mothers", headers=_h(auth_token))
+    assert r.status_code == 200
+    items = {i["id"]: i for i in r.json()["items"]}
     assert set(items) == {"devops-mother-186", "mother-10-0-0-9"}
     assert items["devops-mother-186"]["is_default"] is True
-    # 默认母机已绑定 zabbix.url → 计入"母机自身"合成子机（真实子机 + 1）
-    real_children = (
+    # 默认母机计数 = 名下 + 存量未归属（含 seed 演示资产），动态计算避免与 seed 耦合
+    expected_default = (
         db.query(Asset)
-        .filter(Asset.kind != "mother", Asset.id != "devops-mother-186")
-        .filter(or_(Asset.mother_id == "devops-mother-186", Asset.mother_id == ""))
+        .filter(Asset.kind != "mother")
+        .filter((Asset.mother_id == "devops-mother-186") | (Asset.mother_id == ""))
         .count()
     )
-    assert items["devops-mother-186"]["children_count"] == real_children + 1
-    # 未部署的新母机：没有"母机自身"合成子机，children_count 不 +1（否则母机永远删不掉）
-    assert items["mother-10-0-0-9"]["children_count"] == 0
+    assert items["devops-mother-186"]["children_count"] == expected_default
+    assert expected_default >= 2  # 至少含 node-legacy + node-a
+    assert items["mother-10-0-0-9"]["children_count"] == 1  # node-b
+    assert r.json()["default_id"] == "devops-mother-186"
 
-    # 未部署的母机不显示"母机自身"行（Zabbix 里没有该主机，显示出来就是一台删不掉的假子机）
-    r3 = client.get("/api/v1/assets/mothers/mother-10-0-0-9/overview", headers=_h(auth_token))
-    assert r3.status_code == 200
-    assert r3.json()["children"] == []
 
-    # 部署成功（写回 zabbix.url）后："母机自身"行出现，children_count +1
-    row = db.get(Asset, "mother-10-0-0-9")
-    row.extra = {
-        **(row.extra or {}),
-        "deploy": {"status": "success", "version": "6.4"},
-        "zabbix": {**((row.extra or {}).get("zabbix") or {}), "url": "http://10.0.0.9:8081"},
-    }
+def test_mother_overview_children_and_agent_metrics(auth_token, client, db, monkeypatch):
+    """总览：子机按归属过滤；实时指标来自 agent 上报缓存；未上报 metrics=None。"""
+    import app.routers.agent_api as agent_api
+
+    db.add(_mk("devops-mother-186", kind="mother", ip="124.221.251.186"))
+    db.add(_mk("node-legacy"))
     db.commit()
-    r3b = client.get("/api/v1/assets/mothers/mother-10-0-0-9/overview", headers=_h(auth_token))
-    assert [c["id"] for c in r3b.json()["children"]] == ["mother-10-0-0-9:self"]
-    # 母机自身行 IP 显示登记的母机地址（不再被 Zabbix 自监控接口的 127.0.0.1 覆盖）
-    assert r3b.json()["children"][0]["ip"] == "10.0.0.9"
-    r2b = client.get("/api/v1/assets/mothers", headers=_h(auth_token))
-    items2 = {i["id"]: i for i in r2b.json()["items"]}
-    assert items2["mother-10-0-0-9"]["children_count"] == 1
+    monkeypatch.setattr(
+        agent_api, "LATEST", {"node-legacy": {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load1": 0.42}}
+    )
 
-    r4 = client.get("/api/v1/assets/mothers/devops-mother-186/overview", headers=_h(auth_token))
-    assert r4.status_code == 200
-    ids = {c["id"] for c in r4.json()["children"]}
-    assert "node-legacy" in ids and "devops-mother-186:self" in ids and "mother-10-0-0-9" not in ids
-    # 已部署母机自身行的 IP = 登记地址（而非 Zabbix 接口的 127.0.0.1）
-    self_row = next(c for c in r4.json()["children"] if c["id"] == "devops-mother-186:self")
-    assert self_row["ip"] == "124.221.251.186"
-
-
-def test_create_mother_external_db_and_duplicate(auth_token, client, db):
-    body = {
-        "hostname": "ops-zbx-03",
-        "ip": "10.0.0.10",
-        "db_mode": "external",
-        "external_db": {"host": "127.0.0.1", "port": 3306, "user": "zabbix", "password": "pw", "database": "zabbix"},
-        "zabbix_url": "http://10.0.0.10:8081",
-        "zabbix_user": "Admin",
-        "zabbix_password": "zabbix",
-        "ack_risk": True,
-    }
-    r = client.post("/api/v1/assets/mothers", json=body, headers=_h(auth_token))
+    r = client.get("/api/v1/assets/mothers/devops-mother-186/overview", headers=_h(auth_token))
     assert r.status_code == 200
-    assert r.json()["db_mode"] == "external"
+    children = {c["id"]: c for c in r.json()["children"]}
+    assert "node-legacy" in children  # 存量未归属子机归默认母机（另含 seed 演示资产）
+    assert children["node-legacy"]["metrics"] == {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load": 0.42}
+    assert all(not i.startswith("mother-") for i in children)  # 母机自身不在子机列表
 
-    # 外部库信息入 extra.zabbix.db；详情接口密码脱敏
-    r2 = client.get("/api/v1/assets/mother-10-0-0-10", headers=_h(auth_token))
-    assert r2.status_code == 200
-    z = r2.json()["extra"]["zabbix"]
-    assert z["db"]["host"] == "127.0.0.1" and z["password"] == "******" and z["db"]["password"] == "******"
+    # 未上报的子机 metrics=None（前端显示 "-"）；其他母机的子机不出现
+    client.post("/api/v1/assets/mothers", json={"hostname": "ops-m-10", "ip": "10.0.0.10"}, headers=_h(auth_token))
+    db.add(_mk("node-quiet"))
+    db.add(_mk("node-x", mother_id="mother-10-0-0-10"))
+    db.commit()
+    r2 = client.get("/api/v1/assets/mothers/devops-mother-186/overview", headers=_h(auth_token))
+    by_id = {c["id"]: c for c in r2.json()["children"]}
+    assert by_id["node-quiet"]["metrics"] is None
+    assert "node-x" not in by_id
 
-    # 同 IP 重复登记 → 409；外部库缺字段 → 400
-    r3 = client.post("/api/v1/assets/mothers", json=body, headers=_h(auth_token))
-    assert r3.status_code == 409
-    bad = {**body, "hostname": "ops-zbx-04", "ip": "10.0.0.11", "external_db": {"host": "127.0.0.1"}}
-    r4 = client.post("/api/v1/assets/mothers", json=bad, headers=_h(auth_token))
-    assert r4.status_code == 400
+    r3 = client.get("/api/v1/assets/mothers/mother-10-0-0-10/overview", headers=_h(auth_token))
+    ids3 = {c["id"] for c in r3.json()["children"]}
+    assert ids3 == {"node-x"}
+
+    # 不存在的母机 → 404
+    r4 = client.get("/api/v1/assets/mothers/no-such/overview", headers=_h(auth_token))
+    assert r4.status_code == 404
 
 
-def test_provision_attach_to_mother(client, db, monkeypatch, auth_token):
-    from app.services import provision as prov_mod
-
-    captured = {}
-
-    def fake_provision(asset_id, **kw):
-        captured["asset_id"] = asset_id
-        captured["zabbix_server"] = kw.get("zabbix_server")
-
-    monkeypatch.setattr(prov_mod, "provision_node", fake_provision)
-
+def test_uninstall_mother_cascades_children(auth_token, client, db):
+    """删除母机：纯台账级联（名下子机一并删），其他母机的子机保留。"""
     db.add(_mk("mother-10-0-0-9", kind="mother", ip="10.0.0.9"))
+    db.add(_mk("node-c1", mother_id="mother-10-0-0-9"))
+    db.add(_mk("node-c2", mother_id="mother-10-0-0-9"))
+    db.add(_mk("devops-mother-186", kind="mother", ip="124.221.251.186"))
+    db.add(_mk("node-other", mother_id="devops-mother-186"))
     db.commit()
 
-    # 新增节点显式挂新母机：未填 zabbix_server 时默认指向母机 IP
-    r = client.post(
-        "/api/v1/assets/provision",
-        json={"ip": "10.0.0.55", "password": "x", "zabbix_server": "", "mother_id": "mother-10-0-0-9"},
-        headers=_h(auth_token),
-    )
+    r = client.post("/api/v1/assets/mothers/mother-10-0-0-9/uninstall", headers=_h(auth_token))
     assert r.status_code == 200
-    assert r.json()["zabbix_server"] == "10.0.0.9"
-    import time
+    assert r.json()["deleted"] == "mother-10-0-0-9"
+    assert sorted(r.json()["cascade_children"]) == ["node-c1", "node-c2"]
 
-    for _ in range(30):
-        if captured:
-            break
-        time.sleep(0.05)
-    assert captured.get("zabbix_server") == "10.0.0.9"
-    a = db.get(Asset, captured["asset_id"])
-    assert a.mother_id == "mother-10-0-0-9"
+    db.expire_all()
+    assert db.get(Asset, "mother-10-0-0-9") is None
+    assert db.get(Asset, "node-c1") is None and db.get(Asset, "node-c2") is None
+    assert db.get(Asset, "node-other") is not None  # 他母机子机不受影响
 
-    # 挂不存在的母机 → 404
-    r2 = client.post(
-        "/api/v1/assets/provision",
-        json={"ip": "10.0.0.56", "password": "x", "zabbix_server": "1.2.3.4", "mother_id": "no-such"},
-        headers=_h(auth_token),
-    )
+    audit = db.query(AuditLog).filter(AuditLog.event_type == "mother_uninstall").all()
+    assert any(x.result["asset_id"] == "mother-10-0-0-9" for x in audit)
+
+
+def test_uninstall_mother_404_and_ref_guard(auth_token, client, db):
+    """不存在/非母机 → 404；母机或子机被工单引用 → 409 拒绝级联删除。"""
+    r = client.post("/api/v1/assets/mothers/no-such/uninstall", headers=_h(auth_token))
+    assert r.status_code == 404
+
+    db.add(_mk("node-not-mother"))
+    db.commit()
+    r2 = client.post("/api/v1/assets/mothers/node-not-mother/uninstall", headers=_h(auth_token))
     assert r2.status_code == 404
 
-
-def test_verify_zabbix_endpoint(auth_token, client):
-    # 不可达地址 → ok=False 且不抛 500
-    r = client.post(
-        "/api/v1/assets/verify-zabbix",
-        json={"url": "http://127.0.0.1:1", "user": "Admin", "password": "zabbix"},
-        headers=_h(auth_token),
-    )
-    assert r.status_code == 200
-    assert r.json()["ok"] is False
-
-
-def test_uninstall_mother_rejects_undeployed(auth_token, client, db):
-    """未部署成功的母机（无 zabbix.url）：SSH 卸载直接 400，引导走「仅删除记录」。"""
-    db.add(_mk("mother-10-0-0-9", kind="mother", ip="10.0.0.9"))  # extra.zabbix 无 url
+    db.add(_mk("mother-10-0-0-9", kind="mother", ip="10.0.0.9"))
+    db.add(_mk("node-c1", mother_id="mother-10-0-0-9"))
     db.commit()
-    r = client.post(
-        "/api/v1/assets/mothers/mother-10-0-0-9/uninstall",
-        json={"ip": "10.0.0.9", "port": 22, "username": "root", "password": "pw"},
-        headers=_h(auth_token),
+    db.add(
+        Ticket(
+            number="T-1",
+            idempotency_key="k-1",
+            asset_id="node-c1",  # 子机被工单引用 → 母机级联删除必须拒绝
+            tenant_id="t1",
+            title="演示工单",
+            event_id="e-1",
+        )
     )
-    assert r.status_code == 400
-    assert "仅删除记录" in r.json()["detail"] or "没有 Zabbix 栈" in r.json()["detail"]
-    # 记录保留
+    db.commit()
+    r3 = client.post("/api/v1/assets/mothers/mother-10-0-0-9/uninstall", headers=_h(auth_token))
+    assert r3.status_code == 409
+    assert "被引用" in r3.json()["detail"]
     db.expire_all()
-    assert db.get(Asset, "mother-10-0-0-9") is not None
+    assert db.get(Asset, "mother-10-0-0-9") is not None  # 不产生部分删除
 
 
-def test_create_mother_port_rules(auth_token, client, db):
-    db.add(_mk("devops-mother-186", kind="mother", ip="124.221.251.186"))
-    db.commit()
-    base = {"hostname": "ops-zbx-p", "ip": "10.9.9.9", "ack_risk": True}
+def test_children_agent_summary_mapping(monkeypatch):
+    """_children_agent_summary：LATEST 命中 → 4 项指标；未命中 → 不在结果里。"""
+    import app.routers.agent_api as agent_api
+    from app.api import _children_agent_summary
 
-    # Web 端口与 Trapper 端口相同 → 400
-    r = client.post("/api/v1/assets/mothers", json={**base, "zabbix_web_port": 8081, "zabbix_trapper_port": 8081}, headers=_h(auth_token))
-    assert r.status_code == 400
-    # 平台保留端口 → 400
-    r2 = client.post("/api/v1/assets/mothers", json={**base, "zabbix_web_port": 8080}, headers=_h(auth_token))
-    assert r2.status_code == 400
-    r3 = client.post("/api/v1/assets/mothers", json={**base, "zabbix_trapper_port": 3306}, headers=_h(auth_token))
-    assert r3.status_code == 400
-    # 超出合法范围 → 422
-    r4 = client.post("/api/v1/assets/mothers", json={**base, "zabbix_web_port": 80}, headers=_h(auth_token))
-    assert r4.status_code == 422
-
-
-def test_create_mother_custom_ports_persist_and_listed(auth_token, client, db):
-    db.add(_mk("devops-mother-186", kind="mother", ip="124.221.251.186"))
-    db.commit()
-    r = client.post(
-        "/api/v1/assets/mothers",
-        json={"hostname": "ops-zbx-77", "ip": "10.9.9.9", "zabbix_web_port": 18081, "zabbix_trapper_port": 20051, "ack_risk": True},
-        headers=_h(auth_token),
+    monkeypatch.setattr(
+        agent_api,
+        "LATEST",
+        {
+            "node-1": {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load1": 0.42},
+            "node-load": {"cpu": 1.0, "mem": 2.0, "disk": 3.0, "load": 5.5},  # load 键而非 load1
+        },
     )
-    assert r.status_code == 200
+    rows = [{"id": "node-1"}, {"id": "node-2"}]
+    out = _children_agent_summary(rows)
+    assert out == {"node-1": {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load": 0.42}}
 
-    # extra.zabbix 落库（详情脱敏接口可见）
-    r2 = client.get("/api/v1/assets/mother-10-9-9-9", headers=_h(auth_token))
-    assert r2.status_code == 200
-    z = r2.json()["extra"]["zabbix"]
-    assert z["web_port"] == 18081 and z["trapper_port"] == 20051
-
-    # 母机列表输出端口
-    r3 = client.get("/api/v1/assets/mothers", headers=_h(auth_token))
-    items = {i["id"]: i for i in r3.json()["items"]}
-    assert items["mother-10-9-9-9"]["zabbix_web_port"] == 18081
-    assert items["mother-10-9-9-9"]["zabbix_trapper_port"] == 20051
-    # 未自定义端口的母机回落默认值
-    assert items["devops-mother-186"]["zabbix_web_port"] == 8081
-    assert items["devops-mother-186"]["zabbix_trapper_port"] == 10051
-
-
-def test_provision_uses_mother_trapper_port(auth_token, client, db, monkeypatch):
-    from app.services import provision as prov_mod
-
-    captured = {}
-
-    def fake_provision(asset_id, **kw):
-        captured["zabbix_server"] = kw.get("zabbix_server")
-
-    monkeypatch.setattr(prov_mod, "provision_node", fake_provision)
-
-    db.add(_mk("devops-mother-186", kind="mother", ip="124.221.251.186"))
-    db.commit()
-    client.post(
-        "/api/v1/assets/mothers",
-        json={"hostname": "ops-zbx-78", "ip": "10.9.9.10", "zabbix_trapper_port": 20051, "ack_risk": True},
-        headers=_h(auth_token),
-    )
-
-    # 非默认 Trapper 端口 → zabbix_server 显式带 ip:port
-    r = client.post(
-        "/api/v1/assets/provision",
-        json={"ip": "10.0.0.77", "password": "x", "zabbix_server": "", "mother_id": "mother-10-9-9-10"},
-        headers=_h(auth_token),
-    )
-    assert r.status_code == 200
-    assert r.json()["zabbix_server"] == "10.9.9.10:20051"
-    import time
-
-    for _ in range(30):
-        if captured:
-            break
-        time.sleep(0.05)
-    assert captured.get("zabbix_server") == "10.9.9.10:20051"
-
-
-class _FakeZbx:
-    """按 method 返回预制数据，模拟 Zabbix 客户端的 _rpc。"""
-
-    def __init__(self, hosts, items, boom=False):
-        self.hosts, self.items, self.boom = hosts, items, boom
-
-    def _rpc(self, method, params):
-        if self.boom:
-            raise RuntimeError("zabbix down")
-        if method == "host.get":
-            return self.hosts
-        frag = params["search"]["key_"]
-        return [it for it in self.items if frag in it["key_"] and it["hostid"] in params["hostids"]]
-
-
-def test_children_metrics_summary_mapping():
-    from app.api import _children_metrics_summary
-
-    zbx = _FakeZbx(
-        hosts=[{"hostid": "10084", "host": "node-1", "name": "node-1 显示名"}],
-        items=[
-            {"itemid": "1", "hostid": "10084", "key_": "system.cpu.util", "lastvalue": "23.456"},
-            # pavailable 是"可用内存%"，与监控详情口径一致需转成"已用%"：100 - 61.2 = 38.8
-            {"itemid": "2", "hostid": "10084", "key_": "vm.memory.size[pavailable]", "lastvalue": "61.2"},
-            {"itemid": "3", "hostid": "10084", "key_": "vfs.fs.size[/,pused]", "lastvalue": "45.1"},
-            {"itemid": "4", "hostid": "10084", "key_": "system.cpu.load[all,avg1]", "lastvalue": "0.42"},
-        ],
-    )
-    rows = [{"id": "node-1", "zabbix_host": "node-1", "hostname": "node-1"}]
-    out = _children_metrics_summary(zbx, rows)
-    assert out["node-1"] == {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load": 0.42}
-
-    # 主机匹配不上 → 空 dict
-    rows2 = [{"id": "node-x", "zabbix_host": "nope", "hostname": "nope"}]
-    assert _children_metrics_summary(zbx, rows2) == {}
-
-
-def test_children_metrics_summary_degrades_silently():
-    from app.api import _children_metrics_summary
-
-    zbx = _FakeZbx(hosts=[], items=[], boom=True)
-    assert _children_metrics_summary(zbx, [{"id": "n", "zabbix_host": "n", "hostname": "n"}]) == {}
+    out2 = _children_agent_summary([{"id": "node-load"}, {"id": "node-x"}])
+    assert out2 == {"node-load": {"cpu": 1.0, "mem": 2.0, "disk": 3.0, "load": 5.5}}

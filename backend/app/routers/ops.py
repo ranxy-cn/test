@@ -59,7 +59,7 @@ def _require_stress_enabled() -> None:
     if not get_settings().stress_tools_enabled:
         raise HTTPException(
             403,
-            "CPU 压测工具未开启：仅服务器部署（有真实 Zabbix）设置 STRESS_TOOLS_ENABLED=true 后可用",
+            "CPU 压测工具未开启：仅服务器部署设置 STRESS_TOOLS_ENABLED=true 后可用",
         )
 
 
@@ -69,7 +69,7 @@ def api_run_action(
     db: Session = Depends(get_db),
     current: CurrentUser = Depends(require_perm("tickets:operate")),
 ):
-    """人工一键发起白名单预案（如部署 Zabbix Agent）。
+    """人工一键发起白名单预案（如服务重启）。
 
     与告警链路共用策略引擎：绿灯自动执行、黄灯挂起等审批、红灯直接拒绝。
     """
