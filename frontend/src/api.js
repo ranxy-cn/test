@@ -80,9 +80,11 @@ export const createMother = (payload) => http.post('/assets/mothers', payload)
 export const renameGroup = (motherId, name, newName) =>
   http.post(`/assets/mothers/${motherId}/groups/rename`, { name, new_name: newName })
 export const deleteGroup = (motherId, name) => http.post(`/assets/mothers/${motherId}/groups/delete`, { name })
-export const fetchAlertPolicy = (id) => http.get(`/assets/mothers/${id}/alert-policy`, { timeout: 20000 })
+// 告警策略统一端点：asset_id 可为母机或子机（子机自有策略 > 继承母机 > 平台默认）
+export const fetchAlertPolicy = (id) => http.get(`/assets/${id}/alert-policy`, { timeout: 20000 })
 export const updateAlertPolicy = (id, policy) =>
-  http.put(`/assets/mothers/${id}/alert-policy`, policy, { timeout: 60000 })
+  http.put(`/assets/${id}/alert-policy`, policy, { timeout: 60000 })
+export const resetAlertPolicy = (id) => http.delete(`/assets/${id}/alert-policy`, { timeout: 20000 })
 
 export const updateAsset = (id, payload) => http.patch(`/assets/${id}`, payload)
 export const fetchAsset = (id) => http.get(`/assets/${id}`)

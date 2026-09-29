@@ -33,7 +33,7 @@ from app.routers.deps import CurrentUser, require_perm
 from app.schemas import AnomalyOut, ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services import provision as provision_svc
 from app.services import diagnostics as diagnostics_svc
-from app.services.alert_policy import DEFAULT_POLICY, normalize_policy
+from app.services.alert_policy import DEFAULT_POLICY, effective_policy, normalize_policy
 from app.services.audit import add_audit, add_event
 from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
@@ -445,6 +445,70 @@ def update_alert_policy(
     )
     db.commit()
     return {"policy": policy}
+
+
+@router.get("/api/v1/assets/{asset_id}/alert-policy", dependencies=[Depends(require_perm("assets:read"))])
+def get_asset_alert_policy(asset_id: str, db: Session = Depends(get_db)):
+    """资产告警策略：母机=自身存储值；子机=自有值，未设置时继承母机（inherited=true）。"""
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "资产不存在")
+    own = (asset.extra or {}).get("alert_policy")
+    policy, source = effective_policy(db, asset)
+    return {"policy": policy, "inherited": own is None, "source": source, "defaults": dict(DEFAULT_POLICY)}
+
+
+@router.put("/api/v1/assets/{asset_id}/alert-policy", dependencies=[Depends(require_perm("assets:write"))])
+def update_asset_alert_policy(
+    asset_id: str,
+    body: AlertPolicyIn,
+    current: CurrentUser = Depends(require_perm("assets:write")),
+    db: Session = Depends(get_db),
+):
+    """保存资产告警策略：母机/子机均写自身 extra.alert_policy（子机保存后覆盖继承）。
+
+    子机自有策略只影响该子机（如 186 阈值 100%/1 分钟、92 阈值 50%/1 分钟各自生效）。
+    """
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "资产不存在")
+    policy = normalize_policy(body.model_dump())
+    asset.extra = {**(asset.extra or {}), "alert_policy": policy}
+    db.commit()
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="alert_policy_update",
+        actor=current.username,
+        result={"asset_id": asset_id, "kind": asset.kind, "policy": policy},
+    )
+    db.commit()
+    return {"policy": policy, "inherited": False}
+
+
+@router.delete("/api/v1/assets/{asset_id}/alert-policy", dependencies=[Depends(require_perm("assets:write"))])
+def reset_asset_alert_policy(
+    asset_id: str,
+    current: CurrentUser = Depends(require_perm("assets:write")),
+    db: Session = Depends(get_db),
+):
+    """清空资产自有策略：子机恢复继承母机，母机恢复平台默认。"""
+    asset = db.get(Asset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "资产不存在")
+    extra = {k: v for k, v in (asset.extra or {}).items() if k != "alert_policy"}
+    asset.extra = extra
+    db.commit()
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="alert_policy_reset",
+        actor=current.username,
+        result={"asset_id": asset_id, "kind": asset.kind},
+    )
+    db.commit()
+    policy, source = effective_policy(db, asset)
+    return {"policy": policy, "inherited": asset.kind == "child", "source": source}
 
 
 @router.post("/api/v1/assets/mothers/{mother_id}/uninstall", dependencies=[Depends(require_perm("assets:write"))])
@@ -1282,9 +1346,12 @@ def zabbix_webhook(
     db.commit()
     db.refresh(anomaly)
 
-    # 首次出现的异常：后台自动 SSH 采集异常时刻进程快照
+    # 首次出现的异常：自动 SSH 采集异常时刻进程快照（生产后台线程；测试同步，避免共享连接事务交错）
     if not recovered and not duplicate:
-        threading.Thread(target=diagnostics_svc.collect_for_anomaly, args=(anomaly.id,), daemon=True).start()
+        if get_settings().diagnostics_async:
+            threading.Thread(target=diagnostics_svc.collect_for_anomaly, args=(anomaly.id,), daemon=True).start()
+        else:
+            diagnostics_svc.collect_for_anomaly(anomaly.id)
 
     ticket_out = None
     skipped = False
@@ -1592,7 +1659,10 @@ def anomaly_snapshot(aid: int, db: Session = Depends(get_db)):
     if anomaly.diag_status == "running":
         return {"status": "running", "message": "采集中，请稍候"}
     # 状态由采集线程自行置为 running（接口预置会与线程的 running 检查冲突）
-    threading.Thread(target=diagnostics_svc.collect_for_anomaly, args=(aid,), daemon=True).start()
+    if get_settings().diagnostics_async:
+        threading.Thread(target=diagnostics_svc.collect_for_anomaly, args=(aid,), daemon=True).start()
+    else:
+        diagnostics_svc.collect_for_anomaly(aid)
     return {"status": "running", "message": "已开始采集，请稍候刷新查看"}
 
 

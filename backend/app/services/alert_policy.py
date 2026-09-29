@@ -1,10 +1,15 @@
 """告警策略：CPU/内存/负载的阈值与触发窗口（平台纯存储）。
 
-策略保存于母机资产 extra["alert_policy"]，供前端展示与后续本地判定
-（如 agent 上报数据越限告警）使用；不再同步到任何外部监控系统。
+策略优先级：子机自有 extra["alert_policy"] > 所属母机 extra["alert_policy"] > 平台默认。
+母机策略保存于母机资产 extra["alert_policy"]；本地判定引擎（alert_engine）按
+生效策略对 agent 上报指标做「越限持续满窗口」判定；不再同步到任何外部监控系统。
 """
 
 from __future__ import annotations
+
+from sqlalchemy.orm import Session
+
+from app.models import Asset
 
 DEFAULT_POLICY: dict[str, float] = {
     "cpu_threshold": 90,
@@ -40,3 +45,18 @@ def normalize_policy(data: dict | None) -> dict:
         if not 1 <= policy[name] <= 120:
             raise ValueError(f"{name} 取值范围 1~120 分钟")
     return policy
+
+
+def effective_policy(db: Session, asset) -> tuple[dict, str]:
+    """资产生效策略：返回 (策略, 来源)。
+
+    来源 self=子机自有策略 / mother=继承所属母机 / default=平台默认。
+    """
+    own = (asset.extra or {}).get("alert_policy")
+    if own:
+        return normalize_policy(own), "self"
+    if asset.kind == "child":
+        mother = db.get(Asset, asset.mother_id) if asset.mother_id else None
+        if mother is not None and (mother.extra or {}).get("alert_policy"):
+            return normalize_policy(mother.extra["alert_policy"]), "mother"
+    return dict(DEFAULT_POLICY), "default"

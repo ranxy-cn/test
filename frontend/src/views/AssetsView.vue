@@ -191,6 +191,9 @@
                     <el-tooltip content="监控详情" placement="top">
                       <el-icon class="node-op" @click="openMonitor(c)"><View /></el-icon>
                     </el-tooltip>
+                    <el-tooltip content="告警策略" placement="top">
+                      <el-icon v-perm="'assets:write'" class="node-op" @click="openAlertPolicy(c)"><Bell /></el-icon>
+                    </el-tooltip>
                     <el-tooltip v-if="!c.is_mother" content="编辑 / 分组" placement="top">
                       <el-icon v-perm="'assets:write'" class="node-op" @click="openEdit(c)"><EditPen /></el-icon>
                     </el-tooltip>
@@ -468,11 +471,21 @@
       </template>
     </el-dialog>
 
-    <!-- 母机告警策略：与新增母机时的告警策略配置保持同步（仅包含配置项） -->
+    <!-- 告警策略：母机/子机统一弹窗（子机自有策略 > 继承母机 > 平台默认） -->
     <el-dialog v-model="policyVisible" :title="`告警策略 · ${policyTarget?.hostname || ''}`" width="600">
       <el-alert type="info" :closable="false" class="db-note">
-        阈值与触发窗口作用于该母机及其所有接入子机的越限判定，新接入子机自动沿用当前策略。
+        {{ policyIsChild
+          ? (policyInfo?.inherited === false
+            ? '该子机使用自有策略，仅作用于本机；保存后立即生效，删除自有策略可恢复继承母机。'
+            : '当前继承所属母机的告警策略（无自有策略）；修改保存后将覆盖为子机自有策略，不再随母机变化。')
+          : '阈值与触发窗口作用于该母机及其所有接入子机的越限判定，新接入子机自动沿用当前策略。' }}
       </el-alert>
+      <div v-if="policyInfo" class="policy-meta">
+        <el-tag size="small" :type="policyInfo.inherited ? 'info' : 'success'" effect="plain">
+          {{ policySourceLabel }}
+        </el-tag>
+        <span v-if="policyIsChild && policyInfo.source === 'mother'" class="policy-meta-hint">跟随所属母机策略变化</span>
+      </div>
       <el-form v-loading="!policyInfo" label-width="130" style="margin-top: 12px; min-height: 180px">
         <el-form-item v-for="f in POLICY_FIELDS" :key="f.key" :label="f.label">
           <el-input-number
@@ -486,6 +499,15 @@
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button
+          v-if="policyIsChild && policyInfo?.inherited === false"
+          type="warning"
+          plain
+          :loading="policyResetting"
+          @click="resetAlertPolicy"
+        >
+          恢复继承母机
+        </el-button>
         <el-button @click="policyVisible = false">取消</el-button>
         <el-button type="primary" :loading="policySaving" :disabled="!policyInfo" @click="submitAlertPolicy">
           保存
@@ -498,7 +520,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh } from '@element-plus/icons-vue'
+import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell } from '@element-plus/icons-vue'
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
 import {
@@ -514,6 +536,7 @@ import {
   fetchAssetProvision,
   removeAsset,
   renameGroup as renameGroupApi,
+  resetAlertPolicy as resetAlertPolicyApi,
   updateAlertPolicy,
   updateAsset,
 } from '../api'
@@ -565,9 +588,15 @@ const POLICY_FIELDS = [
 ]
 const policyVisible = ref(false)
 const policySaving = ref(false)
-const policyTarget = ref(null) // 当前设置策略的母机
-const policyInfo = ref(null) // GET 返回（policy / defaults）
+const policyResetting = ref(false)
+const policyTarget = ref(null) // 当前设置策略的资产（母机或子机）
+const policyInfo = ref(null) // GET 返回（policy / inherited / source / defaults）
 const policyForm = reactive({ ...ALERT_POLICY_DEFAULT })
+const policyIsChild = computed(() => !!policyTarget.value && !policyTarget.value.is_mother)
+const policySourceLabel = computed(() => {
+  const map = { self: '子机自有策略', mother: '继承母机策略', default: '平台默认策略' }
+  return policyTarget.value?.is_mother ? '母机策略（子机未自定义时沿用）' : map[policyInfo.value?.source] || ''
+})
 
 // ===== 添加母机（纯业务登记） =====
 const addMotherVisible = ref(false)
@@ -1058,7 +1087,7 @@ async function submitMother() {
   }
 }
 
-// ===== 母机告警策略：查看 / 修改（母机与子机统一生效） =====
+// ===== 告警策略：查看 / 修改（母机与子机统一端点） =====
 async function openAlertPolicy(m) {
   policyTarget.value = m
   policyInfo.value = null
@@ -1078,12 +1107,30 @@ async function submitAlertPolicy() {
   policySaving.value = true
   try {
     await updateAlertPolicy(policyTarget.value.id, { ...policyForm })
-    ElMessage.success('告警策略已保存（母机与所有接入子机统一生效）')
+    ElMessage.success(
+      policyIsChild.value ? '告警策略已保存（子机自有策略，立即生效）' : '告警策略已保存（母机与所有接入子机统一生效）',
+    )
     policyVisible.value = false
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '保存失败')
   } finally {
     policySaving.value = false
+  }
+}
+
+// 子机清除自有策略，恢复继承母机（无母机时回平台默认）
+async function resetAlertPolicy() {
+  if (!policyTarget.value) return
+  policyResetting.value = true
+  try {
+    const { data } = await resetAlertPolicyApi(policyTarget.value.id)
+    policyInfo.value = data
+    Object.assign(policyForm, { ...ALERT_POLICY_DEFAULT, ...(data.policy || {}) })
+    ElMessage.success('已恢复继承母机策略')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || '恢复继承失败')
+  } finally {
+    policyResetting.value = false
   }
 }
 </script>
@@ -1278,6 +1325,16 @@ async function submitAlertPolicy() {
 }
 .field-hint {
   margin-left: 10px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.policy-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.policy-meta-hint {
   color: var(--faint);
   font-size: 12px;
 }
