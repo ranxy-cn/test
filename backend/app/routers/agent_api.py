@@ -19,7 +19,7 @@ import secrets
 import threading
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -312,8 +312,12 @@ class AgentDeployIn(BaseModel):
 
 
 @router.post("/api/v1/assets/{asset_id}/agent/deploy", dependencies=[Depends(require_perm("assets:write"))])
-def agent_deploy(asset_id: str, body: AgentDeployIn, db: Session = Depends(get_db)):
-    """经 SSH 向子机下发 agent（后台执行，进度写 extra["agent_deploy"]）。"""
+def agent_deploy(asset_id: str, body: AgentDeployIn, request: Request, db: Session = Depends(get_db)):
+    """经 SSH 向子机下发 agent（后台执行，进度写 extra["agent_deploy"]）。
+
+    server_url 缺省时回退 平台公网地址 > 请求根地址（与新增母机自动纳管一致），
+    避免把空地址写进 agent config 导致「已启动但永不上报」。
+    """
     asset = db.get(Asset, asset_id)
     if not asset:
         raise HTTPException(404, "资产不存在")
@@ -322,6 +326,12 @@ def agent_deploy(asset_id: str, body: AgentDeployIn, db: Session = Depends(get_d
     ip = ((asset.extra or {}).get("provision") or {}).get("ip") or ""
     if not ip:
         raise HTTPException(409, "资产缺少 SSH 目标 IP，请先完成纳管")
+
+    server_url = (
+        body.server_url
+        or (get_settings().platform_public_url or "").strip()
+        or str(request.base_url).rstrip("/")
+    )
 
     token = (asset.extra or {}).get("agent_token") or secrets.token_urlsafe(24)
     asset.extra = {**(asset.extra or {}), "agent_token": token}
@@ -344,7 +354,7 @@ def agent_deploy(asset_id: str, body: AgentDeployIn, db: Session = Depends(get_d
                 ssh_user=body.ssh_user,
                 ssh_password=body.ssh_password,
                 token=token,
-                server_url=body.server_url,
+                server_url=server_url,
                 cfg=agent_cfg_of(db2.get(Asset, asset_id), db2),
             )
         except Exception as exc:  # noqa: BLE001 进度落库
