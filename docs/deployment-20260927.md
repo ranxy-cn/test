@@ -52,3 +52,25 @@ bash /home/ranxiaoying/devops-releases/20260927-ai-233520/rollback.sh
 
 该回退脚本保留新增知识表与上线后的生产数据，不自动恢复旧数据库快照。
 如需恢复数据库，必须先确认影响及停写方案，不能直接覆盖正在使用的数据。
+
+## 2026-09-29 Netdata 接入与重新部署
+
+### 发布内容
+
+- 发布提交：`9afab08`（`feat: integrate Netdata live monitoring`）。
+- 新增后端 Netdata 只读适配层，调用 Agent 的 `/api/v1/info`、`/api/v1/charts` 和 `/api/v1/data` 接口。
+- 新增聚合接口 `/api/v1/dashboard/netdata` 和单资产接口 `/api/v1/assets/{asset_id}/netdata`。
+- 独立大屏 `/screen` 新增 Netdata 在线状态、CPU、内存、磁盘和网络实时态势面板。
+- Netdata 连接失败时按资产单独降级，不影响 Zabbix、知识库、AI 对话和原有大屏。
+
+### 部署过程
+
+- 项目目录：`/home/ranxiaoying/devops-agent`。
+- 服务器原 `.env`、知识库目录、密钥目录和 Docker 数据卷均未覆盖。
+- 已重新构建并启动 `api`、`worker`、`beat`、`frontend`，Redis 保持原实例。
+- `/health` 检查通过，前端静态资源已更新。
+- 本次部署备份：`/home/ranxiaoying/devops-backups/netdata-deploy-20260929-101429/source-before.tgz`。
+
+### 当前边界
+
+服务器本机当前尚未安装 Netdata Agent，`127.0.0.1:19999` 暂不可达。因此本次已完成平台侧接入和部署，但大屏在安装 Agent 或登记其他服务器的 Netdata 地址前会显示未接入/离线状态。安装 Agent 属于生产主机变更，应在确认采集范围、端口策略和保留周期后单独执行。
