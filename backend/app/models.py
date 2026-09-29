@@ -422,15 +422,17 @@ class MetricSample(Base):
 
 
 class SystemMetricSample(Base):
-    """本机系统资源实时采样（CPU/内存/磁盘/负载/网速），API 进程启动后每 5 秒落库。
+    """系统资源采样（CPU/内存/磁盘/负载/网速）。
 
-    与资产维度 metric_samples 区分：这里固定记录 DevOpsAgent 所在服务器自身，
-    不回填历史，启动即开始记录；网速为字节/秒。
+    asset_id 为空：母机本机采样（/proc，API 进程启动后固定周期落库）；
+    asset_id 非空：对应子机由自研 Agent 推送上报。不回填历史，
+    网速为字节/秒。
     """
 
     __tablename__ = "system_metric_samples"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     ts: Mapped[datetime] = mapped_column(TZDateTime, index=True)
     cpu: Mapped[float | None] = mapped_column(Float, nullable=True)
     mem: Mapped[float | None] = mapped_column(Float, nullable=True)
