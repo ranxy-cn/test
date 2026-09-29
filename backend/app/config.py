@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     webhook_auto_ticket: bool = False
     use_celery: bool = False
     demo_mode: bool = True
+    # 异常诊断 SSH 采集是否用后台线程（测试置 false 改为同步执行：
+    # 测试内存库为全线程共享单连接，后台线程事务交错会导致偶发 StaleDataError）
+    diagnostics_async: bool = True
 
     # ===== 登录鉴权 / RBAC =====
     # JWT 签名密钥：生产必须通过环境变量设置（>=32 字符随机串）；

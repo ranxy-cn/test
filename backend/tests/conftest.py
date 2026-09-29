@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["USE_CELERY"] = "false"
 os.environ["DEMO_MODE"] = "true"
+# 测试内存库为全线程共享单连接（StaticPool），诊断采集用后台线程会与请求事务交错，
+# 偶发 StaleDataError（UPDATE alert_events 0 rows）——测试改为同步执行
+os.environ["DIAGNOSTICS_ASYNC"] = "false"
 os.environ["OBSERVATION_SECONDS"] = "0"
 os.environ["PROBE_INTERVAL_SECONDS"] = "0"
 os.environ["WEBHOOK_SECRET"] = "dev-webhook-secret"
