@@ -1,0 +1,151 @@
+x-backend-env: &backend-env
+  # MySQL：默认指向 compose 内置 mysql 服务（profiles: bundled-db）；
+  # 生产/独立 MySQL 时在 .env 覆盖 DATABASE_URL 即可（密码中的 @ 需 URL 编码为 %40）
+  DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://devops_agent:devops_agent@mysql:3306/devops_agent?charset=utf8mb4}
+  REDIS_URL: redis://redis:6379/0
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+  # 告警 webhook 自动立案开关：默认关闭（只记异常/恢复条目），置 true 走 AI 诊断/策略/预案管线
+  WEBHOOK_AUTO_TICKET: ${WEBHOOK_AUTO_TICKET:-false}
+  USE_CELERY: "true"
+  DEMO_MODE: "true"
+  # ===== 登录鉴权（生产必须覆盖 JWT_SECRET / ADMIN_INITIAL_PASSWORD）=====
+  JWT_SECRET: ${JWT_SECRET:-}
+  ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
+  ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
+  INTEGRATION_MODE: ${INTEGRATION_MODE:-mock}
+  ANSIBLE_MODE: ${ANSIBLE_MODE:-}
+  VAULT_MODE: ${VAULT_MODE:-}
+  # 平台对外可访问的基础 URL（子机 agent 上报地址由它拼接）
+  PLATFORM_PUBLIC_URL: ${PLATFORM_PUBLIC_URL:-}
+  SEED_DEMO_ASSETS: ${SEED_DEMO_ASSETS:-false}
+  VAULT_ADDR: ${VAULT_ADDR:-}
+  VAULT_TOKEN: ${VAULT_TOKEN:-}
+  ANSIBLE_RUNNER_ENABLED: ${ANSIBLE_RUNNER_ENABLED:-false}
+  ANSIBLE_PRIVATE_DATA_DIR: ${ANSIBLE_PRIVATE_DATA_DIR:-/tmp/ansible-runner}
+  ANSIBLE_INVENTORY: ${ANSIBLE_INVENTORY:-}
+  ANSIBLE_ROLES_PATH: ${ANSIBLE_ROLES_PATH:-}
+  ANSIBLE_SSH_PRIVATE_KEY_FILE: ${ANSIBLE_SSH_PRIVATE_KEY_FILE:-}
+  ANSIBLE_SSH_USER: ${ANSIBLE_SSH_USER:-devops}
+  ANSIBLE_CHECK_MODE: ${ANSIBLE_CHECK_MODE:-false}
+  ANSIBLE_TIMEOUT_SECONDS: ${ANSIBLE_TIMEOUT_SECONDS:-120}
+  ANSIBLE_HOST_KEY_CHECKING: ${ANSIBLE_HOST_KEY_CHECKING:-true}
+  NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+  STRESS_TOOLS_ENABLED: ${STRESS_TOOLS_ENABLED:-false}
+  STRESS_MAX_SECONDS: ${STRESS_MAX_SECONDS:-1200}
+  # 异常诊断上机采集的 SSH 密码兜底（优先用资产 extra.provision.password）
+  DIAG_SSH_PASSWORD: ${DIAG_SSH_PASSWORD:-}
+  ACTION_FAIL_COOLDOWN_SECONDS: ${ACTION_FAIL_COOLDOWN_SECONDS:-1800}
+  LOCK_TTL_SECONDS: ${LOCK_TTL_SECONDS:-120}
+  OBSERVATION_SECONDS: "10"
+  PROBE_REQUIRED_PASSES: "3"
+  PROBE_INTERVAL_SECONDS: "1"
+  RESTART_COOLDOWN_SECONDS: "1800"
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+  CHAT_API_KEY: ${CHAT_API_KEY:-}
+  CHAT_BASE_URL: ${CHAT_BASE_URL:-http://116.162.79.176:8001/v1}
+  CHAT_MODEL: ${CHAT_MODEL:-glm-4.7-channel-cg}
+  CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-60}
+  KNOWLEDGE_MAX_UPLOAD_BYTES: ${KNOWLEDGE_MAX_UPLOAD_BYTES:-20971520}
+  POLICY_VERSION: policy-v1.0.0
+  TENANT_ID: tenant-default
+  EMPLOYEE_ID: DE-OPS-001
+
+services:
+  # 可选内置 MySQL（后期整体容器化部署用）：
+  #   COMPOSE_PROFILES=bundled-db docker-compose up -d
+  # 当前生产使用宿主机已有 MySQL（124.221.251.186:3306，.env 覆盖 DATABASE_URL），不启动本服务。
+  mysql:
+    image: mysql:8.0
+    profiles: ["bundled-db"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-devops_root_change_me}
+      MYSQL_DATABASE: devops_agent
+      MYSQL_USER: devops_agent
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-devops_agent}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # 不映射宿主机端口：仅容器网络内访问，避免与宿主机 MySQL(3306) 冲突及公网暴露
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    # 不映射宿主机端口：仅容器网络内访问，避免公网暴露与端口冲突
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    # 启动前先执行 Alembic 数据库迁移
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      <<: *backend-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    volumes:
+      - ./playbooks:/app/playbooks:ro
+      - ./knowledge:/app/knowledge:ro
+      - ./inventory:/app/inventory:ro
+      - ./keys:/app/keys:ro
+      # 宿主机 /proc 只读挂载：实时监控读取宿主机网口计数器（CPU/内存/负载本就是宿主机全局值）
+      - /proc:/host/proc:ro
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      <<: *backend-env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    volumes:
+      - ./playbooks:/app/playbooks:ro
+      - ./knowledge:/app/knowledge:ro
+      - ./inventory:/app/inventory:ro
+      - ./keys:/app/keys:ro
+
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      <<: *backend-env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    volumes:
+      - ./playbooks:/app/playbooks:ro
+      - ./knowledge:/app/knowledge:ro
+      - ./inventory:/app/inventory:ro
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  mysql_data:

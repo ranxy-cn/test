@@ -1,0 +1,25 @@
+id: ACT-RESTART-PROBE
+name: 重启旁路业务探针
+version: "1.0.0"
+description: 低风险：重启旁路健康探针进程，不影响主流量。
+risk: low
+auto_allowed: true
+requires_db_ok: false
+requires_reachable: true
+restart_cooldown: false
+success_criteria: 探针连续 3 次探测通过
+stop_conditions: 探针拉起失败立即停止，禁止循环重启探针
+allowed_params:
+  probe_name:
+    type: string
+    default: biz-probe
+steps:
+  - id: stop
+    name: 停止旁路探针
+    mock_seconds: 0.1
+  - id: start
+    name: 拉起旁路探针
+    mock_seconds: 0.2
+  - id: health
+    name: 探针自检
+    mock_seconds: 0.1

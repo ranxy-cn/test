@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevOpsAgent · AI 分析能力规划</title>
+<style>
+  :root{
+    --primary:#409eff; --success:#67c23a; --warning:#e6a23c; --danger:#f56c6c;
+    --ink:#1f2d3d; --sub:#5e6d82; --line:#e4e7ed; --bg:#f5f7fa; --card:#ffffff;
+    --code-bg:#0d1117; --code-ink:#c9d1d9;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.75 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 80px}
+  /* ---------- hero ---------- */
+  .hero{background:linear-gradient(135deg,#1f2d3d 0%,#27408b 100%);color:#fff;border-radius:0 0 20px 20px;padding:48px 32px 36px;margin-bottom:32px}
+  .hero h1{margin:0 0 8px;font-size:30px}
+  .hero p{margin:4px 0;color:#c6d4e8;font-size:15px}
+  .pillars{display:flex;gap:12px;margin-top:20px;flex-wrap:wrap}
+  .pillar{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.22);border-radius:10px;padding:10px 16px;font-size:13px}
+  .pillar b{display:block;font-size:14px;color:#fff}
+  /* ---------- 通用 ---------- */
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px 30px;margin-bottom:26px}
+  h2{font-size:21px;margin:0 0 6px;display:flex;align-items:center;gap:10px}
+  h2 .tag{font-size:12px;font-weight:normal;background:var(--primary);color:#fff;border-radius:6px;padding:2px 10px;vertical-align:3px}
+  h3{font-size:16px;margin:22px 0 8px;color:#27408b}
+  .sub{color:var(--sub);font-size:14px;margin:0 0 14px}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:#f0f4f9;white-space:nowrap}
+  code{background:#eef2f7;border-radius:4px;padding:1px 6px;font-size:13px;color:#c7254e}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+  .chip{background:#ecf5ff;border:1px solid #d0e8ff;color:#2f6fb8;border-radius:20px;padding:4px 14px;font-size:13px}
+  .chip.ok::before{content:"✓ ";color:var(--success);font-weight:bold}
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin:16px 0}
+  .fstep{flex:1;min-width:150px;background:#f0f4f9;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:13px;position:relative;margin-right:34px;margin-bottom:10px}
+  .fstep:last-child{margin-right:0}
+  .fstep::after{content:"➜";position:absolute;right:-27px;top:42%;color:#b8c4d4;font-size:18px}
+  .fstep:last-child::after{content:""}
+  .fstep b{display:block;font-size:14px;margin-bottom:3px}
+  .note{background:#fdf6ec;border:1px solid #f5dab1;border-radius:10px;padding:12px 16px;font-size:13.5px;color:#8a6116;margin:14px 0}
+  .note.blue{background:#ecf5ff;border-color:#c6e2ff;color:#2f6fb8}
+  /* ---------- mockup 外壳 ---------- */
+  .mockup{border:2px dashed #b8c4d4;border-radius:14px;padding:18px;margin-top:14px;background:#fafbfd}
+  .mockup-label{font-size:12px;color:#8a97a8;letter-spacing:1px;margin-bottom:10px}
+  .mockup-label b{color:var(--primary)}
+  /* ---------- mock: 异常事件卡 ---------- */
+  .evt{background:#fff;border:1px solid var(--line);border-left:4px solid var(--warning);border-radius:10px;padding:14px 18px;box-shadow:0 1px 4px rgba(31,45,61,.06);max-width:640px}
+  .evt-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .evt-title{font-weight:600;font-size:15px}
+  .lv{font-size:12px;color:#fff;border-radius:4px;padding:1px 8px}
+  .lv.warn{background:var(--warning)} .lv.crit{background:var(--danger)} .lv.info{background:#909399}
+  .evt-meta{color:var(--sub);font-size:12.5px;margin-top:6px}
+  .evt-stats{display:flex;gap:26px;margin:12px 0 6px;flex-wrap:wrap}
+  .st .v{font-size:20px;font-weight:700}
+  .st .v.up{color:var(--danger)}
+  .st .l{font-size:12px;color:var(--sub)}
+  .spark{margin-top:8px}
+  .evt-foot{margin-top:10px;font-size:13px;color:var(--sub)}
+  .evt-foot a{color:var(--primary);text-decoration:none}
+  /* ---------- mock: AI 摘要面板 ---------- */
+  .ai-panel{border:1px solid var(--line);border-radius:12px;overflow:hidden;max-width:680px;box-shadow:0 1px 4px rgba(31,45,61,.06)}
+  .ai-head{background:linear-gradient(90deg,#f0f5ff,#fff);padding:10px 16px;font-size:14px;font-weight:600;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
+  .ai-head .model{font-size:12px;color:var(--sub);font-weight:normal}
+  .ai-body{padding:14px 18px;font-size:13.5px}
+  .ai-sec{margin:8px 0}
+  .ai-sec b{color:#27408b}
+  .conf{display:inline-block;height:8px;width:120px;background:#eef2f7;border-radius:4px;vertical-align:middle;overflow:hidden}
+  .conf i{display:block;height:100%;width:64%;background:linear-gradient(90deg,var(--warning),var(--success))}
+  pre.code{background:var(--code-bg);color:var(--code-ink);border-radius:8px;padding:12px 14px;font:12.5px/1.6 ui-monospace,Menlo,Consolas,monospace;overflow-x:auto;margin:8px 0}
+  pre.code .cm{color:#8b949e} pre.code .kw{color:#79c0ff}
+  /* ---------- mock: 事故聚合 ---------- */
+  .incident{border:1px solid var(--line);border-left:4px solid var(--danger);border-radius:10px;max-width:660px;background:#fff;box-shadow:0 1px 4px rgba(31,45,61,.06)}
+  .inc-head{padding:12px 16px;border-bottom:1px dashed var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .inc-tree{padding:10px 16px 14px;font-size:13.5px}
+  .inc-tree .leaf{display:flex;gap:10px;align-items:center;padding:4px 0 4px 18px;position:relative}
+  .inc-tree .leaf::before{content:"";position:absolute;left:4px;top:0;bottom:50%;width:1px;background:var(--line)}
+  .mini-bar{height:8px;border-radius:4px;background:#eef2f7;width:120px;overflow:hidden}
+  .mini-bar i{display:block;height:100%;background:var(--danger)}
+  .attr{margin-top:8px;background:#fef0f0;border:1px solid #fde2e2;color:#b03030;border-radius:8px;padding:8px 12px;font-size:13px}
+  /* ---------- mock: 预测图 ---------- */
+  .forecast-card{border:1px solid var(--line);border-radius:12px;background:#fff;max-width:680px;box-shadow:0 1px 4px rgba(31,45,61,.06);overflow:hidden}
+  .fc-head{padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
+  .fc-badge{background:#fdf6ec;color:#b8770e;border:1px solid #f5dab1;font-size:12.5px;border-radius:6px;padding:3px 10px}
+  .legend{font-size:12px;color:var(--sub);display:flex;gap:14px}
+  .legend i{display:inline-block;width:18px;height:3px;vertical-align:middle;margin-right:4px}
+  /* ---------- mock: 周报 ---------- */
+  .weekly{border:1px solid var(--line);border-radius:12px;background:#fff;max-width:680px;box-shadow:0 1px 4px rgba(31,45,61,.06);overflow:hidden}
+  .wk-head{background:#27408b;color:#fff;padding:12px 18px;font-weight:600}
+  .wk-body{padding:6px 18px 14px}
+  .wk-ai{background:#f7f9ff;border-left:3px solid var(--primary);border-radius:0 8px 8px 0;padding:10px 14px;font-size:13.5px;margin:12px 0}
+  /* ---------- 路线图 ---------- */
+  .phase{border-left:4px solid var(--primary);background:#f8fbff;border-radius:0 10px 10px 0;padding:14px 18px;margin:12px 0}
+  .phase.p2{border-color:var(--warning);background:#fffdf5}
+  .phase.p3{border-color:var(--success);background:#f7fdf8}
+  .phase b.t{font-size:15px}
+  .phase .goal{font-size:13px;color:var(--sub);margin:4px 0}
+  footer{color:var(--sub);font-size:12.5px;text-align:center;padding:10px 0 30px}
+  .toc{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 26px;padding:0 4px}
+  .toc a{color:#2f6fb8;text-decoration:none;background:#fff;border:1px solid var(--line);border-radius:20px;padding:5px 16px;font-size:13px}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="wrap" style="padding-bottom:0">
+    <h1>DevOpsAgent · AI 分析能力规划</h1>
+    <p>基于已有的 Zabbix 指标时序、异常告警链路、SSH 诊断快照与压测演练能力，构建「统计发现异常 → AI 解释异常 → 证据链留痕」的智能运维分析体系。</p>
+    <div class="pillars">
+      <div class="pillar"><b>统计层 · 发现</b>基线 / 偏差 / 预测，可复现、零幻觉</div>
+      <div class="pillar"><b>LLM 层 · 解释</b>根因摘要 / 影响面 / 建议命令（只建议不执行）</div>
+      <div class="pillar"><b>证据链层 · 留痕</b>每次分析附原始数据引用，可回溯审计</div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <nav class="toc">
+    <a href="#s1">① 现状盘点</a>
+    <a href="#s2">② 总体架构</a>
+    <a href="#a">方向 A · 基线偏差</a>
+    <a href="#b">方向 B · AI 摘要与降噪</a>
+    <a href="#c">方向 C · 预测与周报</a>
+    <a href="#d">方向 D · 压测解读</a>
+    <a href="#roadmap">③ 实施路线</a>
+    <a href="#risks">④ 风险对策</a>
+  </nav>
+
+  <!-- ================= 现状 ================= -->
+  <section id="s1">
+    <h2>① 现状盘点 —— 地板已经打好</h2>
+    <p class="sub">以下能力均已上线并经真实故障验证，是 AI 分析的输入与执行底座：</p>
+    <div class="chips">
+      <span class="chip ok">Zabbix 5.0 指标采集（主动模式 agent，CPU/内存/磁盘/负载，分钟级）</span>
+      <span class="chip ok">history / trends API 取数通路（排障中反复验证）</span>
+      <span class="chip ok">告警策略（阈值宏 + 窗口，主动/被动双模板树覆盖）</span>
+      <span class="chip ok">webhook → 异常事件链路（abnormal / recovered 全闭环）</span>
+      <span class="chip ok">异常时刻 SSH 快照（进程 / 端口 / 会话，已修复认证）</span>
+      <span class="chip ok">远程压测演练（CPU / 内存，可编程注入）</span>
+      <span class="chip ok">通知中心 + 通知渠道</span>
+      <span class="chip ok">LLM 接入（分析与建议定位，OPENAI 兼容接口）</span>
+    </div>
+    <div class="note blue">关键判断：<b>不需要新建数据管道</b>。取数、告警、快照、通知、LLM 五条通路全部现成，AI 分析层是「纯增量」，每一层都能独立上线、独立产生价值。</div>
+  </section>
+
+  <!-- ================= 架构 ================= -->
+  <section id="s2">
+    <h2>② 总体架构 —— 统计管「是不是」，LLM 管「为什么」</h2>
+    <p class="sub">不让 LLM 直接算指标（慢、贵、不可复现）；统计引擎输出结构化偏差事实，LLM 只消费事实做解释与建议。</p>
+    <div class="flow">
+      <div class="fstep"><b>采集层（已有）</b>Zabbix history/trends、事件 webhook、SSH 快照</div>
+      <div class="fstep"><b>统计引擎（新）</b>时段基线 / 分位数 / 趋势外推 / 聚类，输出结构化「偏差事实」</div>
+      <div class="fstep"><b>LLM 分析器（新）</b>消费偏差事实 + 快照 + 主机档案 → 根因假设 / 影响面 / 建议</div>
+      <div class="fstep"><b>呈现层（已有+新）</b>异常详情页 AI 面板、事故视图、通知中心周报</div>
+      <div class="fstep"><b>证据链（已有理念）</b>每条分析附：输入数据 id、模型、提示词版本、时间戳</div>
+    </div>
+  </section>
+
+  <!-- ================= A ================= -->
+  <section id="a">
+    <h2>方向 A · 历史基线偏差检测 <span class="tag">建议第一步</span></h2>
+    <p class="sub">你提出的「按周对比 CPU」的工程化版本。解决触发器抓不到的异常：没超阈值，但显著偏离自己的历史。</p>
+    <h3>做法</h3>
+    <ul>
+      <li><b>基线建模</b>：定时任务按「星期 × 小时」分桶，取近 4 周同时段样本，算 P5 / P50 / P95 分位（比均值±3σ 更抗离群值）。维度：CPU、内存、磁盘、负载、网络流量。</li>
+      <li><b>偏差判定</b>：当前值 &gt; P95 且持续 ≥ N 个采样点 → 产生结构化偏差事件（超 P95 幅度倍数、持续时长、基线值三要素）。</li>
+      <li><b>时段感知</b>：工作日 / 周末分开建模，避免「周日来批处理」被误判；冷启动期（样本 &lt; 2 周）只记录不告警。</li>
+      <li><b>接入现有链路</b>：偏差事件直接写异常中心，走既有 abnormal → recovered 生命周期，前端零改造即可看到。</li>
+    </ul>
+    <h3>UI 示例 · 异常中心新增「偏离历史基线」事件卡</h3>
+    <div class="mockup">
+      <div class="mockup-label">MOCKUP · <b>异常中心</b> / 事件卡片（新类型）</div>
+      <div class="evt">
+        <div class="evt-head">
+          <span class="lv warn">偏离基线</span>
+          <span class="evt-title">node-1003 · CPU 使用率显著高于历史同时段</span>
+          <span style="margin-left:auto;color:var(--sub);font-size:12px">持续 38 分钟</span>
+        </div>
+        <div class="evt-stats">
+          <div class="st"><div class="v up">62.4%</div><div class="l">当前值</div></div>
+          <div class="st"><div class="v">8.2%</div><div class="l">历史 P50（周二 14 点档）</div></div>
+          <div class="st"><div class="v">23.7%</div><div class="l">历史 P95</div></div>
+          <div class="st"><div class="v up">2.6×</div><div class="l">超 P95 倍数</div></div>
+        </div>
+        <svg class="spark" width="600" height="90" viewBox="0 0 600 90">
+          <polygon points="0,72 60,70 120,71 180,69 240,70 300,68 360,70 420,67 480,69 540,68 600,70 600,80 0,80" fill="#e6f1fc"/>
+          <polyline points="0,76 60,74 120,75 180,73 240,74 300,72 360,74 420,71 480,73 540,72 600,74" fill="none" stroke="#a0c6ef" stroke-width="2" stroke-dasharray="4 3"/>
+          <polyline points="0,76 60,75 120,74 180,75 240,73 300,74 360,60 420,28 480,22 540,26 600,24" fill="none" stroke="#f56c6c" stroke-width="2.5"/>
+          <circle cx="360" cy="60" r="4" fill="#f56c6c"/>
+          <text x="366" y="52" font-size="11" fill="#b03030">出界点 14:36</text>
+          <text x="6" y="14" font-size="11" fill="#8a97a8">— 当前值　-- 历史P50　▒ 历史P5~P95 区间带</text>
+        </svg>
+        <div class="evt-foot">基线窗口：近 4 周周二 14:00–15:00（样本 4×12=48 点）　·　<a href="#">查看该机历史曲线 →</a>　<a href="#">AI 分析 →</a></div>
+      </div>
+    </div>
+    <div class="note">为什么先做它：<b>纯统计、零 LLM 成本、复用告警链路</b>，而且它是 B（AI 解释）和 C（预测）的数据地基——先有结构化「偏差事实」，LLM 才有可靠的输入。</div>
+  </section>
+
+  <!-- ================= B ================= -->
+  <section id="b">
+    <h2>方向 B · 告警 AI 解释与聚类降噪</h2>
+    <p class="sub">异常触发时自动「带 brain 上门」：把快照、指标、档案喂给 LLM，输出人话版根因分析与建议；多机同爆时聚合成一条事故。</p>
+    <h3>B1 · 告警 AI 摘要（异常详情页新增面板）</h3>
+    <ul>
+      <li>触发时机：异常事件落库后异步生成（不阻塞告警链路），生成失败不影响原告警展示</li>
+      <li>输入：异常时刻 SSH 快照（已有）+ 近 1 小时指标时序 + 该机档案（角色/应用/历史告警）+ 偏差事实（来自 A）</li>
+      <li>输出四段式：发生了什么 / 影响面 / 建议动作（<b>只建议，不自动执行</b>）/ 置信度</li>
+      <li>证据链：面板标注输入数据 id + 模型 + 提示词版本，一键展开原始输入</li>
+    </ul>
+    <div class="mockup">
+      <div class="mockup-label">MOCKUP · <b>异常详情页</b> / AI 分析面板</div>
+      <div class="ai-panel">
+        <div class="ai-head">🤖 AI 分析<span class="model">glm-4 · 提示词 v3 · 证据链 #ev-2091 · 生成耗时 4.2s</span></div>
+        <div class="ai-body">
+          <div class="ai-sec"><b>结论：</b>CPU 飙升由 <code>python3 /opt/job/sync_inventory.py</code> 引起——快照显示该进程占 31 核（97% CPU），启动于 14:36，与偏差出界点吻合。属计划外脚本运行，非业务流量。</div>
+          <div class="ai-sec"><b>影响面：</b>本机（监控采集延迟 +2 个周期）；未波及同宿主机其他容器（其 CPU 正常）。</div>
+          <div class="ai-sec"><b>建议动作（仅建议，不自动执行）：</b></div>
+<pre class="code"><span class="cm"># 1. 确认脚本归属与预期性</span>
+ps -o user,lstart,cmd -p $(pgrep -f sync_inventory.py)
+<span class="cm"># 2. 若为误跑，先限流再排查</span>
+<span class="kw">systemctl</span> stop inventory-sync.timer 2>/dev/null || cpulimit -p $(pgrep -f sync_inventory.py) -l 400</pre>
+          <div class="ai-sec"><b>置信度：</b><span class="conf"><i></i></span> 中高 · 依据：进程启动时间与出界点偏差 &lt; 60s（证据 #ev-2091-03）</div>
+        </div>
+      </div>
+    </div>
+    <h3>B2 · 多机告警聚类（事故视图）</h3>
+    <ul>
+      <li>滑动时间窗（如 5 分钟）内同母机下 ≥ K 台子机同类告警 → 合并为一条「事故」，保留子告警明细</li>
+      <li>统计归因线索：同宿主机（共享内核，你们已实际踩过影子告警）、同网段、同应用分组、同配置版本</li>
+      <li>事故条目优先展示归因假设，点开看成员机器与各自曲线</li>
+    </ul>
+    <div class="mockup">
+      <div class="mockup-label">MOCKUP · <b>异常中心</b> / 事故聚合卡</div>
+      <div class="incident">
+        <div class="inc-head">
+          <span class="lv crit">事故</span>
+          <span class="evt-title">INC-20260924-01 · 批量 CPU 偏高（3 台）</span>
+          <span style="margin-left:auto;font-size:12px;color:var(--sub)">14:37 开始 · 未恢复</span>
+        </div>
+        <div class="inc-tree">
+          <div class="leaf">node-1002 <div class="mini-bar"><i style="width:92%"></i></div> 92%</div>
+          <div class="leaf">node-1003 <div class="mini-bar"><i style="width:88%"></i></div> 88%</div>
+          <div class="leaf">186-本机 <div class="mini-bar"><i style="width:90%"></i></div> 90%</div>
+          <div class="attr">🔎 归因线索：三台主机为<b>同一 WSL2 宿主机上的容器</b>（boottime/内核一致），共享内核 /proc —— 疑似<b>宿主级负载</b>而非各自异常。建议优先排查宿主机进程。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= C ================= -->
+  <section id="c">
+    <section style="border:none;padding:0;margin:0;background:none">
+    <h2>方向 C · 容量预测与健康周报</h2>
+    <p class="sub">从「被动等告警」到「提前打招呼」。</p>
+    <h3>C1 · 磁盘 / 内存增长预测</h3>
+    <ul>
+      <li>对磁盘使用率做趋势外推（Holt-Winters / 稳健线性回归，剔除夜间静默期）</li>
+      <li>预测触达 85% / 95% 的日期，提前生成「预计 N 天后满」预警，随偏差事件一起进异常中心</li>
+      <li>每天重算一次，数据量小（每机每天 288 点 × 保留天数），单机毫秒级</li>
+    </ul>
+    <div class="mockup">
+      <div class="mockup-label">MOCKUP · <b>资产台账 / 监控详情</b> · 磁盘容量预测卡</div>
+      <div class="forecast-card">
+        <div class="fc-head">
+          <b>node-1003 · 根分区使用率预测</b>
+          <span class="fc-badge">⏳ 预计 10-08 触达 90%（14 天后）</span>
+        </div>
+        <svg width="100%" height="180" viewBox="0 0 640 180" preserveAspectRatio="none">
+          <line x1="40" y1="20" x2="620" y2="20" stroke="#f56c6c" stroke-dasharray="3 3"/><text x="4" y="24" font-size="11" fill="#f56c6c">95%</text>
+          <line x1="40" y1="60" x2="620" y2="60" stroke="#e6a23c" stroke-dasharray="3 3"/><text x="4" y="64" font-size="11" fill="#e6a23c">85%</text>
+          <polyline points="40,140 100,138 160,137 220,134 280,132 340,131 400,128" fill="none" stroke="#409eff" stroke-width="2.5"/>
+          <polyline points="400,128 450,122 500,114 550,104 600,92 640,84" fill="none" stroke="#e6a23c" stroke-width="2.5" stroke-dasharray="6 4"/>
+          <polygon points="400,128 450,122 500,114 550,104 600,92 640,84 640,100 600,110 550,120 500,128 450,134 400,138" fill="#f5dab1" opacity="0.35"/>
+          <text x="404" y="160" font-size="11" fill="#8a97a8">今天 09-24</text>
+          <text x="560" y="160" font-size="11" fill="#8a97a8">10-08</text>
+          <text x="430" y="100" font-size="11" fill="#b8770e">预测区间（置信带）</text>
+        </svg>
+        <div class="legend" style="padding:0 16px 12px">
+          <span><i style="background:#409eff"></i>历史 30 天</span>
+          <span><i style="background:#e6a23c;height:3px"></i>预测</span>
+          <span><i style="background:#f5dab1;height:10px"></i>置信区间</span>
+        </div>
+      </div>
+    </div>
+    <h3>C2 · 每周健康周报</h3>
+    <ul>
+      <li>每周一 09:00 自动生成：各机 CPU/内存/磁盘周均值环比、告警次数 TOP、基线偏差事件回顾、容量预警清单</li>
+      <li>统计表由代码生成（准确），LLM 只写开头一段「本周总评」——数字不错、话好懂</li>
+      <li>推送通知中心 + 可选 Web/邮件渠道；周报存档可回看</li>
+    </ul>
+    <div class="mockup">
+      <div class="mockup-label">MOCKUP · <b>通知中心</b> / 周报卡片</div>
+      <div class="weekly">
+        <div class="wk-head">📊 DevOpsAgent 健康周报 · 09-15 ~ 09-21</div>
+        <div class="wk-body">
+          <div class="wk-ai">🤖 本周总评：整体平稳。node-1003 周三出现一次计划外脚本导致的 CPU 基线偏离（已恢复），建议将该脚本纳入定时任务管理；node-1002 磁盘增速加快，预计 10-08 触达 90%，建议本周内清理。其余机器指标均在历史区间内。</div>
+          <table>
+            <tr><th>主机</th><th>CPU 周均</th><th>环比</th><th>告警</th><th>备注</th></tr>
+            <tr><td>node-1002</td><td>31%</td><td style="color:var(--danger)">+9%</td><td>2</td><td>磁盘增长偏快</td></tr>
+            <tr><td>node-1003</td><td>18%</td><td>+2%</td><td>1</td><td>周三 CPU 基线偏离</td></tr>
+            <tr><td>186 本机</td><td>12%</td><td>-1%</td><td>0</td><td>—</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+    </section>
+  </section>
+
+  <!-- ================= D ================= -->
+  <section id="d">
+    <h2>方向 D · 压测演练 AI 解读（闭环彩蛋）</h2>
+    <p class="sub">压测的最后一公里：从「打上去看曲线」到「自动出结论」。</p>
+    <ul>
+      <li>压测结束自动对比：压测前 10 分钟 vs 压测中 vs 恢复后 10 分钟的 CPU / 负载 / 采集延迟</li>
+      <li>校验告警链路：本次压测是否如预期触发 → 未触发时给出原因假设（时长不足 / 窗口均值稀释）——你们已经真实踩过「4 分钟压测喂不饱 5 分钟窗口」的坑</li>
+      <li>输出压测报告：到达的峰值、恢复耗时、告警触发延迟，LLM 总结瓶颈判断</li>
+    </ul>
+  </section>
+
+  <!-- ================= 路线图 ================= -->
+  <section id="roadmap">
+    <h2>③ 实施路线 —— 三阶段，每段独立可上线</h2>
+    <div class="phase">
+      <b class="t">阶段一 · 地基：统计引擎上线</b>
+      <div class="goal">内容：A 基线建模 + 偏差事件接入异常中心；数据表（baselines / deviation_events）；冷启动只记录不告警。</div>
+      <div class="goal">验收：跑满一周后，人工注入异常（复用压测），异常中心出现「偏离基线」事件且正常时段零误报。</div>
+    </div>
+    <div class="phase p2">
+      <b class="t">阶段二 · 智能：LLM 解释与降噪</b>
+      <div class="goal">内容：B1 告警 AI 摘要面板（异步生成 + 证据链标注）；B2 事故聚类视图；D 压测解读顺带完成。</div>
+      <div class="goal">验收：每次告警 30 秒内可读到大体靠谱的中文根因摘要；影子告警场景能聚成一条事故并给出宿主归因。</div>
+    </div>
+    <div class="phase p3">
+      <b class="t">阶段三 · 前瞻：预测与周报</b>
+      <div class="goal">内容：C1 容量预测卡；C2 每周健康周报推送。</div>
+      <div class="goal">验收：预测日期与实际触达日期误差 ≤ 2 天；周报准时送达且数字与源数据可对账。</div>
+    </div>
+    <div class="note blue">依赖关系：阶段一是阶段二/三的地基（偏差事实是 LLM 的输入、也是周报素材）；B1 可与 A 并行开发（先用触发器告警当输入，A 上线后自动升级为偏差事件输入）。</div>
+  </section>
+
+  <!-- ================= 风险 ================= -->
+  <section id="risks">
+    <h2>④ 风险与对策</h2>
+    <table>
+      <tr><th style="width:170px">风险</th><th>对策</th></tr>
+      <tr><td>LLM 幻觉 / 误导性建议</td><td>所有建议标注「仅建议，不自动执行」；面板强制展示证据链（输入数据 id + 提示词版本）；置信度低时明说「证据不足」，不硬编故事。</td></tr>
+      <tr><td>基线误报（变更后历史失效）</td><td>分位数窗口天然抗噪；检测到「连续多天全面偏离」时自动进入重新收敛期（重建基线而非持续报警）；冷启动静默。</td></tr>
+      <tr><td>LLM 成本失控</td><td>LLM 仅在「告警触发 / 周报 / 手动点击」三个时机调用，日常指标分析全部走本地统计；单次输入控制在 2K token 内（快照已截尾）。</td></tr>
+      <tr><td>告警风暴 / 事件淹没</td><td>B2 聚类前置：同宿主、同分组的同源告警合并；异常中心默认折叠已恢复事件。</td></tr>
+      <tr><td>小样本时段（周末 / 新机）</td><td>样本不足自动降级为「仅周粒度基线」或静默积累，绝不硬造基线。</td></tr>
+    </table>
+  </section>
+
+  <footer>DevOpsAgent · AI 分析能力规划 v1 · 统计发现异常，LLM 解释异常，证据链证明一切</footer>
+</div>
+
+</body>
+</html>

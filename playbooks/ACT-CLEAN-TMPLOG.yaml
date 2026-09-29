@@ -1,0 +1,25 @@
+id: ACT-CLEAN-TMPLOG
+name: 清理临时日志
+version: "1.0.0"
+description: 低风险：清理应用节点临时日志目录中的过期文件，不删除业务数据。
+risk: low
+auto_allowed: true
+requires_db_ok: false
+requires_reachable: true
+restart_cooldown: false
+success_criteria: 磁盘使用率回落到阈值以下，业务探测仍通过
+stop_conditions: 清理后磁盘无变化或误删风险升高立即停止并升级
+allowed_params:
+  max_age_hours:
+    type: integer
+    default: 24
+steps:
+  - id: inspect
+    name: 检查临时日志占用
+    mock_seconds: 0.1
+  - id: cleanup
+    name: 按保留时长清理临时日志
+    mock_seconds: 0.2
+  - id: health
+    name: 确认磁盘与进程正常
+    mock_seconds: 0.1

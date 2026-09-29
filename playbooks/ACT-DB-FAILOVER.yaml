@@ -1,0 +1,25 @@
+id: ACT-DB-FAILOVER
+name: 数据库主备切换
+version: "1.0.0"
+description: 高风险数据面操作。必须人工审批，审批绑定目标资产 + 作业版本 + 参数摘要。
+risk: high
+auto_allowed: false
+requires_db_ok: false
+requires_reachable: true
+restart_cooldown: false
+success_criteria: 新主库可写，业务探测连续 3 次通过
+stop_conditions: 切换失败或数据损失超范围立即停止转人工
+allowed_params:
+  force:
+    type: boolean
+    default: false
+steps:
+  - id: freeze_writes
+    name: 冻结写入
+    mock_seconds: 0.2
+  - id: switchover
+    name: 主备切换
+    mock_seconds: 0.5
+  - id: health
+    name: 新主库健康检查
+    mock_seconds: 0.2

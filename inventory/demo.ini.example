@@ -1,0 +1,7 @@
+# 复制为 inventory/demo.ini 后设置 ANSIBLE_INVENTORY。不要提交真实主机密码或私钥。
+# 无远端主机时用 local + ANSIBLE_CHECK_MODE=true 做 dry-run。
+
+[devops]
+order-app-01 ansible_host=127.0.0.1 ansible_connection=local ansible_user=devops
+order-gateway-01 ansible_host=127.0.0.1 ansible_connection=local ansible_user=devops
+
