@@ -33,6 +33,9 @@ class FakeChan:
     def get_pty(self):
         pass
 
+    def set_combine_stderr(self, v):
+        pass
+
     def settimeout(self, t):
         pass
 

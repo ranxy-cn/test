@@ -49,13 +49,21 @@ def _connect_ssh(ip: str, port: int, username: str, password: str):
     return ssh
 
 
-def _run(ssh: Any, cmd: str, timeout: float, logs: list[str], *, secret_hint: str = "") -> tuple[int, str]:
-    """执行远程命令（PTY 合并 stderr），流式写日志，返回 (退出码, 全部输出)。
+def _run(
+    ssh: Any, cmd: str, timeout: float, logs: list[str], *, secret_hint: str = "", pty: bool = True
+) -> tuple[int, str]:
+    """执行远程命令（默认 PTY 合并 stderr），流式写日志，返回 (退出码, 全部输出)。
 
     secret_hint 用于超时报错脱敏：报错文案不携带命令原文。
+    pty=False 用于拉起后台长驻进程（agent）：实测 PTY 会话关闭时 sshd 会清理
+    会话内全部进程，nohup/setsid 均无法幸免；无 PTY 会话则不受影响。
     """
     chan = ssh.get_transport().open_session()
-    chan.get_pty()
+    if pty:
+        chan.get_pty()
+    else:
+        # 无 PTY 时经协议层把 stderr 合并进 stdout，保证错误信息可见
+        chan.set_combine_stderr(True)
     chan.settimeout(timeout)
     chan.exec_command(cmd)
     chunks: list[str] = []

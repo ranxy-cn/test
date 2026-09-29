@@ -117,13 +117,15 @@ def deploy_to_host(
             else f"{AGENT_DIR}/agent --config {AGENT_DIR}/config.json"
         )
         _run(ssh, f"pkill -f 'devops-agent/agent' 2>/dev/null; true", 15, steps)
-        # setsid 脱离会话 + stdin 断开：deployer 经 PTY 会话部署，会话关闭时 sshd 清理会话
-        # 进程组，nohup（仅忽略 HUP）挡不住；setsid 建新会话无控制终端，任何清理波及不到
+        # 拉起必须 pty=False：deployer 各步骤经 PTY 会话执行，会话关闭时 sshd 清理会话内
+        # 全部进程，nohup/setsid 均无法幸免（实测复现）；无 PTY 会话关闭则不影响后台进程。
+        # nohup setsid 仍保留作双保险（stdin 断开 + 脱离进程组，防其它来源的 HUP）。
         code, out = _run(
             ssh,
             f"{sudo} sh -c 'nohup setsid {runner} >> {AGENT_DIR}/agent.log 2>&1 < /dev/null & echo $!'".strip(),
             20,
             steps,
+            pty=False,
         )
         pid = out.strip().splitlines()[-1] if out.strip() else ""
         if code != 0 or not pid.isdigit():
