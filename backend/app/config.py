@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +34,14 @@ class Settings(BaseSettings):
     # 是否种入演示资产/维护窗口（订单系统等示例数据）；
     # 生产环境设 SEED_DEMO_ASSETS=0 只保留真实登记的资产
     seed_demo_assets: bool = True
+
+    @field_validator("seed_demo_assets", mode="before")
+    @classmethod
+    def _seed_demo_assets_empty_as_false(cls, v):
+        # compose 未配置时会注入空字符串，按未启用处理，避免 bool 解析崩溃
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return False
+        return v
     # 平台对外可访问的基础 URL（如 http://1.2.3.4:8000）。
     # 子机 agent 上报地址由它拼接；未配置时回退为请求的 base_url。
     platform_public_url: str = ""
