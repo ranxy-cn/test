@@ -117,9 +117,11 @@ def deploy_to_host(
             else f"{AGENT_DIR}/agent --config {AGENT_DIR}/config.json"
         )
         _run(ssh, f"pkill -f 'devops-agent/agent' 2>/dev/null; true", 15, steps)
+        # setsid 脱离会话 + stdin 断开：deployer 经 PTY 会话部署，会话关闭时 sshd 清理会话
+        # 进程组，nohup（仅忽略 HUP）挡不住；setsid 建新会话无控制终端，任何清理波及不到
         code, out = _run(
             ssh,
-            f"{sudo} sh -c 'nohup {runner} >> {AGENT_DIR}/agent.log 2>&1 & echo $!'".strip(),
+            f"{sudo} sh -c 'nohup setsid {runner} >> {AGENT_DIR}/agent.log 2>&1 < /dev/null & echo $!'".strip(),
             20,
             steps,
         )
