@@ -1875,7 +1875,7 @@ async function resetAlertPolicy() {
   gap: 8px;
 }
 .policy-section {
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 12px;
   margin-bottom: 10px;
@@ -1927,7 +1927,7 @@ async function resetAlertPolicy() {
   vertical-align: middle;
 }
 .scrape-box {
-  border: 1px dashed var(--border, #e5e7eb);
+  border: 1px dashed var(--line);
   border-radius: 8px;
   padding: 10px 12px;
   margin-bottom: 10px;
@@ -2000,11 +2000,11 @@ async function resetAlertPolicy() {
 }
 .group-block {
   margin-bottom: 18px;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: 14px 16px 4px;
-  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
 }
 .group-block.drop-target {
   border-color: var(--brand);
