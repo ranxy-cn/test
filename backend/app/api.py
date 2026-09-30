@@ -402,6 +402,10 @@ def ssh_test(body: SshTestIn):
         ms = _verify_ssh(body.ip.strip(), body.port, body.username.strip(), body.password)
     except provision_svc.ProvisionError as exc:
         raise HTTPException(400, str(exc)) from None
+    except Exception as exc:
+        # paramiko 偶发异常（SSH 会话刚建立即断的 SSHException/EOFError 等）也转可读 400，
+        # 避免落到 500 纯文本导致前端只能显示笼统兜底文案
+        raise HTTPException(400, f"SSH 会话异常：{exc}。请确认目标机 SSH 服务正常后重试") from None
     return {"ok": True, "latency_ms": ms, "message": f"连接成功，命令执行正常（{ms}ms）"}
 
 

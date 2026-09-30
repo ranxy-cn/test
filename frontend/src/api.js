@@ -109,7 +109,7 @@ export const fetchSystemRealtime = (assetId = '') =>
 export const fetchSystemHistory = (minutes = 60, assetId = '') =>
   http.get('/system/metrics/history', { params: assetId ? { minutes, asset_id: assetId } : { minutes } })
 // SSH 连通性测试（新增母机/子机前的「测试连接」按钮）
-export const testSsh = (payload) => http.post('/assets/ssh-test', payload, { timeout: 30000 })
+export const testSsh = (payload) => http.post('/assets/ssh-test', payload, { timeout: 45000 })
 // 子机 Agent：全局默认配置 + 资产级覆盖 + SSH 部署（py/go）
 export const fetchAgentConfigDefaults = () => http.get('/agent-config/defaults')
 export const updateAgentConfigDefaults = (patch) => http.put('/agent-config/defaults', patch)

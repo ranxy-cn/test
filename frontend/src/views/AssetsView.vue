@@ -1049,6 +1049,24 @@ const motherForm = reactive({
 // ===== SSH 连通性测试（新增母机 / 子机表单共用） =====
 const sshTesting = ref('') // '' | 'mother' | 'child'
 
+// 错误信息提取：兼容 FastAPI 422（detail 为数组）、请求超时、网络异常等所有形态
+function errMsg(err, fallback) {
+  const d = err?.response?.data?.detail
+  if (typeof d === 'string' && d) return d
+  if (Array.isArray(d) && d.length) {
+    const first = d[0]
+    const field = (first.loc || []).slice(-1)[0] || ''
+    return `参数校验失败${field ? `（${field}）` : ''}：${first.msg || '请检查表单填写'}`
+  }
+  if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '')) {
+    return '连接测试超时，请确认目标机 IP/端口正确且网络可达后重试'
+  }
+  if (!err?.response) {
+    return '网络异常：无法连接到平台服务，请检查本机到平台的网络'
+  }
+  return fallback
+}
+
 async function runSshTest(target) {
   const form = target === 'mother' ? motherForm : addChildForm
   const port = target === 'mother' ? form.ssh_port : form.port
@@ -1065,7 +1083,7 @@ async function runSshTest(target) {
     const { data } = await testSsh({ ip: form.ip.trim(), port, username: form.username, password: form.password })
     ElMessage.success(data.message || '连接成功')
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '连接失败：无法建立 SSH 会话')
+    ElMessage.error(errMsg(err, '连接失败：无法建立 SSH 会话'))
   } finally {
     sshTesting.value = ''
   }
@@ -1583,7 +1601,7 @@ async function submitMother() {
     selectedMotherId.value = row.id
     await loadOverview()
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '创建失败')
+    ElMessage.error(errMsg(err, '创建失败'))
   } finally {
     addingMother.value = false
   }
