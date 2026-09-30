@@ -304,8 +304,8 @@
 
         <el-divider content-position="left">告警策略（默认值，可调整）</el-divider>
         <el-alert type="info" :closable="false" class="db-note">
-          定义 CPU / 内存 / 负载的告警阈值与持续触发时长：母机与所有接入子机按同一标准判定告警。
-          登记后可随时在母机列表或详情的「告警策略」按钮中调整。
+          定义 CPU / 内存 / 负载的告警阈值与持续触发窗口（秒）：母机与所有接入子机按同一标准判定告警。
+          OOM / 磁盘 / 网络 / 应用层 / 数据库层等更多规则，登记后可随时在母机列表或详情的「告警策略」抽屉中配置。
         </el-alert>
         <el-form-item v-for="f in POLICY_FIELDS" :key="f.key" :label="f.label">
           <el-input-number
@@ -315,6 +315,7 @@
             :step="f.step"
             :precision="f.precision"
           />
+          <span v-if="f.unit" class="field-hint">{{ f.unit }}</span>
           <span class="field-hint">{{ f.hint }}</span>
         </el-form-item>
       </el-form>
@@ -509,49 +510,279 @@
       </template>
     </el-dialog>
 
-    <!-- 告警策略：母机/子机统一弹窗（子机自有策略 > 继承母机 > 平台默认） -->
-    <el-dialog v-model="policyVisible" :title="`告警策略 · ${policyTarget?.hostname || ''}`" width="600">
-      <el-alert type="info" :closable="false" class="db-note">
-        {{ policyIsChild
-          ? (policyInfo?.inherited === false
-            ? '该子机使用自有策略，仅作用于本机；保存后立即生效，删除自有策略可恢复继承母机。'
-            : '当前继承所属母机的告警策略（无自有策略）；修改保存后将覆盖为子机自有策略，不再随母机变化。')
-          : '阈值与触发窗口作用于该母机及其所有接入子机的越限判定，新接入子机自动沿用当前策略。' }}
-      </el-alert>
-      <div v-if="policyInfo" class="policy-meta">
-        <el-tag size="small" :type="policyInfo.inherited ? 'info' : 'success'" effect="plain">
-          {{ policySourceLabel }}
-        </el-tag>
-        <span v-if="policyIsChild && policyInfo.source === 'mother'" class="policy-meta-hint">跟随所属母机策略变化</span>
+    <!-- 告警策略：母机/子机统一抽屉（子机自有策略 > 继承母机 > 平台默认），分组配置 + P0-P3 级别 -->
+    <el-drawer v-model="policyVisible" :title="`告警策略 · ${policyTarget?.hostname || ''}`" size="780px">
+      <div v-loading="!policyInfo" class="policy-body">
+        <el-alert type="info" :closable="false" class="db-note">
+          {{ policyIsChild
+            ? (policyInfo?.inherited === false
+              ? '该子机使用自有策略，仅作用于本机；保存后 agent 自动拉取新配置即生效，删除自有策略可恢复继承母机。'
+              : '当前继承所属母机的告警策略（无自有策略）；修改保存后将覆盖为子机自有策略，不再随母机变化。')
+            : '阈值与触发窗口作用于该母机及其所有接入子机的越限判定，保存后 agent 自动拉取新策略，无需重启。' }}
+        </el-alert>
+        <div class="policy-meta">
+          <el-tag size="small" :type="policyInfo?.inherited ? 'info' : 'success'" effect="plain">
+            {{ policySourceLabel }}
+          </el-tag>
+          <span v-if="policyIsChild && policyInfo?.source === 'mother'" class="policy-meta-hint">跟随所属母机策略变化</span>
+          <div class="policy-toolbar">
+            <el-select v-model="templateId" placeholder="应用配置模板" size="small" style="width: 230px" @change="applyTemplate">
+              <el-option v-for="t in policyInfo?.templates || []" :key="t.id" :label="t.label" :value="t.id" />
+            </el-select>
+            <el-button size="small" @click="resetToDefaults">恢复平台默认</el-button>
+          </div>
+        </div>
+
+        <el-tabs v-model="policyTab">
+          <!-- 基础指标（秒制窗口） -->
+          <el-tab-pane label="基础指标" name="basic">
+            <div v-for="s in sectionsOf('basic')" :key="s.key" class="policy-section">
+              <div class="section-head">
+                <span class="section-title">{{ s.title }}</span>
+                <span class="section-desc">{{ s.desc }}</span>
+              </div>
+              <div class="section-body">
+                <div v-for="f in s.fields" :key="f.key" class="field-row">
+                  <span class="field-label">{{ f.label }}</span>
+                  <el-input-number
+                    v-model="policyForm[f.key]"
+                    :min="f.min ?? 10"
+                    :max="f.max ?? 86400"
+                    :step="f.step ?? 10"
+                    :precision="f.precision ?? 0"
+                    size="small"
+                    controls-position="right"
+                  />
+                  <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">告警级别</span>
+                  <el-select v-model="policyForm[`${s.key}_level`]" size="small" style="width: 190px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="`${lv.value} ${lv.label}`">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                  <span class="field-hint">
+                    当前 <span class="level-dot" :style="{ background: levelColor(policyForm[`${s.key}_level`]) }"></span>
+                    {{ policyForm[`${s.key}_level`] }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 系统资源（开关 + 阈值 + 窗口 + 级别全可配） -->
+          <el-tab-pane label="系统资源" name="sys">
+            <div
+              v-for="s in sectionsOf('sys')"
+              :key="s.key"
+              class="policy-section"
+              :class="{ off: s.noSwitch !== true && !policyForm[`${s.key}_enabled`] }"
+            >
+              <div class="section-head">
+                <el-switch v-if="s.noSwitch !== true" v-model="policyForm[`${s.key}_enabled`]" />
+                <span class="section-title">{{ s.title }}</span>
+                <span class="section-desc">{{ s.desc }}</span>
+              </div>
+              <div class="section-body">
+                <div v-for="f in s.fields" :key="f.key" class="field-row">
+                  <span class="field-label">{{ f.label }}</span>
+                  <el-input-number
+                    v-model="policyForm[f.key]"
+                    :min="f.min ?? 10"
+                    :max="f.max ?? 86400"
+                    :step="f.step ?? 10"
+                    :precision="f.precision ?? 0"
+                    size="small"
+                    controls-position="right"
+                  />
+                  <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                </div>
+                <div v-if="s.text" class="field-row">
+                  <span class="field-label">{{ s.text.label }}</span>
+                  <el-input v-model="policyForm[s.text.key]" size="small" style="width: 200px" :placeholder="s.text.placeholder" />
+                </div>
+                <div class="field-row">
+                  <span class="field-label">告警级别</span>
+                  <el-select v-model="policyForm[`${s.key}_level`]" size="small" style="width: 190px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="`${lv.value} ${lv.label}`">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 进程与端口（列表 + 窗口 + 级别可配） -->
+          <el-tab-pane label="进程与端口" name="proc">
+            <div
+              v-for="s in sectionsOf('proc')"
+              :key="s.key"
+              class="policy-section"
+              :class="{ off: !policyForm[`${s.key}_enabled`] }"
+            >
+              <div class="section-head">
+                <el-switch v-model="policyForm[`${s.key}_enabled`]" />
+                <span class="section-title">{{ s.title }}</span>
+                <span class="section-desc">{{ s.desc }}</span>
+              </div>
+              <div class="section-body">
+                <div v-if="s.items" class="field-row">
+                  <span class="field-label">{{ s.items.label }}</span>
+                  <el-input
+                    :model-value="(policyForm[s.items.key] || []).join(', ')"
+                    size="small"
+                    style="width: 300px"
+                    :placeholder="s.items.placeholder"
+                    @update:model-value="(v) => setItems(s.items.key, v, s.items.numeric)"
+                  />
+                  <span class="field-hint">逗号分隔</span>
+                </div>
+                <div v-for="f in s.fields" :key="f.key" class="field-row">
+                  <span class="field-label">{{ f.label }}</span>
+                  <el-input-number
+                    v-model="policyForm[f.key]"
+                    :min="f.min ?? 10"
+                    :max="f.max ?? 86400"
+                    :step="f.step ?? 10"
+                    :precision="f.precision ?? 0"
+                    size="small"
+                    controls-position="right"
+                  />
+                  <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">告警级别</span>
+                  <el-select v-model="policyForm[`${s.key}_level`]" size="small" style="width: 190px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="`${lv.value} ${lv.label}`">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 应用层规则（阈值/窗口/级别全可配，数据源为 agent 指标抓取） -->
+          <el-tab-pane :label="`应用层（${catalogRows('app').length}）`" name="app">
+            <div class="scrape-box">
+              <el-switch v-model="policyForm.metrics_scrape_enabled" size="small" />
+              <span class="section-title">指标抓取数据源</span>
+              <el-input
+                :model-value="(policyForm.metrics_urls || []).join('\n')"
+                type="textarea"
+                :rows="2"
+                placeholder="Prometheus 文本指标 URL，每行一个（最多 16 个），如 http://127.0.0.1:9090/metrics"
+                @update:model-value="setUrls"
+              />
+              <div class="field-hint">开启后 agent 定期抓取并上报指标；未接数据源的下方规则不会触发，但阈值/窗口/级别均可预先配置。</div>
+            </div>
+            <el-table :data="catalogRows('app')" size="small" class="rule-table">
+              <el-table-column label="规则" min-width="210">
+                <template #default="{ row }">
+                  <div class="rule-name">{{ row.name }}</div>
+                  <div class="rule-metric">{{ row.metric }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="启用" width="64">
+                <template #default="{ row }">
+                  <el-switch v-model="ruleOf(row.id).enabled" size="small" />
+                </template>
+              </el-table-column>
+              <el-table-column label="阈值" width="128">
+                <template #default="{ row }">
+                  <el-input-number
+                    v-model="ruleOf(row.id).threshold"
+                    :min="0"
+                    :step="row.threshold > 0 && row.threshold < 10 ? 0.5 : 10"
+                    size="small"
+                    controls-position="right"
+                    style="width: 110px"
+                  />
+                  <span class="field-unit">{{ row.unit }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="窗口(秒)" width="122">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).window_seconds" :min="10" :max="86400" :step="10" size="small" controls-position="right" style="width: 110px" />
+                </template>
+              </el-table-column>
+              <el-table-column label="级别" width="130">
+                <template #default="{ row }">
+                  <el-select v-model="ruleOf(row.id).level" size="small" style="width: 120px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="lv.value">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+
+          <!-- 数据库与中间件规则 -->
+          <el-tab-pane :label="`数据库层（${catalogRows('db').length}）`" name="db">
+            <el-table :data="catalogRows('db')" size="small" class="rule-table">
+              <el-table-column label="规则" min-width="210">
+                <template #default="{ row }">
+                  <div class="rule-name">{{ row.name }}</div>
+                  <div class="rule-metric">{{ row.metric }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="启用" width="64">
+                <template #default="{ row }">
+                  <el-switch v-model="ruleOf(row.id).enabled" size="small" />
+                </template>
+              </el-table-column>
+              <el-table-column label="阈值" width="128">
+                <template #default="{ row }">
+                  <el-input-number
+                    v-model="ruleOf(row.id).threshold"
+                    :min="0"
+                    :step="row.threshold > 0 && row.threshold < 10 ? 0.5 : 10"
+                    size="small"
+                    controls-position="right"
+                    style="width: 110px"
+                  />
+                  <span class="field-unit">{{ row.unit }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="窗口(秒)" width="122">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).window_seconds" :min="10" :max="86400" :step="10" size="small" controls-position="right" style="width: 110px" />
+                </template>
+              </el-table-column>
+              <el-table-column label="级别" width="130">
+                <template #default="{ row }">
+                  <el-select v-model="ruleOf(row.id).level" size="small" style="width: 120px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="lv.value">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
       </div>
-      <el-form v-loading="!policyInfo" label-width="130" style="margin-top: 12px; min-height: 180px">
-        <el-form-item v-for="f in POLICY_FIELDS" :key="f.key" :label="f.label">
-          <el-input-number
-            v-model="policyForm[f.key]"
-            :min="f.min"
-            :max="f.max"
-            :step="f.step"
-            :precision="f.precision"
-          />
-          <span class="field-hint">{{ f.hint }}</span>
-        </el-form-item>
-      </el-form>
       <template #footer>
-        <el-button
-          v-if="policyIsChild && policyInfo?.inherited === false"
-          type="warning"
-          plain
-          :loading="policyResetting"
-          @click="resetAlertPolicy"
-        >
-          恢复继承母机
-        </el-button>
-        <el-button @click="policyVisible = false">取消</el-button>
-        <el-button type="primary" :loading="policySaving" :disabled="!policyInfo" @click="submitAlertPolicy">
-          保存
-        </el-button>
+        <div class="drawer-footer">
+          <el-button
+            v-if="policyIsChild && policyInfo?.inherited === false"
+            type="warning"
+            plain
+            :loading="policyResetting"
+            @click="resetAlertPolicy"
+          >
+            恢复继承母机
+          </el-button>
+          <el-button @click="policyVisible = false">取消</el-button>
+          <el-button type="primary" :loading="policySaving" :disabled="!policyInfo" @click="submitAlertPolicy">
+            保存
+          </el-button>
+        </div>
       </template>
-    </el-dialog>
+    </el-drawer>
   </div>
 </template>
 
@@ -604,35 +835,202 @@ const editing = ref(false)
 const editForm = reactive({ id: '', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '' })
 const groupNames = computed(() => [...new Set(children.value.map((c) => c.group).filter(Boolean))])
 
-// ===== 告警策略（默认值与后端 DEFAULT_POLICY 保持一致） =====
+// ===== 告警策略（v2：秒制窗口 + P0-P3 级别，默认值与后端 DEFAULT_POLICY 保持一致） =====
 const ALERT_POLICY_DEFAULT = {
   cpu_threshold: 90,
-  cpu_window_minutes: 5,
+  cpu_window_seconds: 300,
+  cpu_level: 'P1',
   mem_threshold: 90,
-  mem_window_minutes: 5,
+  mem_window_seconds: 300,
+  mem_level: 'P1',
   load_threshold: 1.5,
-  load_window_minutes: 5,
+  load_window_seconds: 300,
+  load_level: 'P1',
+  oom_enabled: false,
+  oom_window_seconds: 300,
+  oom_level: 'P1',
+  swap_enabled: false,
+  swap_threshold: 80,
+  swap_window_seconds: 300,
+  swap_level: 'P2',
+  inode_enabled: false,
+  inode_threshold: 80,
+  inode_window_seconds: 300,
+  inode_level: 'P2',
+  disk_io_enabled: false,
+  disk_io_threshold: 100,
+  disk_io_window_seconds: 300,
+  disk_io_level: 'P2',
+  net_perf_enabled: false,
+  net_loss_threshold: 1.0,
+  net_latency_threshold: 100,
+  net_perf_window_seconds: 300,
+  net_perf_level: 'P2',
+  net_probe_target: '223.5.5.5:443',
+  bandwidth_enabled: false,
+  bandwidth_threshold: 80,
+  bandwidth_window_seconds: 600,
+  bandwidth_level: 'P2',
+  tcp_conn_enabled: false,
+  tcp_time_wait_threshold: 10000,
+  tcp_conn_pct_threshold: 80,
+  tcp_conn_window_seconds: 300,
+  tcp_conn_level: 'P2',
+  process_enabled: false,
+  process_items: ['nginx', 'mysqld', 'java'],
+  process_window_seconds: 60,
+  process_level: 'P0',
+  port_enabled: false,
+  port_items: [22, 80, 443],
+  port_window_seconds: 60,
+  port_level: 'P0',
+  metrics_scrape_enabled: false,
+  metrics_urls: [],
+  rules: {},
 }
-// 字段描述：新增母机表单与告警策略对话框共用，保证两处配置完全一致
+// 添加母机表单里的基础三项（秒制）；完整策略登记后可在「告警策略」抽屉配置
 const POLICY_FIELDS = [
-  { key: 'cpu_threshold', label: 'CPU 阈值', min: 1, max: 99, step: 1, precision: 0, hint: 'CPU 使用率超过该值（%）即进入告警判定' },
-  { key: 'cpu_window_minutes', label: 'CPU 触发窗口', min: 1, max: 120, step: 1, precision: 0, hint: '持续超过阈值该时长（分钟）才触发告警' },
-  { key: 'mem_threshold', label: '内存阈值', min: 1, max: 99, step: 1, precision: 0, hint: '内存使用率超过该值（%）即进入告警判定' },
-  { key: 'mem_window_minutes', label: '内存触发窗口', min: 1, max: 120, step: 1, precision: 0, hint: '持续超过阈值该时长（分钟）才触发告警' },
-  { key: 'load_threshold', label: '负载阈值', min: 0.1, max: 100, step: 0.1, precision: 1, hint: 'CPU load（1m 平均）超过该值进入告警判定' },
-  { key: 'load_window_minutes', label: '负载触发窗口', min: 1, max: 120, step: 1, precision: 0, hint: '持续超过阈值该时长（分钟）才触发告警' },
+  { key: 'cpu_threshold', label: 'CPU 阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0, hint: 'CPU 使用率超过该值（%）即进入告警判定' },
+  { key: 'cpu_window_seconds', label: 'CPU 触发窗口', unit: '秒', min: 10, max: 86400, step: 10, precision: 0, hint: '持续超过阈值该时长（秒）才触发告警' },
+  { key: 'mem_threshold', label: '内存阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0, hint: '内存使用率超过该值（%）即进入告警判定' },
+  { key: 'mem_window_seconds', label: '内存触发窗口', unit: '秒', min: 10, max: 86400, step: 10, precision: 0, hint: '持续超过阈值该时长（秒）才触发告警' },
+  { key: 'load_threshold', label: '负载阈值', unit: '', min: 0.1, max: 100, step: 0.1, precision: 1, hint: 'CPU load（1m 平均）超过该值进入告警判定' },
+  { key: 'load_window_seconds', label: '负载触发窗口', unit: '秒', min: 10, max: 86400, step: 10, precision: 0, hint: '持续超过阈值该时长（秒）才触发告警' },
+]
+// 策略抽屉分组配置描述（数据驱动渲染；enabled 开关/阈值/窗口/级别全部可配）
+const POLICY_SECTIONS = [
+  { tab: 'basic', key: 'cpu', title: 'CPU 使用率', desc: 'CPU 使用率持续高位运行', noSwitch: true,
+    fields: [
+      { key: 'cpu_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
+      { key: 'cpu_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'basic', key: 'mem', title: '内存使用率', desc: '内存使用率持续高位运行', noSwitch: true,
+    fields: [
+      { key: 'mem_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
+      { key: 'mem_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'basic', key: 'load', title: '系统负载（load1）', desc: '1 分钟平均负载持续越限', noSwitch: true,
+    fields: [
+      { key: 'load_threshold', label: '负载阈值', min: 0.1, max: 100, step: 0.1, precision: 1 },
+      { key: 'load_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'sys', key: 'oom', title: 'OOM Kill', desc: '发生 OOM kill 事件即告警；恢复窗口内无新事件自动恢复',
+    fields: [{ key: 'oom_window_seconds', label: '恢复窗口', unit: '秒' }] },
+  { tab: 'sys', key: 'swap', title: 'Swap 使用率', desc: 'Swap 使用率持续越限',
+    fields: [
+      { key: 'swap_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'swap_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'sys', key: 'inode', title: 'Inode 使用率', desc: '文件系统 inode 持续越限（耗尽前预警）',
+    fields: [
+      { key: 'inode_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'inode_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'sys', key: 'disk_io', title: '磁盘 IO 延迟', desc: '磁盘 await（平均 IO 等待时间）持续过高',
+    fields: [
+      { key: 'disk_io_threshold', label: 'await 阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
+      { key: 'disk_io_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'sys', key: 'net_perf', title: '网络性能（丢包/延迟）', desc: 'agent 对探测目标 TCP 拨测，丢包率或延迟持续越限',
+    fields: [
+      { key: 'net_loss_threshold', label: '丢包率阈值', unit: '%', min: 0.1, max: 100, step: 0.1, precision: 1 },
+      { key: 'net_latency_threshold', label: '延迟阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
+      { key: 'net_perf_window_seconds', label: '触发窗口', unit: '秒' },
+    ],
+    text: { key: 'net_probe_target', label: '探测目标', placeholder: '223.5.5.5:443' } },
+  { tab: 'sys', key: 'bandwidth', title: '带宽使用率', desc: '出口/入口带宽使用率持续越限',
+    fields: [
+      { key: 'bandwidth_threshold', label: '带宽阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'bandwidth_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'sys', key: 'tcp_conn', title: 'TCP 连接', desc: 'TIME_WAIT 过多或总连接数接近系统上限',
+    fields: [
+      { key: 'tcp_time_wait_threshold', label: 'TIME_WAIT 数', unit: '个', min: 1, max: 1000000, step: 100, precision: 0 },
+      { key: 'tcp_conn_pct_threshold', label: '连接上限比', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'tcp_conn_window_seconds', label: '触发窗口', unit: '秒' },
+    ] },
+  { tab: 'proc', key: 'process', title: '关键进程消失', desc: '核心进程异常退出即告警（按 /proc 进程名子串匹配）',
+    items: { key: 'process_items', label: '监控进程', placeholder: 'nginx, mysqld, java' },
+    fields: [{ key: 'process_window_seconds', label: '恢复窗口', unit: '秒' }] },
+  { tab: 'proc', key: 'port', title: '关键端口探活', desc: '本机端口 TCP 探活失败即告警',
+    items: { key: 'port_items', label: '监控端口', placeholder: '22, 80, 443', numeric: true },
+    fields: [{ key: 'port_window_seconds', label: '恢复窗口', unit: '秒' }] },
 ]
 const policyVisible = ref(false)
 const policySaving = ref(false)
 const policyResetting = ref(false)
 const policyTarget = ref(null) // 当前设置策略的资产（母机或子机）
-const policyInfo = ref(null) // GET 返回（policy / inherited / source / defaults）
+const policyInfo = ref(null) // GET 返回（policy / inherited / source / defaults / levels / catalog / templates）
+const policyDefaults = ref(null) // 平台默认策略（恢复默认用）
+const policyTab = ref('basic')
+const templateId = ref('')
 const policyForm = reactive({ ...ALERT_POLICY_DEFAULT })
 const policyIsChild = computed(() => !!policyTarget.value && !policyTarget.value.is_mother)
 const policySourceLabel = computed(() => {
   const map = { self: '子机自有策略', mother: '继承母机策略', default: '平台默认策略' }
   return policyTarget.value?.is_mother ? '母机策略（子机未自定义时沿用）' : map[policyInfo.value?.source] || ''
 })
+// P0-P3 级别（后端 meta 下发含颜色；异常兜底与后端 LEVEL_COLORS 一致）
+const FALLBACK_LEVELS = [
+  { value: 'P0', label: '严重故障', color: '#ff3b30' },
+  { value: 'P1', label: '重要告警', color: '#ff9500' },
+  { value: 'P2', label: '一般告警', color: '#f7ba2a' },
+  { value: 'P3', label: '提示信息', color: '#909399' },
+]
+const levels = computed(() => policyInfo.value?.levels || FALLBACK_LEVELS)
+function levelColor(v) {
+  return levels.value.find((l) => l.value === v)?.color || '#909399'
+}
+function sectionsOf(tab) {
+  return POLICY_SECTIONS.filter((s) => s.tab === tab)
+}
+function catalogRows(group) {
+  return (policyInfo.value?.catalog || []).filter((r) => r.group === group)
+}
+// 应用/数据库规则行：目录默认值合并已保存配置，保证新增规则有完整初始值
+function buildPolicyForm(policy) {
+  const base = { ...ALERT_POLICY_DEFAULT, ...(policy || {}) }
+  const catalog = policyInfo.value?.catalog || []
+  const rules = {}
+  for (const r of catalog) {
+    rules[r.id] = {
+      enabled: false,
+      threshold: r.threshold,
+      window_seconds: r.window_seconds,
+      level: r.level,
+      ...(base.rules?.[r.id] || {}),
+    }
+  }
+  base.rules = rules
+  return base
+}
+function ruleOf(id) {
+  if (!policyForm.rules[id]) {
+    policyForm.rules[id] = { enabled: false, threshold: 0, window_seconds: 60, level: 'P2' }
+  }
+  return policyForm.rules[id]
+}
+function setItems(key, value, numeric = false) {
+  const parts = String(value).split(/[,，\s]+/).filter(Boolean)
+  policyForm[key] = numeric
+    ? parts.map(Number).filter((n) => Number.isInteger(n) && n > 0 && n < 65536)
+    : parts.slice(0, 32)
+}
+function setUrls(value) {
+  policyForm.metrics_urls = String(value).split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 16)
+}
+// 配置模板：standard/strict/relaxed 一键填充（保存后生效）
+function applyTemplate(tid) {
+  const tpl = (policyInfo.value?.templates || []).find((t) => t.id === tid)
+  if (!tpl) return
+  Object.assign(policyForm, buildPolicyForm(tpl.policy))
+  ElMessage.success(`已应用模板「${tpl.label}」，保存后生效`)
+}
+function resetToDefaults() {
+  Object.assign(policyForm, buildPolicyForm(policyDefaults.value || ALERT_POLICY_DEFAULT))
+  templateId.value = ''
+  ElMessage.success('已恢复平台默认值，保存后生效')
+}
 
 // ===== 添加母机（SSH 验证 + 自动纳管本机子机） =====
 const addMotherVisible = ref(false)
@@ -1195,12 +1593,15 @@ async function submitMother() {
 async function openAlertPolicy(m) {
   policyTarget.value = m
   policyInfo.value = null
+  policyTab.value = 'basic'
+  templateId.value = ''
   Object.assign(policyForm, { ...ALERT_POLICY_DEFAULT })
   policyVisible.value = true
   try {
     const { data } = await fetchAlertPolicy(m.id)
     policyInfo.value = data
-    Object.assign(policyForm, { ...ALERT_POLICY_DEFAULT, ...(data.policy || {}) })
+    policyDefaults.value = data.defaults || null
+    Object.assign(policyForm, buildPolicyForm(data.policy))
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '读取告警策略失败')
   }
@@ -1229,7 +1630,9 @@ async function resetAlertPolicy() {
   try {
     const { data } = await resetAlertPolicyApi(policyTarget.value.id)
     policyInfo.value = data
-    Object.assign(policyForm, { ...ALERT_POLICY_DEFAULT, ...(data.policy || {}) })
+    policyDefaults.value = data.defaults || null
+    Object.assign(policyForm, buildPolicyForm(data.policy))
+    templateId.value = ''
     ElMessage.success('已恢复继承母机策略')
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '恢复继承失败')
@@ -1459,6 +1862,94 @@ async function resetAlertPolicy() {
 .policy-meta-hint {
   color: var(--faint);
   font-size: 12px;
+}
+
+/* ===== 告警策略抽屉（分组配置） ===== */
+.policy-body {
+  min-height: 240px;
+}
+.policy-toolbar {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.policy-section {
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.policy-section.off {
+  opacity: 0.55;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.section-desc {
+  color: var(--faint);
+  font-size: 12px;
+}
+.section-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.field-label {
+  width: 96px;
+  flex: none;
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+  text-align: right;
+}
+.field-unit {
+  color: var(--faint);
+  font-size: 12px;
+}
+.level-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.scrape-box {
+  border: 1px dashed var(--border, #e5e7eb);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rule-table {
+  width: 100%;
+}
+.rule-name {
+  font-size: 12px;
+}
+.rule-metric {
+  color: var(--faint);
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .dot {

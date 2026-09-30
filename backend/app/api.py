@@ -33,7 +33,16 @@ from app.routers.deps import CurrentUser, require_perm
 from app.schemas import AnomalyOut, ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services import provision as provision_svc
 from app.services import diagnostics as diagnostics_svc
-from app.services.alert_policy import DEFAULT_POLICY, effective_policy, normalize_policy
+from app.services.alert_policy import (
+    ALERT_LEVELS,
+    DEFAULT_POLICY,
+    LEVEL_COLORS,
+    LEVEL_LABELS,
+    POLICY_TEMPLATES,
+    RULE_CATALOG,
+    effective_policy,
+    normalize_policy,
+)
 from app.services.audit import add_audit, add_event
 from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
@@ -574,15 +583,25 @@ def create_mother(
     return row
 
 
-class AlertPolicyIn(BaseModel):
-    """母机告警策略：阈值（%）与触发窗口（分钟），平台纯存储（供本地越限判定与展示）。"""
+def _policy_meta() -> dict:
+    """策略元数据：级别定义（含颜色）、规则目录、可选模板（配置界面渲染数据源）。"""
+    return {
+        "levels": [
+            {"value": lv, "label": LEVEL_LABELS[lv], "color": LEVEL_COLORS[lv]}
+            for lv in ALERT_LEVELS
+        ],
+        "catalog": RULE_CATALOG,
+        "templates": [
+            {"id": tid, "label": tpl["label"], "policy": normalize_policy(tpl["policy"])}
+            for tid, tpl in POLICY_TEMPLATES.items()
+        ],
+    }
 
-    cpu_threshold: int = Field(ge=1, le=99)
-    cpu_window_minutes: int = Field(ge=1, le=120)
-    mem_threshold: int = Field(ge=1, le=99)
-    mem_window_minutes: int = Field(ge=1, le=120)
-    load_threshold: float = Field(ge=0.1, le=100)
-    load_window_minutes: int = Field(ge=1, le=120)
+
+@router.get("/api/v1/alert-policy/meta", dependencies=[Depends(require_perm("assets:read"))])
+def alert_policy_meta():
+    """告警策略元数据：P0-P3 级别（颜色）/ 规则目录 / 配置模板。"""
+    return _policy_meta()
 
 
 @router.get("/api/v1/assets/mothers/{mother_id}/alert-policy", dependencies=[Depends(require_perm("assets:read"))])
@@ -593,22 +612,26 @@ def get_alert_policy(mother_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "母机不存在")
     return {
         "policy": normalize_policy((mother.extra or {}).get("alert_policy")),
-        "defaults": dict(DEFAULT_POLICY),
+        "defaults": normalize_policy(None),
+        **_policy_meta(),
     }
 
 
 @router.put("/api/v1/assets/mothers/{mother_id}/alert-policy", dependencies=[Depends(require_perm("assets:write"))])
 def update_alert_policy(
     mother_id: str,
-    body: AlertPolicyIn,
+    body: dict,
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """保存母机告警策略（纯存储）。"""
+    """保存母机告警策略（纯存储，v2 秒制 + 规则目录；写审计日志）。"""
     mother = db.get(Asset, mother_id)
     if mother is None or mother.kind != "mother":
         raise HTTPException(404, "母机不存在")
-    policy = normalize_policy(body.model_dump())
+    try:
+        policy = normalize_policy(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     mother.extra = {**(mother.extra or {}), "alert_policy": policy}
     db.commit()
     add_audit(
@@ -630,24 +653,33 @@ def get_asset_alert_policy(asset_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "资产不存在")
     own = (asset.extra or {}).get("alert_policy")
     policy, source = effective_policy(db, asset)
-    return {"policy": policy, "inherited": own is None, "source": source, "defaults": dict(DEFAULT_POLICY)}
+    return {
+        "policy": policy,
+        "inherited": own is None,
+        "source": source,
+        "defaults": normalize_policy(None),
+        **_policy_meta(),
+    }
 
 
 @router.put("/api/v1/assets/{asset_id}/alert-policy", dependencies=[Depends(require_perm("assets:write"))])
 def update_asset_alert_policy(
     asset_id: str,
-    body: AlertPolicyIn,
+    body: dict,
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """保存资产告警策略：母机/子机均写自身 extra.alert_policy（子机保存后覆盖继承）。
+    """保存资产告警策略（v2 秒制 + 规则目录）：母机/子机均写自身 extra.alert_policy。
 
-    子机自有策略只影响该子机（如 186 阈值 100%/1 分钟、92 阈值 50%/1 分钟各自生效）。
+    子机自有策略只影响该子机；保存写审计日志；agent 下轮 config_refresh 拉取即生效。
     """
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(404, "资产不存在")
-    policy = normalize_policy(body.model_dump())
+    try:
+        policy = normalize_policy(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     asset.extra = {**(asset.extra or {}), "alert_policy": policy}
     db.commit()
     add_audit(
@@ -1654,6 +1686,11 @@ def _infer_scenario(trigger: str) -> str:
 
 
 SEVERITY_LABELS = {
+    "P0": "P0 严重故障",
+    "P1": "P1 重要告警",
+    "P2": "P2 一般告警",
+    "P3": "P3 提示信息",
+    # 历史（Zabbix 时代）级别值，仅兼容展示
     "disaster": "灾难",
     "high": "严重",
     "average": "较严重",

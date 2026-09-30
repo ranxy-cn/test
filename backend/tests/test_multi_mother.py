@@ -93,7 +93,7 @@ def test_create_mother_alert_policy(auth_token, client, db):
     assert r.status_code == 200
     row = db.get(Asset, "mother-10-1-1-1")
     assert row.extra["alert_policy"]["cpu_threshold"] == 90
-    assert row.extra["alert_policy"]["cpu_window_minutes"] == 5
+    assert row.extra["alert_policy"]["cpu_window_seconds"] == 300  # v1 分钟字段自动转秒
     assert row.extra["alert_policy"]["mem_threshold"] == alert_policy.DEFAULT_POLICY["mem_threshold"]
 
     r2 = client.post(

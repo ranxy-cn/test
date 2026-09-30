@@ -545,8 +545,12 @@ const PROV_LABELS = {
   '': '已登记',
 }
 
-// ===== 异常告警（与异常警告页同源，按资产精确过滤） =====
+// ===== 异常告警（与异常警告页同源，按资产精确过滤；P0-P3 与后端 LEVEL_COLORS 一致） =====
 const SEV_LABELS = {
+  P0: 'P0 严重故障',
+  P1: 'P1 重要告警',
+  P2: 'P2 一般告警',
+  P3: 'P3 提示信息',
   disaster: '灾难',
   high: '严重',
   average: '较严重',
@@ -555,6 +559,10 @@ const SEV_LABELS = {
   not_classified: '未知',
 }
 const SEV_TAGS = {
+  P0: 'danger',
+  P1: 'warning',
+  P2: 'warning',
+  P3: 'info',
   disaster: 'danger',
   high: 'danger',
   average: 'warning',
