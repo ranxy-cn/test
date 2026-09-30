@@ -71,11 +71,11 @@ const GRADIENTS = [
   'linear-gradient(145deg, #bf5af2, #8944ab)',
 ]
 
-// 占位宽度随放大倍率增加：推开相邻图标并拉长 Dock，避免视觉重叠
+// 占位宽度随放大倍率增加：推开相邻图标并拉长 Dock，避免视觉重叠；同时绑定图标渐变色
 function slotStyle(i) {
   const s = scales.value[i] || { scale: 1 }
   const grow = Math.max(0, (Math.max(1, s.scale) - 1) * 46)
-  return { '--grow': `${grow.toFixed(1)}px` }
+  return { '--grad': GRADIENTS[i % GRADIENTS.length], '--grow': `${grow.toFixed(1)}px` }
 }
 function iconStyle(i) {
   const s = scales.value[i] || { scale: 1, lift: 0 }
@@ -154,11 +154,11 @@ onBeforeUnmount(resetScales)
   gap: 8px;
   padding: 9px 14px 8px;
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.9);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.13), 0 2px 8px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.7);
   /* 不设 overflow：放大图标可超出上沿、tooltip 正常显示 */
 }
 .dock-item {
