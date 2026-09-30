@@ -1694,7 +1694,7 @@ async function resetAlertPolicy() {
   padding: 56px 24px;
   border: 1px dashed var(--line-strong);
   border-radius: var(--r-xl);
-  background: linear-gradient(180deg, #fafcff 0%, #ffffff 70%);
+  background: linear-gradient(180deg, var(--el-fill-color-lighter) 0%, var(--el-bg-color) 70%);
 }
 .empty-icon {
   font-size: 52px;
