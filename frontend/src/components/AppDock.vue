@@ -1,9 +1,10 @@
 <template>
   <!--
     Mac 风格底部 Dock 栏
-    - 图标悬停时按鼠标距离连续放大上浮（经典 Dock 鱼眼效果）
-    - tooltip 胶囊显示名称，激活项底部带指示点
-    - 小屏（≤768px / 触屏）禁用鱼眼，图标缩小并支持横向滚动
+    - 图标悬停时按鼠标距离连续放大上浮（经典 Dock 鱼眼效果），放大可超出 Dock 上沿
+    - 放大的图标按比例加宽自身占位：推开相邻图标、拉长 Dock 栏，互不重叠
+    - tooltip 胶囊跟随显示功能名称，激活项底部带指示点
+    - 小屏（触屏）禁用鱼眼，图标缩小并允许横向滚动
   -->
   <nav ref="dockRef" class="dock" :class="{ touch: isTouch }" aria-label="主导航" @mousemove="onMove" @mouseleave="resetScales">
     <div class="dock-tip" :style="tipStyle" :class="{ show: tip.show }">{{ tip.text }}</div>
@@ -14,7 +15,7 @@
       type="button"
       class="dock-item"
       :class="{ active: isActive(item) }"
-      :style="{ '--grad': gradientOf(item, i) }"
+      :style="slotStyle(i)"
       :aria-label="item.name"
       @mouseenter="onEnter(i)"
       @click="go(item)"
@@ -69,10 +70,13 @@ const GRADIENTS = [
   'linear-gradient(145deg, #ffd60a, #d9a400)',
   'linear-gradient(145deg, #bf5af2, #8944ab)',
 ]
-function gradientOf(item, i) {
-  return GRADIENTS[i % GRADIENTS.length]
-}
 
+// 占位宽度随放大倍率增加：推开相邻图标并拉长 Dock，避免视觉重叠
+function slotStyle(i) {
+  const s = scales.value[i] || { scale: 1 }
+  const grow = Math.max(0, (Math.max(1, s.scale) - 1) * 46)
+  return { '--grow': `${grow.toFixed(1)}px` }
+}
 function iconStyle(i) {
   const s = scales.value[i] || { scale: 1, lift: 0 }
   return { transform: `translateY(${s.lift}px) scale(${s.scale})` }
@@ -85,21 +89,39 @@ function iconSize(i) {
 // 鼠标移动时按与各图标中心的距离做连续放大（越近越大）
 function onMove(e) {
   if (isTouch.value) return
+  let bestI = -1
+  let bestK = 0
   const next = props.items.map((_, i) => {
     const el = iconEls.value[i]
     if (!el) return { scale: 1, lift: 0 }
     const r = el.getBoundingClientRect()
     const d = Math.abs(e.clientX - (r.left + r.width / 2))
     const k = Math.max(0, 1 - d / 120) // 影响半径 120px
+    if (k > bestK) {
+      bestK = k
+      bestI = i
+    }
     const kk = k * k // 平方衰减，中心更突出
     return { scale: 1 + 0.45 * kk, lift: -12 * kk }
   })
   scales.value = next
+  // tooltip 跟随放大最明显的图标
+  if (bestI >= 0) {
+    const el = iconEls.value[bestI]
+    const dockRect = dockRef.value.getBoundingClientRect()
+    const r = el.getBoundingClientRect()
+    tip.x = r.left + r.width / 2 - dockRect.left
+    tip.text = props.items[bestI].name
+    tip.show = true
+  } else {
+    tip.show = false
+  }
 }
 
 function onEnter(i) {
+  if (isTouch.value) return
   const el = iconEls.value[i]
-  if (!el || isTouch.value) return
+  if (!el) return
   const dockRect = dockRef.value.getBoundingClientRect()
   const r = el.getBoundingClientRect()
   tip.x = r.left + r.width / 2 - dockRect.left
@@ -120,7 +142,7 @@ onBeforeUnmount(resetScales)
 </script>
 
 <style scoped>
-/* ===== Dock 容器：底部居中悬浮毛玻璃条 ===== */
+/* ===== Dock 容器：底部居中悬浮浅色毛玻璃条 ===== */
 .dock {
   position: fixed;
   left: 50%;
@@ -132,22 +154,18 @@ onBeforeUnmount(resetScales)
   gap: 8px;
   padding: 9px 14px 8px;
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.82);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  max-width: calc(100vw - 24px);
-  overflow-x: auto;
-  overflow-y: visible;
-  scrollbar-width: none;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.13), 0 2px 8px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  /* 不设 overflow：放大图标可超出上沿、tooltip 正常显示 */
 }
-.dock::-webkit-scrollbar { display: none; }
-
 .dock-item {
   position: relative;
   flex: none;
-  width: 46px;
+  /* 占位宽度 = 基础尺寸 + 鱼眼加宽，撑开相邻图标并拉长 Dock */
+  width: calc(var(--dock-size, 46px) + var(--grow, 0px));
   height: 46px;
   padding: 0;
   border: none;
@@ -156,20 +174,21 @@ onBeforeUnmount(resetScales)
   cursor: pointer;
   display: grid;
   place-items: end center;
+  transition: width 0.18s var(--ease-out);
 }
 
-/* 图标本体：渐变底 + 白色图标，弹性过渡 */
+/* 图标本体：渐变底 + 白色图标，从底部锚点生长，可超出 Dock 上沿 */
 .dock-icon {
-  width: 46px;
-  height: 46px;
+  width: var(--dock-size, 46px);
+  height: var(--dock-size, 46px);
   border-radius: 13px;
   display: grid;
   place-items: center;
   background: var(--grad);
   color: #fff;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.35);
-  transform-origin: 50% 100%; /* 从底部生长，Dock 的经典锚点 */
-  transition: transform 0.16s var(--ease-out), box-shadow 0.16s var(--ease-out);
+  transform-origin: 50% 100%;
+  transition: transform 0.14s var(--ease-out), box-shadow 0.14s var(--ease-out);
   will-change: transform;
 }
 .dock:not(.touch) .dock-item:hover .dock-icon {
@@ -196,7 +215,7 @@ onBeforeUnmount(resetScales)
 /* tooltip 胶囊 */
 .dock-tip {
   position: absolute;
-  top: -42px;
+  top: -44px;
   transform: translateX(-50%) translateY(4px);
   padding: 5px 11px;
   border-radius: var(--r-pill);
@@ -212,18 +231,28 @@ onBeforeUnmount(resetScales)
 }
 .dock-tip.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-/* ===== 响应式：小屏图标缩小、可横向滚动 ===== */
+/* ===== 响应式：小屏图标缩小（tooltip 隐藏）；仅触屏允许横向滚动 ===== */
 @media (max-width: 768px) {
   .dock {
     gap: 6px;
     padding: 7px 10px 7px;
     bottom: 8px;
     border-radius: 18px;
+    --dock-size: 38px;
   }
-  .dock-item,
-  .dock-icon { width: 38px; height: 38px; }
-  .dock-item { border-radius: 11px; }
+  .dock-item { height: 38px; border-radius: 11px; }
   .dock-icon { border-radius: 11px; }
   .dock-tip { display: none; }
+}
+/* 触屏（无 hover）：无鱼眼放大，可安全横向滚动 */
+@media (hover: none) {
+  .dock {
+    max-width: calc(100vw - 24px);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .dock::-webkit-scrollbar { display: none; }
+  .dock-item { transition: none; }
 }
 </style>
