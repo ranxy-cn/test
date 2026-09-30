@@ -8,9 +8,21 @@
       <div class="brand-mini" @click="router.push('/dashboard')">
         <span class="brand-logo" aria-hidden="true">D</span>
         <span class="brand-name">DevOpsAgent</span>
+        <span class="clock mono" :title="'北京时间'">
+          <el-icon :size="12"><Clock /></el-icon>
+          北京时间 {{ clock }}
+        </span>
       </div>
 
       <div class="assist">
+        <!-- 夜间 / 白天模式切换 -->
+        <button class="assist-btn" type="button" :aria-label="isDark ? '切换白天模式' : '切换夜间模式'" @click="toggleTheme">
+          <el-icon :size="18">
+            <Sunny v-if="isDark" />
+            <Moon v-else />
+          </el-icon>
+        </button>
+
         <!-- 通知中心：铃铛 + 弹出面板（最近通知 + 查看全部） -->
         <el-popover placement="bottom-end" :width="340" trigger="click" popper-class="notif-popper" @show="loadNotifs">
           <template #reference>
@@ -130,6 +142,28 @@ const avatarInitial = computed(() => {
   const name = auth.user?.display_name || auth.user?.username || 'U'
   return name.trim().charAt(0).toUpperCase()
 })
+
+/* ===== 北京时间时钟：每秒刷新，显式锁定 Asia/Shanghai 时区 ===== */
+const clock = ref('')
+let clockTimer
+function tickClock() {
+  clock.value = new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+}
+onMounted(() => {
+  tickClock()
+  clockTimer = setInterval(tickClock, 1000)
+})
+onBeforeUnmount(() => clearInterval(clockTimer))
+
+/* ===== 夜间 / 白天主题切换 ===== */
+const isDark = ref(document.documentElement.classList.contains('dark'))
+function toggleTheme() {
+  // 切换瞬间启用全局颜色过渡，营造平滑的明暗渐变
+  document.documentElement.classList.add('theme-anim')
+  isDark.value = document.documentElement.classList.toggle('dark')
+  localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
+  setTimeout(() => document.documentElement.classList.remove('theme-anim'), 350)
+}
 
 /* ===== 通知中心：未读角标 + 最近通知面板 ===== */
 const notifs = ref([])
@@ -252,6 +286,30 @@ async function doChangePwd() {
   color: var(--ink);
 }
 
+/* 夜间模式：顶栏毛玻璃转深色底 */
+html.dark .topbar {
+  background: rgba(28, 28, 30, 0.55);
+  border-bottom-color: rgba(44, 44, 46, 0.8);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* ===== 北京时间时钟 ===== */
+.clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 14px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: rgba(0, 0, 0, 0.045);
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+html.dark .clock { background: rgba(255, 255, 255, 0.08); }
+
 /* ===== 右上角辅助区：通知 / 系统设置 / 用户 ===== */
 .assist {
   display: flex;
@@ -347,6 +405,8 @@ async function doChangePwd() {
 @media (max-width: 768px) {
   .topbar { padding: 0 10px; }
   .brand-name { display: none; }
+  .clock { margin-left: 8px; padding: 4px 8px; font-size: 11px; }
+  .clock .el-icon { display: none; }
   .user-name, .role-chip { display: none; }
   .main { padding: 52px 10px 92px; }
 }

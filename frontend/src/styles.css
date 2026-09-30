@@ -157,6 +157,102 @@
 }
 
 /* ============================================================
+   夜间模式（html.dark）：Apple 深色色板
+   ============================================================ */
+html.dark {
+  /* ---- 色彩令牌 ---- */
+  --ink: #f5f5f7;
+  --ink-2: #d2d2d7;
+  --muted: #98989d;
+  --faint: #6e6e73;
+  --bg: #0d0d10;
+  --surface: #1c1c1e;
+  --line: #2c2c2e;
+  --line-strong: #3a3a3c;
+
+  /* ---- 状态色：暗底使用高亮变体 ---- */
+  --ok: #30d158;
+  --warn: #ff9f0a;
+  --danger: #ff453a;
+
+  /* ---- 阴影：暗色下更重 ---- */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 34px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-ring-brand: 0 0 0 3px rgba(10, 132, 255, 0.3);
+
+  /* ---- Element Plus：苹果深色板（覆盖 dark/css-vars 默认值） ---- */
+  --el-text-color-primary: #f5f5f7;
+  --el-text-color-regular: #d2d2d7;
+  --el-text-color-secondary: #98989d;
+  --el-text-color-placeholder: #6e6e73;
+  --el-text-color-disabled: #6e6e73;
+
+  --el-border-color: #3a3a3c;
+  --el-border-color-light: #333336;
+  --el-border-color-lighter: #2c2c2e;
+  --el-border-color-extra-light: #26262a;
+  --el-border-color-dark: #48484a;
+  --el-border-color-darker: #58585a;
+
+  --el-fill-color: #2c2c2e;
+  --el-fill-color-light: #232326;
+  --el-fill-color-lighter: #1e1e21;
+  --el-fill-color-extra-light: #1a1a1d;
+  --el-fill-color-dark: #333336;
+  --el-fill-color-darker: #3a3a3c;
+  --el-fill-color-blank: #1c1c1e;
+
+  --el-bg-color: #1c1c1e;
+  --el-bg-color-page: #0d0d10;
+  --el-bg-color-overlay: #232326;
+
+  --el-mask-color: rgba(13, 13, 16, 0.75);
+  --el-mask-color-extra-light: rgba(13, 13, 16, 0.4);
+
+  --el-color-primary: #0a84ff;
+  --el-color-primary-light-3: #3f9dff;
+  --el-color-primary-light-5: #6fb5ff;
+  --el-color-primary-light-7: #9ecfff;
+  --el-color-primary-light-8: #b8ddff;
+  --el-color-primary-light-9: #1a2c40;
+  --el-color-primary-dark-2: #0069d9;
+
+  --el-color-success: #30d158;
+  --el-color-warning: #ff9f0a;
+  --el-color-danger: #ff453a;
+  --el-color-error: #ff453a;
+  --el-color-success-light-9: #12291c;
+  --el-color-warning-light-9: #2f2416;
+  --el-color-danger-light-9: #33161a;
+  --el-color-error-light-9: #33161a;
+}
+
+/* 主题切换过渡：切换瞬间启用全局颜色过渡（350ms 后移除） */
+html.theme-anim,
+html.theme-anim *,
+html.theme-anim *::before,
+html.theme-anim *::after {
+  transition: background-color 0.3s ease, color 0.3s ease,
+    border-color 0.3s ease, box-shadow 0.3s ease, fill 0.3s ease !important;
+}
+
+/* ---- 夜间模式下的硬编码补丁 ---- */
+html.dark .el-input__wrapper.is-focus,
+html.dark .el-textarea__inner:focus { background-color: var(--el-bg-color); }
+html.dark .el-select__wrapper.is-focused { background-color: var(--el-bg-color); }
+html.dark .el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background: #3a3a3c;
+}
+html.dark .el-radio-group:not(.el-radio-group--filled) { background: rgba(255, 255, 255, 0.08); }
+html.dark .el-table { --el-table-tr-bg-color: #1c1c1e; }
+html.dark .el-loading-mask { background-color: rgba(13, 13, 16, 0.6); }
+html.dark ::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.22); background-clip: content-box; }
+html.dark * { scrollbar-color: rgba(255, 255, 255, 0.25) transparent; }
+html.dark ::selection { background: rgba(10, 132, 255, 0.4); }
+
+/* ============================================================
    基础排版
    ============================================================ */
 * { box-sizing: border-box; }
