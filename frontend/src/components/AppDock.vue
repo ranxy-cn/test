@@ -142,23 +142,17 @@ onBeforeUnmount(resetScales)
 </script>
 
 <style scoped>
-/* ===== Dock 容器：底部居中悬浮浅色毛玻璃条 ===== */
+/* ===== Dock 容器：仅承载一排悬浮图标，无背景容器 ===== */
 .dock {
   position: fixed;
   left: 50%;
-  bottom: 10px;
+  bottom: 12px;
   transform: translateX(-50%);
   z-index: 90;
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 9px 14px 8px;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.38);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  padding: 0 4px;
   /* 不设 overflow：放大图标可超出上沿、tooltip 正常显示 */
 }
 .dock-item {
