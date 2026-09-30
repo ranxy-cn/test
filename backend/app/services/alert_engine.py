@@ -144,10 +144,21 @@ def _upsert_event(
 
 
 def run_alert_cycle(db: Session) -> dict:
-    """扫描全部子机：按生效策略逐规则判定，产出/恢复异常事件。返回统计。"""
+    """扫描全部子机：按生效策略逐规则判定，产出/恢复异常事件。返回统计。
+
+    扫描范围：child 资产 + 已接入 agent（存在上报样本）的 mother 资产——
+    母机同样可安装 agent 并套用告警策略。
+    """
     now = utcnow()
     stats = {"checked": 0, "triggered": 0, "recovered": 0}
-    children = db.scalars(select(Asset).where(Asset.kind == "child")).all()
+    reported_ids = set(
+        db.execute(select(SystemMetricSample.asset_id).distinct()).scalars().all()
+    )
+    children = [
+        a
+        for a in db.scalars(select(Asset)).all()
+        if a.kind == "child" or a.id in reported_ids
+    ]
     for asset in children:
         stats["checked"] += 1
         policy, source = effective_policy(db, asset)

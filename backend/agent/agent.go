@@ -768,17 +768,20 @@ func (a *Agent) do(method, path string, body []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	buf := make([]byte, 4096)
-	n, _ := resp.Body.Read(buf)
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(buf[:n]))
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
 	}
-	return buf[:n], nil
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(data))
+	}
+	return data, nil
 }
 
 func (a *Agent) syncConfig() {
 	data, err := a.do("GET", "/api/v1/agent/config?asset_id="+a.assetID, nil)
 	if err != nil {
+		log.Printf("[agent] sync config failed: %v", err)
 		return
 	}
 	var out struct {
@@ -802,10 +805,15 @@ func (a *Agent) flush(ready []map[string]interface{}) {
 	if len(samples) == 0 {
 		return
 	}
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"asset_id": a.assetID, "agent_version": agentVersion, "samples": samples,
 	})
+	if err != nil {
+		log.Printf("[agent] marshal report failed: %v (samples=%d dropped)", err, len(samples))
+		return
+	}
 	if _, err := a.do("POST", "/api/v1/agent/report", payload); err != nil {
+		log.Printf("[agent] report failed: %v (samples=%d buffered)", err, len(samples))
 		a.bufLock.Lock()
 		a.buf = append(samples, a.buf...)
 		if len(a.buf) > a.cfg.BufferMax {
