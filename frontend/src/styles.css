@@ -6,6 +6,7 @@
 :root {
   /* ---- 色彩令牌 ---- */
   --ink: #1d1d1f;            /* 主文本：近黑 */
+  --on-ink: #ffffff;         /* 墨色底上的文字（跟随主题反转） */
   --ink-2: #424245;          /* 常规文本 */
   --muted: #6e6e73;          /* 次要文本（Apple 灰） */
   --faint: #a1a1a6;          /* 占位 / 弱化 */
@@ -162,6 +163,7 @@
 html.dark {
   /* ---- 色彩令牌 ---- */
   --ink: #f5f5f7;
+  --on-ink: #1d1d1f;
   --ink-2: #d2d2d7;
   --muted: #98989d;
   --faint: #6e6e73;
@@ -511,7 +513,7 @@ a:hover { color: var(--brand-2); }
 .el-pagination button, .el-pager li { background: transparent !important; }
 .el-pagination .el-pager li.is-active {
   background: var(--ink) !important;
-  color: #fff;
+  color: var(--on-ink) !important;
   font-weight: 600;
 }
 
