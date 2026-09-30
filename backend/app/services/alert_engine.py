@@ -11,7 +11,7 @@ celery beat 每分钟调用 run_alert_cycle。规则来源：资产生效策略�
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -82,8 +82,14 @@ def _upsert_event(
     detail: str = "",
     policy_source: str = "default",
     metric: str = "",
+    notify_minutes: int = 0,
 ) -> None:
-    """统一事件写入：breach 建/重开/刷新事件；不越限或规则禁用时自动恢复。"""
+    """统一事件写入：breach 建/重开/刷新事件；不越限或规则禁用时自动恢复。
+
+    重复提醒：事件持续 abnormal 期间，每满 notify_minutes 分钟在原事件上
+    重复提醒一次（repeat_count +1、last_notified_at 刷新），不产生新事件；
+    notify_minutes=0 时仅「触发 / 恢复后再次触发」这类状态变化时提醒（瞬时事件）。
+    """
     event_id = f"metric-{asset.id}-{rule_key}"
     ev = db.scalar(select(AnomalyEvent).where(AnomalyEvent.event_id == event_id))
     payload = {
@@ -125,7 +131,7 @@ def _upsert_event(
                 message=message,
                 status="abnormal",
                 asset_id=asset.id,
-                payload=payload,
+                payload={**payload, "repeat_count": 1, "notify_minutes": notify_minutes, "last_notified_at": now.isoformat()},
             )
         )
         stats["triggered"] += 1
@@ -134,13 +140,32 @@ def _upsert_event(
         ev.recovered_at = None
         ev.last_seen_at = now
         ev.severity = level
-        ev.payload = payload
+        ev.payload = {**payload, "repeat_count": 1, "notify_minutes": notify_minutes, "last_notified_at": now.isoformat()}
         stats["triggered"] += 1
     else:
         ev.last_seen_at = now
         if ev.severity != level:
             ev.severity = level
-        ev.payload = {**(ev.payload or {}), "latest": latest, "samples": samples, "level": level}
+        merged = {**(ev.payload or {}), "latest": latest, "samples": samples, "level": level, "notify_minutes": notify_minutes}
+        # 持续 abnormal 的重复提醒：每满 notify_minutes 分钟重新提醒一次
+        repeat = int(merged.get("repeat_count") or 1)
+        last_notified = merged.get("last_notified_at")
+        if notify_minutes > 0:
+            base = last_notified or ev.first_seen_at.isoformat()
+            try:
+                base_dt = datetime.fromisoformat(str(base))
+                due = (now - base_dt).total_seconds() >= notify_minutes * 60
+            except (TypeError, ValueError):
+                due = False
+            if due:
+                repeat += 1
+                merged["repeat_count"] = repeat
+                merged["last_notified_at"] = now.isoformat()
+                suffix = f"（第 {repeat} 次提醒，间隔 {notify_minutes} 分钟）"
+                if suffix not in ev.message:
+                    ev.message = f"{ev.message.split('（第')[0]}{suffix}"
+                stats["re_alerted"] = stats.get("re_alerted", 0) + 1
+        ev.payload = merged
 
 
 def run_alert_cycle(db: Session) -> dict:
@@ -150,7 +175,7 @@ def run_alert_cycle(db: Session) -> dict:
     母机同样可安装 agent 并套用告警策略。
     """
     now = utcnow()
-    stats = {"checked": 0, "triggered": 0, "recovered": 0}
+    stats = {"checked": 0, "triggered": 0, "recovered": 0, "re_alerted": 0}
     reported_ids = set(
         db.execute(select(SystemMetricSample.asset_id).distinct()).scalars().all()
     )
@@ -208,6 +233,7 @@ def run_alert_cycle(db: Session) -> dict:
                 enabled=True, breach=breach, latest=values[-1] if values else None,
                 win=win, threshold=policy[th_key], op="gte",
                 samples=len(values), metric=field, **common,
+                notify_minutes=int(policy.get(f"{field}_notify_minutes") or 0),
             )
 
         # 2) 系统扩展指标（swap/inode/IO/网络/带宽/TCP）
@@ -215,15 +241,17 @@ def run_alert_cycle(db: Session) -> dict:
             win = int(policy[win_key])
             values = series(ext_key, win, ext_key=True)
             breach = len(values) >= 2 and all(v >= policy[th_key] for v in values)
+            notify_key = en_key.replace("_enabled", "_notify_minutes")
             _upsert_event(
                 db, stats, now, asset, ip,
                 rule_key=ext_key, label=label, unit=unit, level=policy[level_key],
                 enabled=bool(policy[en_key]), breach=breach, latest=values[-1] if values else None,
                 win=win, threshold=policy[th_key], op="gte",
                 samples=len(values), metric=ext_key, **common,
+                notify_minutes=int(policy.get(notify_key) or 0),
             )
 
-        # 3) OOM kill（事件型：窗口内出现过 oom_events>0 即异常）
+        # 3) OOM kill（事件型：窗口内出现过 oom_events>0 即异常；瞬时事件默认不重复提醒）
         win = int(policy["oom_window_seconds"])
         oom_vals = series("oom_events", win, ext_key=True)
         oom_breach = bool(oom_vals) and any(v > 0 for v in oom_vals)
@@ -235,6 +263,7 @@ def run_alert_cycle(db: Session) -> dict:
             latest=oom_count or None, win=win, threshold=1, op="gte",
             samples=len(oom_vals), detail=f"检测到 OOM kill（窗口 {win} 秒内 {oom_count} 次）",
             metric="oom_events", **common,
+            notify_minutes=int(policy.get("oom_notify_minutes") or 0),
         )
 
         # 4) 关键进程消失
@@ -252,6 +281,7 @@ def run_alert_cycle(db: Session) -> dict:
             latest=", ".join(missing) or None, win=win,
             detail=f"关键进程异常退出：{', '.join(missing)}" if missing else "",
             samples=len(proc_series), metric="procs_missing", **common,
+            notify_minutes=int(policy.get("process_notify_minutes") or 0),
         )
 
         # 5) 关键端口探活失败
@@ -269,6 +299,7 @@ def run_alert_cycle(db: Session) -> dict:
             latest=", ".join(down_ports) or None, win=win,
             detail=f"端口探活失败：{', '.join(down_ports)}" if down_ports else "",
             samples=len(port_series), metric="ports_down", **common,
+            notify_minutes=int(policy.get("port_notify_minutes") or 0),
         )
 
         # 6) 应用/数据库层规则目录（数据源：agent metrics 抓取，ext.metrics）
@@ -296,6 +327,7 @@ def run_alert_cycle(db: Session) -> dict:
                 enabled=enabled, breach=breach, latest=values[-1] if values else None,
                 win=win, threshold=cfg["threshold"], op=meta["op"],
                 samples=len(values), metric=meta["metric"], **common,
+                notify_minutes=int(cfg.get("notify_minutes", meta.get("notify_minutes", 0)) or 0),
             )
     db.commit()
     return stats

@@ -38,7 +38,7 @@ def test_normalize_policy_defaults_and_partial():
     assert p3["load_threshold"] == 2.5
     # 规则覆盖：调整阈值/窗口/级别/开关
     p4 = normalize_policy({"rules": {"app_health": {"enabled": True, "threshold": 5, "level": "P1"}}})
-    assert p4["rules"]["app_health"] == {"enabled": True, "threshold": 5.0, "window_seconds": 60, "level": "P1"}
+    assert p4["rules"]["app_health"] == {"enabled": True, "threshold": 5.0, "window_seconds": 60, "level": "P1", "notify_minutes": 30}
 
 
 def test_normalize_policy_rejects_invalid():
@@ -133,7 +133,7 @@ def test_put_policy_roundtrip(auth_token, client, db):
         "swap_level": "P2",
         "process_enabled": True,
         "process_items": ["nginx", "java"],
-        "rules": {"app_health": {"enabled": True, "threshold": 3, "window_seconds": 60, "level": "P0"}},
+        "rules": {"app_health": {"enabled": True, "threshold": 3, "window_seconds": 60, "level": "P0", "notify_minutes": 30}},
     }
     r = client.put("/api/v1/assets/mothers/mo-put/alert-policy", json=payload, headers=_h(auth_token))
     assert r.status_code == 200

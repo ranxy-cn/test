@@ -554,6 +554,7 @@
                     controls-position="right"
                   />
                   <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                  <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
                 </div>
                 <div class="field-row">
                   <span class="field-label">告警级别</span>
@@ -597,6 +598,7 @@
                     controls-position="right"
                   />
                   <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                  <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
                 </div>
                 <div v-if="s.text" class="field-row">
                   <span class="field-label">{{ s.text.label }}</span>
@@ -651,6 +653,7 @@
                     controls-position="right"
                   />
                   <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                  <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
                 </div>
                 <div class="field-row">
                   <span class="field-label">告警级别</span>
@@ -717,7 +720,13 @@
                   </el-select>
                 </template>
               </el-table-column>
+              <el-table-column label="重复告警(分钟)" width="132">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).notify_minutes" :min="0" :max="1440" :step="5" size="small" controls-position="right" style="width: 112px" />
+                </template>
+              </el-table-column>
             </el-table>
+            <div class="field-hint" style="margin-top: 8px">重复告警：故障持续期间每隔该间隔重新提醒一次（如 30=每 30 分钟提醒）；0=不重复，仅触发/恢复时提醒一次（适合 OOM 等瞬时事件）。</div>
           </el-tab-pane>
 
           <!-- 数据库与中间件规则 -->
@@ -761,7 +770,13 @@
                   </el-select>
                 </template>
               </el-table-column>
+              <el-table-column label="重复告警(分钟)" width="132">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).notify_minutes" :min="0" :max="1440" :step="5" size="small" controls-position="right" style="width: 112px" />
+                </template>
+              </el-table-column>
             </el-table>
+            <div class="field-hint" style="margin-top: 8px">重复告警：故障持续期间每隔该间隔重新提醒一次；0=不重复，仅触发/恢复时提醒一次。</div>
           </el-tab-pane>
         </el-tabs>
       </div>
@@ -886,6 +901,19 @@ const ALERT_POLICY_DEFAULT = {
   port_level: 'P0',
   metrics_scrape_enabled: false,
   metrics_urls: [],
+  // 重复告警间隔（分钟）：事件持续期间每隔该间隔重新提醒；0=不重复仅状态变化提醒
+  cpu_notify_minutes: 30,
+  mem_notify_minutes: 30,
+  load_notify_minutes: 30,
+  swap_notify_minutes: 30,
+  inode_notify_minutes: 30,
+  disk_io_notify_minutes: 30,
+  net_perf_notify_minutes: 30,
+  bandwidth_notify_minutes: 30,
+  tcp_conn_notify_minutes: 30,
+  process_notify_minutes: 30,
+  port_notify_minutes: 30,
+  oom_notify_minutes: 0,
   rules: {},
 }
 // 添加母机表单里的基础三项（秒制）；完整策略登记后可在「告警策略」抽屉配置
@@ -903,58 +931,76 @@ const POLICY_SECTIONS = [
     fields: [
       { key: 'cpu_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
       { key: 'cpu_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'cpu_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'basic', key: 'mem', title: '内存使用率', desc: '内存使用率持续高位运行', noSwitch: true,
     fields: [
       { key: 'mem_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
       { key: 'mem_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'mem_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'basic', key: 'load', title: '系统负载（load1）', desc: '1 分钟平均负载持续越限', noSwitch: true,
     fields: [
       { key: 'load_threshold', label: '负载阈值', min: 0.1, max: 100, step: 0.1, precision: 1 },
       { key: 'load_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'load_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'oom', title: 'OOM Kill', desc: '发生 OOM kill 事件即告警；恢复窗口内无新事件自动恢复',
-    fields: [{ key: 'oom_window_seconds', label: '恢复窗口', unit: '秒' }] },
+    fields: [
+      { key: 'oom_window_seconds', label: '恢复窗口', unit: '秒' },
+      { key: 'oom_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '瞬时事件默认 0：发生提醒一次，恢复后再次发生重新告警' },
+    ] },
   { tab: 'sys', key: 'swap', title: 'Swap 使用率', desc: 'Swap 使用率持续越限',
     fields: [
       { key: 'swap_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
       { key: 'swap_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'swap_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'inode', title: 'Inode 使用率', desc: '文件系统 inode 持续越限（耗尽前预警）',
     fields: [
       { key: 'inode_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
       { key: 'inode_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'inode_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'disk_io', title: '磁盘 IO 延迟', desc: '磁盘 await（平均 IO 等待时间）持续过高',
     fields: [
       { key: 'disk_io_threshold', label: 'await 阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
       { key: 'disk_io_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'disk_io_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'net_perf', title: '网络性能（丢包/延迟）', desc: 'agent 对探测目标 TCP 拨测，丢包率或延迟持续越限',
     fields: [
       { key: 'net_loss_threshold', label: '丢包率阈值', unit: '%', min: 0.1, max: 100, step: 0.1, precision: 1 },
       { key: 'net_latency_threshold', label: '延迟阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
       { key: 'net_perf_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'net_perf_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ],
     text: { key: 'net_probe_target', label: '探测目标', placeholder: '223.5.5.5:443' } },
   { tab: 'sys', key: 'bandwidth', title: '带宽使用率', desc: '出口/入口带宽使用率持续越限',
     fields: [
       { key: 'bandwidth_threshold', label: '带宽阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
       { key: 'bandwidth_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'bandwidth_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'tcp_conn', title: 'TCP 连接', desc: 'TIME_WAIT 过多或总连接数接近系统上限',
     fields: [
       { key: 'tcp_time_wait_threshold', label: 'TIME_WAIT 数', unit: '个', min: 1, max: 1000000, step: 100, precision: 0 },
       { key: 'tcp_conn_pct_threshold', label: '连接上限比', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
       { key: 'tcp_conn_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'tcp_conn_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'proc', key: 'process', title: '关键进程消失', desc: '核心进程异常退出即告警（按 /proc 进程名子串匹配）',
     items: { key: 'process_items', label: '监控进程', placeholder: 'nginx, mysqld, java' },
-    fields: [{ key: 'process_window_seconds', label: '恢复窗口', unit: '秒' }] },
+    fields: [
+      { key: 'process_window_seconds', label: '恢复窗口', unit: '秒' },
+      { key: 'process_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '进程持续消失期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
   { tab: 'proc', key: 'port', title: '关键端口探活', desc: '本机端口 TCP 探活失败即告警',
     items: { key: 'port_items', label: '监控端口', placeholder: '22, 80, 443', numeric: true },
-    fields: [{ key: 'port_window_seconds', label: '恢复窗口', unit: '秒' }] },
+    fields: [
+      { key: 'port_window_seconds', label: '恢复窗口', unit: '秒' },
+      { key: 'port_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '端口持续不可达期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
 ]
 const policyVisible = ref(false)
 const policySaving = ref(false)
@@ -998,6 +1044,7 @@ function buildPolicyForm(policy) {
       threshold: r.threshold,
       window_seconds: r.window_seconds,
       level: r.level,
+      notify_minutes: r.notify_minutes ?? 30,
       ...(base.rules?.[r.id] || {}),
     }
   }
@@ -1006,8 +1053,9 @@ function buildPolicyForm(policy) {
 }
 function ruleOf(id) {
   if (!policyForm.rules[id]) {
-    policyForm.rules[id] = { enabled: false, threshold: 0, window_seconds: 60, level: 'P2' }
+    policyForm.rules[id] = { enabled: false, threshold: 0, window_seconds: 60, level: 'P2', notify_minutes: 30 }
   }
+  if (policyForm.rules[id].notify_minutes == null) policyForm.rules[id].notify_minutes = 30
   return policyForm.rules[id]
 }
 function setItems(key, value, numeric = false) {

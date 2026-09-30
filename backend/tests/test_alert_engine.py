@@ -285,3 +285,90 @@ def test_disable_rule_recovers_event(auth_token, client, db):
     stats = run_alert_cycle(db)
     assert stats["recovered"] >= 1
     assert _ev(db, "metric-ch-dis-app_http_5xx").status == "recovered"
+
+
+def test_notify_minutes_re_alert(auth_token, client, db, monkeypatch):
+    """持续 abnormal 每 30 分钟重复提醒：到期 repeat_count+1 并改写 message；未到期不动。"""
+    import app.services.alert_engine as engine_mod
+
+    _mk_child(
+        db,
+        "ch-notify",
+        extra={"alert_policy": _policy(cpu_threshold=50, cpu_window_seconds=60, cpu_notify_minutes=30)},
+    )
+    _sample(db, "ch-notify", "cpu", 80, 50)
+    _sample(db, "ch-notify", "cpu", 70, 40)
+    stats = run_alert_cycle(db)
+    assert stats["triggered"] >= 1
+    ev = _ev(db, "metric-ch-notify-cpu")
+    assert ev.status == "abnormal"
+    assert ev.payload["repeat_count"] == 1
+    assert ev.payload["notify_minutes"] == 30
+    first_notified = ev.payload["last_notified_at"]
+
+    # 10 分钟后仍越限：未到 30 分钟 → 不重复提醒
+    t10 = utcnow() + timedelta(minutes=10)
+    monkeypatch.setattr(engine_mod, "utcnow", lambda: t10)
+    db.add(SystemMetricSample(asset_id="ch-notify", ts=t10 - timedelta(seconds=5), cpu=85))
+    db.add(SystemMetricSample(asset_id="ch-notify", ts=t10 - timedelta(seconds=3), cpu=75))
+    db.commit()
+    run_alert_cycle(db)
+    ev = _ev(db, "metric-ch-notify-cpu")
+    assert ev.payload["repeat_count"] == 1
+    assert ev.payload["last_notified_at"] == first_notified
+
+    # 累计 35 分钟：到期 → repeat_count=2、stats.re_alerted=1、message 带提醒标记
+    t35 = utcnow() + timedelta(minutes=35)
+    monkeypatch.setattr(engine_mod, "utcnow", lambda: t35)
+    db.add(SystemMetricSample(asset_id="ch-notify", ts=t35 - timedelta(seconds=5), cpu=86))
+    db.add(SystemMetricSample(asset_id="ch-notify", ts=t35 - timedelta(seconds=3), cpu=76))
+    db.commit()
+    stats = run_alert_cycle(db)
+    assert stats["re_alerted"] == 1
+    ev = _ev(db, "metric-ch-notify-cpu")
+    assert ev.payload["repeat_count"] == 2
+    assert "第 2 次提醒" in ev.message
+
+
+def test_notify_minutes_zero_only_state_change(auth_token, client, db, monkeypatch):
+    """notify_minutes=0（瞬时事件语义）：持续期间不重复提醒；恢复后再次触发重新计数。"""
+    import app.services.alert_engine as engine_mod
+
+    _mk_child(
+        db,
+        "ch-once",
+        extra={"alert_policy": _policy(cpu_threshold=50, cpu_window_seconds=60, cpu_notify_minutes=0)},
+    )
+    _sample(db, "ch-once", "cpu", 80, 50)
+    _sample(db, "ch-once", "cpu", 70, 40)
+    run_alert_cycle(db)
+    ev = _ev(db, "metric-ch-once-cpu")
+    assert ev.payload["repeat_count"] == 1
+
+    t40 = utcnow() + timedelta(minutes=40)
+    monkeypatch.setattr(engine_mod, "utcnow", lambda: t40)
+    db.add(SystemMetricSample(asset_id="ch-once", ts=t40 - timedelta(seconds=5), cpu=85))
+    db.add(SystemMetricSample(asset_id="ch-once", ts=t40 - timedelta(seconds=3), cpu=75))
+    db.commit()
+    run_alert_cycle(db)
+    ev = _ev(db, "metric-ch-once-cpu")
+    assert ev.status == "abnormal"
+    assert ev.payload["repeat_count"] == 1  # 不重复提醒
+
+    # 恢复后再次触发：状态变化 → 重新提醒（repeat_count 重置为 1）
+    t42 = t40 + timedelta(minutes=2)
+    monkeypatch.setattr(engine_mod, "utcnow", lambda: t42)
+    db.add(SystemMetricSample(asset_id="ch-once", ts=t42 - timedelta(seconds=5), cpu=10))
+    db.add(SystemMetricSample(asset_id="ch-once", ts=t42 - timedelta(seconds=3), cpu=10))
+    db.commit()
+    run_alert_cycle(db)
+    t44 = t42 + timedelta(minutes=2)
+    monkeypatch.setattr(engine_mod, "utcnow", lambda: t44)
+    db.add(SystemMetricSample(asset_id="ch-once", ts=t44 - timedelta(seconds=5), cpu=90))
+    db.add(SystemMetricSample(asset_id="ch-once", ts=t44 - timedelta(seconds=3), cpu=80))
+    db.commit()
+    stats = run_alert_cycle(db)
+    assert stats["triggered"] >= 1
+    ev = _ev(db, "metric-ch-once-cpu")
+    assert ev.status == "abnormal"
+    assert ev.payload["repeat_count"] == 1

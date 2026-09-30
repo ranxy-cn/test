@@ -10,9 +10,13 @@
 策略结构 v2：
 - 基础指标（CPU/内存/负载）：{x}_threshold + {x}_window_seconds（秒制）+ {x}_level
 - 系统资源/进程端口：{key}_enabled 开关 + 阈值 + 窗口（秒）+ level，扁平 key
-- 应用/数据库层：rules = {rule_id: {enabled, threshold, window_seconds, level}}，
-  规则目录见 RULE_CATALOG（指标名/判定符固定，阈值/窗口/级别/开关可配）；
+- 应用/数据库层：rules = {rule_id: {enabled, threshold, window_seconds, level,
+  notify_minutes}}，规则目录见 RULE_CATALOG（指标名/判定符固定，阈值/窗口/级别/开关可配）；
   数据源由 agent 的 metrics_scrape（Prometheus 文本抓取）提供，未启用不触发。
+- 重复提醒间隔：{x}_notify_minutes（分钟）——事件持续 abnormal 期间每隔该间隔
+  重复提醒一次（同一条事件，payload.repeat_count/last_notified_at 记录提醒状态）；
+  0=不重复，仅触发/恢复这类状态变化时提醒。持续状态类默认 30，瞬时事件
+  （OOM、发布后异常）默认 0；上限 1440 分钟。
 兼容 v1：window_minutes（分钟）读取时自动 ×60 转换为 window_seconds。
 时间单位统一为秒，策略变更后 agent 下轮 config_refresh 拉取即生效（无需重启）。
 """
@@ -32,6 +36,13 @@ LEVEL_COLORS = {"P0": "#ff3b30", "P1": "#ff9500", "P2": "#f7ba2a", "P3": "#90939
 
 MAX_WINDOW_SECONDS = 86400  # 窗口上限 24h
 MIN_WINDOW_SECONDS = 10
+
+# 系统层重复提醒间隔默认值（分钟）：OOM 为瞬时事件默认不重复；其余持续状态类默认 30 分钟
+_SYSTEM_NOTIFY_MINUTES_DEFAULT = 30
+_NOTIFY_SYSTEM_KEYS = (
+    "cpu", "mem", "load", "swap", "inode", "disk_io",
+    "net_perf", "bandwidth", "tcp_conn", "process", "port",
+)
 
 # ---------- 基础指标（秒制，级别默认按规范：CPU/内存持续高=P1） ----------
 
@@ -95,6 +106,9 @@ DEFAULT_POLICY: dict = {
     # 应用/数据库指标抓取数据源（Prometheus 文本 URL 列表，agent 抓取上报）
     "metrics_scrape_enabled": False,
     "metrics_urls": [],
+    # 重复提醒间隔（分钟）：事件持续 abnormal 期间每隔该间隔重复提醒；0=不重复仅状态变化提醒
+    **{f"{n}_notify_minutes": _SYSTEM_NOTIFY_MINUTES_DEFAULT for n in _NOTIFY_SYSTEM_KEYS},
+    "oom_notify_minutes": 0,
 }
 
 # 布尔开关 / 列表 字段（normalize 用）
@@ -184,15 +198,28 @@ RULE_CATALOG: list[dict] = [
 
 RULE_CATALOG_BY_ID: dict[str, dict] = {r["id"]: r for r in RULE_CATALOG}
 
+# ---------- 重复提醒间隔（分钟，notify_minutes） ----------
+# 语义：事件处于 abnormal 持续期间，每隔该分钟数重复提醒一次（事件仍为同一条，仅更新提醒标记）；
+# 0 = 不重复提醒，仅「触发 / 恢复后再次触发」这类状态变化时通知。
+# 持续状态类（URL 失败、端口失败、CPU 高位等）默认 30 分钟；
+# 瞬时事件类（OOM、发布后异常）默认 0——发生即提醒一次，恢复后再次发生自然重新提醒。
+DEFAULT_NOTIFY_MINUTES = 30
+RULE_NOTIFY_ONCE: set[str] = {"app_deploy_anomaly"}
+for _r in RULE_CATALOG:
+    _r["notify_minutes"] = 0 if _r["id"] in RULE_NOTIFY_ONCE else DEFAULT_NOTIFY_MINUTES
+
+MAX_NOTIFY_MINUTES = 1440  # 重复提醒间隔上限 24h（0 表示不重复）
+
 
 def rule_defaults() -> dict[str, dict]:
-    """规则目录的默认可配置项：{rule_id: {enabled, threshold, window_seconds, level}}。"""
+    """规则目录的默认可配置项：{rule_id: {enabled, threshold, window_seconds, level, notify_minutes}}。"""
     return {
         r["id"]: {
             "enabled": False,
             "threshold": r["threshold"],
             "window_seconds": r["window_seconds"],
             "level": r["level"],
+            "notify_minutes": r["notify_minutes"],
         }
         for r in RULE_CATALOG
     }
@@ -215,6 +242,17 @@ def _norm_window(value, name: str) -> int:
     return win
 
 
+def _norm_notify_minutes(value, name: str) -> int:
+    """重复提醒间隔（分钟）：0=不重复提醒，1~1440 为间隔分钟数。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} 必须是整数（分钟，0 表示不重复）") from None
+    if not 0 <= n <= MAX_NOTIFY_MINUTES:
+        raise ValueError(f"{name} 取值范围 0~{MAX_NOTIFY_MINUTES} 分钟")
+    return n
+
+
 def _norm_rule(rule_id: str, cfg: dict) -> dict | None:
     meta = RULE_CATALOG_BY_ID.get(rule_id)
     if meta is None or not isinstance(cfg, dict):
@@ -224,6 +262,7 @@ def _norm_rule(rule_id: str, cfg: dict) -> dict | None:
         "threshold": meta["threshold"],
         "window_seconds": meta["window_seconds"],
         "level": meta["level"],
+        "notify_minutes": meta["notify_minutes"],
     }
     try:
         out["threshold"] = round(float(cfg.get("threshold", meta["threshold"])), 3)
@@ -231,6 +270,9 @@ def _norm_rule(rule_id: str, cfg: dict) -> dict | None:
         raise ValueError(f"规则 {rule_id} 的 threshold 必须是数字") from None
     out["window_seconds"] = _norm_window(cfg.get("window_seconds", meta["window_seconds"]), f"规则 {rule_id} 窗口")
     out["level"] = _norm_level(cfg.get("level", meta["level"]), f"规则 {rule_id}")
+    out["notify_minutes"] = _norm_notify_minutes(
+        cfg.get("notify_minutes", meta["notify_minutes"]), f"规则 {rule_id} 重复提醒"
+    )
     return out
 
 
@@ -299,6 +341,12 @@ def normalize_policy(data: dict | None) -> dict:
     for name in ("swap", "inode", "disk_io", "net_perf", "bandwidth", "tcp_conn", "process", "port"):
         policy[f"{name}_window_seconds"] = _norm_window(policy[f"{name}_window_seconds"], f"{name}_window_seconds")
         policy[f"{name}_level"] = _norm_level(policy.get(f"{name}_level"), f"{name}_level")
+
+    # 系统层重复提醒间隔（分钟）
+    for n in (*_NOTIFY_SYSTEM_KEYS, "oom"):
+        policy[f"{n}_notify_minutes"] = _norm_notify_minutes(
+            policy.get(f"{n}_notify_minutes"), f"{n}_notify_minutes"
+        )
 
     # 列表项
     items = policy.get("process_items")
