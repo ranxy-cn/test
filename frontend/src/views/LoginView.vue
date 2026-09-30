@@ -107,7 +107,7 @@ async function doLogin() {
   try {
     const user = await auth.login(form.username.trim(), form.password)
     ElMessage.success(`欢迎，${user.display_name || user.username}`)
-    router.push(route.query.redirect || '/tickets')
+    router.push(route.query.redirect || '/dashboard')
   } catch (e) {
     const detail = e.response?.data?.detail
     formError.value = typeof detail === 'string' ? detail : '登录失败，请检查用户名或密码'
