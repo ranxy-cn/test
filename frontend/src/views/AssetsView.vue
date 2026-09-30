@@ -12,7 +12,6 @@
       </div>
       <!-- 空状态（尚无母机）时右上角操作按钮整体隐藏，仅空态引导内提供"添加母机"入口 -->
       <div v-if="!(!motherLoading && !mothers.length)" class="toolbar">
-        <el-button size="small" :loading="probing" @click="probeNow">立即探测</el-button>
         <el-button v-if="!detailView" v-perm="'assets:write'" type="primary" @click="openAddMother">
           <el-icon style="margin-right: 4px"><Plus /></el-icon>
           添加母机
@@ -47,10 +46,14 @@
           @click="openMotherDetail(m)"
         >
           <div class="row-main">
-            <span class="dot" :class="m.reachable ? 'ok' : 'down'" />
+            <span class="dot" :class="m.provisioning ? 'pend' : m.reachable ? 'ok' : 'down'" />
             <span class="row-name">{{ m.hostname }}</span>
             <el-tag size="small" type="primary" effect="dark">母机</el-tag>
             <el-tag v-if="m.is_default" size="small" type="warning" effect="plain">默认</el-tag>
+            <el-tag v-if="m.provisioning" size="small" type="warning">纳管中…</el-tag>
+            <el-tag v-else size="small" :type="m.reachable ? 'success' : 'danger'" effect="plain">
+              {{ m.reachable ? '在线' : '离线' }}
+            </el-tag>
           </div>
           <div class="row-sub">
             <span>{{ m.ip || m.id }}</span>
@@ -75,11 +78,12 @@
             返回母机列表
           </el-button>
           <div class="detail-title">
-            <span class="dot" :class="mother?.reachable ? 'ok' : 'down'" />
+            <span class="dot" :class="mother?.provisioning ? 'pend' : mother?.reachable ? 'ok' : 'down'" />
             <span class="mother-name">{{ mother?.hostname || '—' }}</span>
             <el-tag size="small" type="primary" effect="dark">母机</el-tag>
-            <el-tag v-if="mother" size="small" :type="mother.reachable ? 'success' : 'danger'" effect="plain">
-              {{ mother.reachable ? '在线' : '离线' }}
+            <el-tag v-if="mother?.provisioning" size="small" type="warning">纳管中…</el-tag>
+            <el-tag v-else size="small" :type="mother?.reachable ? 'success' : 'danger'" effect="plain">
+              {{ mother?.reachable ? '在线' : '离线' }}
             </el-tag>
           </div>
           <div class="toolbar">
@@ -324,23 +328,31 @@
       </template>
     </el-dialog>
 
-    <!-- 删除母机：纯台账级联删除 -->
+    <!-- 删除母机：名下有子机时禁止删除（必须先删净子机） -->
     <el-dialog v-model="motherDeleteVisible" title="删除母机" width="500">
       <el-alert type="warning" :closable="false" title="此操作不可恢复">
         <p style="margin: 0 0 4px">
           将删除母机台账记录 <b>{{ motherDeleteForm.id }}</b
           >（{{ motherDeleteForm.hostname }}）。
         </p>
-        <p v-if="motherDeleteForm.children > 0" style="margin: 0">
-          该母机名下还有 <b>{{ motherDeleteForm.children }}</b> 台子机，将随母机一并删除（级联删除）。
+        <p v-if="motherDeleteForm.children > 0" style="margin: 0; color: var(--danger-vivid)">
+          该母机名下还有 <b>{{ motherDeleteForm.children }}</b> 台子机，禁止删除。请先在详情中逐台删除子机
+          （删除时会卸载服务器上的 Agent），删净后才能删除母机。
         </p>
-        <p style="margin: 4px 0 0">
-          删除仅清理平台台账记录，不影响服务器本身；如需清理子机上的 Agent，请在删除对应子机时勾选「卸载 Agent」。
+        <p v-else style="margin: 4px 0 0">
+          删除仅清理平台台账记录，不影响服务器本身。
         </p>
       </el-alert>
       <template #footer>
         <el-button @click="motherDeleteVisible = false">取消</el-button>
-        <el-button type="danger" :loading="motherDeleting" @click="submitMotherDelete">确认删除</el-button>
+        <el-button
+          type="danger"
+          :disabled="motherDeleteForm.children > 0"
+          :loading="motherDeleting"
+          @click="submitMotherDelete"
+        >
+          {{ motherDeleteForm.children > 0 ? '存在子机，禁止删除' : '确认删除' }}
+        </el-button>
       </template>
     </el-dialog>
 
@@ -468,7 +480,7 @@
       </div>
     </el-dialog>
 
-    <!-- 删除子机：可选联动卸载服务器上的自研 Agent -->
+    <!-- 删除子机：默认联动卸载服务器上的自研 Agent（go/py）；服务器已失联可跳过 -->
     <el-dialog v-model="childDeleteVisible" title="删除子机" width="500">
       <el-alert type="warning" :closable="false" title="此操作不可恢复">
         将删除资产 {{ childDeleteForm.hostname }}（{{ childDeleteForm.id }}）的台账记录，并从监控中移除。
@@ -476,8 +488,11 @@
       <el-form label-width="100" style="margin-top: 12px">
         <el-form-item v-if="childDeleteForm.has_provision" label="联动卸载">
           <el-checkbox v-model="childDeleteForm.uninstall">
-            同时登录 {{ childDeleteForm.ip }} 卸载自研 Agent（停进程、删除安装目录与日志）
+            登录 {{ childDeleteForm.ip }} 卸载自研 Agent（停服务、删除安装目录与日志，go/py 通用）
           </el-checkbox>
+          <div v-if="!childDeleteForm.uninstall" class="uninstall-skip-note">
+            跳过卸载将遗留服务器上的 Agent 进程与文件，仅建议在服务器已下线/重装时使用
+          </div>
         </el-form-item>
         <el-form-item v-if="childDeleteForm.uninstall" label="SSH 密码" required>
           <el-input
@@ -555,7 +570,6 @@ import {
   fetchMotherOverviewById,
   fetchChildrenRealtime,
   fetchMothers,
-  probeAssets,
   provisionAsset,
   fetchAssetProvision,
   removeAsset,
@@ -564,8 +578,6 @@ import {
   updateAlertPolicy,
   updateAsset,
 } from '../api'
-
-const probing = ref(false)
 const query = reactive({ keyword: '' })
 
 const detailView = ref(false) // 总览两层：false=母机记录列表，true=某台母机内部（子机视图）
@@ -946,21 +958,8 @@ function relTime(v) {
   return `${Math.floor(h / 24)} 天前`
 }
 
-async function probeNow() {
-  probing.value = true
-  try {
-    const { data } = await probeAssets()
-    ElMessage.success(`探测完成：在线 ${data.reachable}/${data.total}`)
-    refresh()
-  } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '探测失败')
-  } finally {
-    probing.value = false
-  }
-}
-
 async function confirmDelete(row) {
-  // 母机走台账级联删除弹窗；子机走删除弹窗（可选联动卸载 agent）
+  // 母机走删除弹窗（有子机禁止删除）；子机走删除弹窗（默认联动卸载 agent）
   if (row?.kind === 'mother' || mothers.value.some((m) => m.id === row?.id)) {
     openMotherDelete(row)
     return
@@ -1036,14 +1035,14 @@ async function submitChildDelete() {
   }
 }
 
-// ===== 母机删除（纯台账级联删除，不触碰服务器） =====
+// ===== 母机删除（纯台账，不触碰服务器；名下有子机时后端 400 拒绝） =====
 const motherDeleteVisible = ref(false)
 const motherDeleting = ref(false)
 const motherDeleteForm = reactive({ id: '', hostname: '', children: 0 })
 
 function openMotherDelete(row) {
   const m = mothers.value.find((x) => x.id === row.id) || row
-  // 级联删除：母机删除时名下子机一并删除；子机被工单/维护窗口/备份任务引用时后端会 409 拒绝
+  // 删除限制：名下有子机时禁止删除（前端禁用按钮 + 后端 400 兜底）
   // 统计真实子机：排除"本机·母机"合成行（is_mother），它不是数据库资产
   const cnt = m.children_count ?? (m.id === selectedMotherId.value ? children.value.filter((c) => !c.is_mother).length : 0)
   Object.assign(motherDeleteForm, { id: m.id, hostname: m.hostname || '', children: cnt ?? 0 })
@@ -1056,8 +1055,7 @@ async function submitMotherDelete() {
   try {
     const { data } = await deleteAsset(motherDeleteForm.id)
     motherDeleteVisible.value = false
-    const n = (data.cascade_children || []).length
-    ElMessage.success(`已删除 ${motherDeleteForm.id}${n ? `，并级联删除其名下 ${n} 台子机` : ''}`)
+    ElMessage.success(`已删除 ${motherDeleteForm.id}`)
     if (wasSelected) {
       selectedMotherId.value = ''
       detailView.value = false
@@ -1477,6 +1475,18 @@ async function resetAlertPolicy() {
 .dot.down {
   background: var(--danger-vivid);
   box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.18);
+}
+/* 纳管中：本机子机 Agent 部署未完成，状态未确立 */
+.dot.pend {
+  background: var(--warn-vivid, #ff9500);
+  box-shadow: 0 0 0 3px rgba(255, 149, 0, 0.18);
+}
+/* 删除子机弹窗：跳过卸载的提示 */
+.uninstall-skip-note {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* ===== 子机分组 ===== */

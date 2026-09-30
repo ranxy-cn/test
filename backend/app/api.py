@@ -330,6 +330,8 @@ def list_mothers(db: Session = Depends(get_db)):
             if child is not None:
                 row["reachable"] = agent_status_of(child, db)["online"]
                 row["self_child_online"] = row["reachable"]
+        # 本机子机 agent 部署中：在线状态尚未确立，前端显示「纳管中」而非「离线」
+        row["provisioning"] = ((a.extra or {}).get("provision") or {}).get("status") == "running" and not self_child_id
         items.append(row)
     return {"items": items, "default_id": settings.mother_asset_id}
 
@@ -690,29 +692,30 @@ def uninstall_mother(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除母机：级联删除名下全部子机台账（纯台账操作，不触碰任何服务器）。
+    """删除母机：仅删除台账记录；名下仍有子机时拒绝（必须先删除全部子机）。
 
-    母机或任一子机被工单/维护窗口/备份任务引用时直接拒绝（提交时校验）。
+    被工单/维护窗口/备份任务引用时直接拒绝（提交时校验）。
     """
     a = db.get(Asset, mother_id)
     if a is None or a.kind != "mother":
         raise HTTPException(404, "母机不存在")
-    # 级联范围：母机连同名下全部子机一起删（子机不悬空）
-    cascade_children = _mother_children(db, mother_id)
-    _assert_refs_free(db, [a, *cascade_children])
-    cascade_ids = [c.id for c in cascade_children]
-    for cid in cascade_ids:
-        db.delete(db.get(Asset, cid))
+    children = _mother_children(db, mother_id)
+    if children:
+        raise HTTPException(
+            400,
+            f"该母机名下仍有 {len(children)} 台子机，请先删除全部子机后再删除母机",
+        )
+    _assert_refs_free(db, [a])
     db.delete(a)
     add_audit(
         db,
         ticket_id=None,
         event_type="mother_uninstall",
         actor=current.username,
-        result={"asset_id": mother_id, "status": "deleted", "cascade_children": cascade_ids},
+        result={"asset_id": mother_id, "status": "deleted", "children_blocked": False},
     )
     db.commit()
-    return {"deleted": mother_id, "cascade_children": cascade_ids}
+    return {"deleted": mother_id, "cascade_children": []}
 
 
 class GroupRenameIn(BaseModel):
@@ -884,36 +887,28 @@ def _assert_refs_free(db: Session, assets: list[Asset]) -> None:
 
 @router.delete("/api/v1/assets/{asset_id}", dependencies=[Depends(require_perm("assets:write"))])
 def delete_asset(asset_id: str, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("assets:write"))):
-    """删除资产；母机级联删除名下全部子机；母机或任一子机被引用时拒绝（不产生部分删除）。"""
+    """删除资产台账；母机名下仍有子机时拒绝（必须先删除全部子机）。"""
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    # 级联范围：母机 → 名下全部子机一起删（避免子机悬空产生脏数据）
-    cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
-    _assert_refs_free(db, [a, *cascade_children])
-    for t in [a, *cascade_children]:
-        db.delete(t)
+    if a.kind == "mother":
+        children = _mother_children(db, asset_id)
+        if children:
+            raise HTTPException(
+                400,
+                f"该母机名下仍有 {len(children)} 台子机，请先删除全部子机后再删除母机",
+            )
+    _assert_refs_free(db, [a])
+    db.delete(a)
     add_audit(
         db,
         ticket_id=None,
         event_type="asset_delete",
         actor=current.username,
-        result={
-            "asset_id": asset_id,
-            "hostname": a.hostname,
-            "cascade_children": [c.id for c in cascade_children],
-        },
+        result={"asset_id": asset_id, "hostname": a.hostname},
     )
     db.commit()
-    return {"deleted": asset_id, "cascade_children": [c.id for c in cascade_children]}
-
-
-@router.post("/api/v1/assets/probe", dependencies=[Depends(require_perm("assets:read"))])
-def probe_assets_now(db: Session = Depends(get_db)):
-    """立即对全部资产做一轮连通性探测（TCP 探活），返回本轮统计。"""
-    from app.services.probe import run_probe_cycle
-
-    return run_probe_cycle(db)
+    return {"deleted": asset_id, "cascade_children": []}
 
 
 class AssetRemoveIn(BaseModel):
@@ -930,20 +925,25 @@ def remove_asset(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除子机资产；勾选卸载时先 SSH 到来源机停止并清理自研 agent。
+    """删除子机资产；默认先 SSH 到来源机停止并清理自研 agent（go/py）。
 
-    母机走"仅删除记录"时级联删除名下全部子机（与 DELETE /assets/{id} 行为一致）。
+    母机名下仍有子机时拒绝删除（必须先删除全部子机）。
     """
     from app.services import agent_deployer
 
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    if a.kind == "mother" and body.uninstall:
-        raise HTTPException(400, "母机删除请走「删除母机」流程（纯台账级联删除，无需卸载）")
-    # 级联范围：母机 → 名下全部子机一起删，引用检查覆盖全部删除对象
-    cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
-    _assert_refs_free(db, [a, *cascade_children])
+    if a.kind == "mother":
+        children = _mother_children(db, asset_id)
+        if children:
+            raise HTTPException(
+                400,
+                f"该母机名下仍有 {len(children)} 台子机，请先删除全部子机后再删除母机",
+            )
+        if body.uninstall:
+            raise HTTPException(400, "母机删除为纯台账操作（需先删净子机），不支持卸载")
+    _assert_refs_free(db, [a])
 
     # 1) 远程卸载自研 agent（纳管来源机；密码仅本次使用）
     uninstall_logs: list[str] = []
@@ -968,8 +968,7 @@ def remove_asset(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"SSH 连接失败（{ip}:{port}）：{exc}")
 
-    for t in [a, *cascade_children]:
-        db.delete(t)
+    db.delete(a)
     add_audit(
         db,
         ticket_id=None,
@@ -980,7 +979,6 @@ def remove_asset(
             "hostname": a.hostname,
             "uninstalled": body.uninstall,
             "uninstall_logs": uninstall_logs[-8:],
-            "cascade_children": [c.id for c in cascade_children],
         },
     )
     db.commit()
@@ -988,7 +986,7 @@ def remove_asset(
         "deleted": asset_id,
         "uninstalled": body.uninstall,
         "uninstall_logs": uninstall_logs[-8:],
-        "cascade_children": [c.id for c in cascade_children],
+        "cascade_children": [],
     }
 
 

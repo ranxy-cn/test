@@ -101,7 +101,6 @@ export const provisionAsset = (payload) => http.post('/assets/provision', payloa
 export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
 // 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的自研 agent 再删台账
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })
-export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })
 // 本机系统资源实时监控（类 macOS 活动监视器）：1 秒轮询实时值 / 后台采样落库历史
 // assetId：子机=该子机 Agent 上报；母机=其本机子机曲线；留空=平台本机

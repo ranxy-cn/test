@@ -177,8 +177,8 @@ def test_mother_overview_children_and_agent_metrics(auth_token, client, db, monk
     assert r4.status_code == 404
 
 
-def test_uninstall_mother_cascades_children(auth_token, client, db):
-    """删除母机：纯台账级联（名下子机一并删），其他母机的子机保留。"""
+def test_uninstall_mother_blocks_with_children(auth_token, client, db):
+    """删除母机：名下有子机 → 400 拒绝；删净子机后才允许删除，他母机不受影响。"""
     db.add(_mk("mother-10-0-0-9", kind="mother", ip="10.0.0.9"))
     db.add(_mk("node-c1", mother_id="mother-10-0-0-9"))
     db.add(_mk("node-c2", mother_id="mother-10-0-0-9"))
@@ -187,13 +187,23 @@ def test_uninstall_mother_cascades_children(auth_token, client, db):
     db.commit()
 
     r = client.post("/api/v1/assets/mothers/mother-10-0-0-9/uninstall", headers=_h(auth_token))
-    assert r.status_code == 200
-    assert r.json()["deleted"] == "mother-10-0-0-9"
-    assert sorted(r.json()["cascade_children"]) == ["node-c1", "node-c2"]
+    assert r.status_code == 400
+    assert "2 台子机" in r.json()["detail"]
+    db.expire_all()
+    assert db.get(Asset, "mother-10-0-0-9") is not None
+    assert db.get(Asset, "node-c1") is not None
 
+    # 删净子机后母机可删
+    for cid in ("node-c1", "node-c2"):
+        assert (
+            client.post(f"/api/v1/assets/{cid}/remove", headers=_h(auth_token), json={"uninstall": False}).status_code
+            == 200
+        )
+    r2 = client.post("/api/v1/assets/mothers/mother-10-0-0-9/uninstall", headers=_h(auth_token))
+    assert r2.status_code == 200
+    assert r2.json()["deleted"] == "mother-10-0-0-9"
     db.expire_all()
     assert db.get(Asset, "mother-10-0-0-9") is None
-    assert db.get(Asset, "node-c1") is None and db.get(Asset, "node-c2") is None
     assert db.get(Asset, "node-other") is not None  # 他母机子机不受影响
 
     audit = db.query(AuditLog).filter(AuditLog.event_type == "mother_uninstall").all()
@@ -201,7 +211,7 @@ def test_uninstall_mother_cascades_children(auth_token, client, db):
 
 
 def test_uninstall_mother_404_and_ref_guard(auth_token, client, db):
-    """不存在/非母机 → 404；母机或子机被工单引用 → 409 拒绝级联删除。"""
+    """不存在/非母机 → 404；无子机母机被工单引用 → 409 拒绝删除。"""
     r = client.post("/api/v1/assets/mothers/no-such/uninstall", headers=_h(auth_token))
     assert r.status_code == 404
 
@@ -211,13 +221,12 @@ def test_uninstall_mother_404_and_ref_guard(auth_token, client, db):
     assert r2.status_code == 404
 
     db.add(_mk("mother-10-0-0-9", kind="mother", ip="10.0.0.9"))
-    db.add(_mk("node-c1", mother_id="mother-10-0-0-9"))
     db.commit()
     db.add(
         Ticket(
             number="T-1",
             idempotency_key="k-1",
-            asset_id="node-c1",  # 子机被工单引用 → 母机级联删除必须拒绝
+            asset_id="mother-10-0-0-9",  # 母机自身被工单引用 → 拒绝
             tenant_id="t1",
             title="演示工单",
             event_id="e-1",
