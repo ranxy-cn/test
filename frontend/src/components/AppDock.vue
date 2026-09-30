@@ -154,11 +154,11 @@ onBeforeUnmount(resetScales)
   gap: 8px;
   padding: 9px 14px 8px;
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.38);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.55);
   /* 不设 overflow：放大图标可超出上沿、tooltip 正常显示 */
 }
 .dock-item {

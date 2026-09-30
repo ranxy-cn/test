@@ -207,15 +207,24 @@ async function doChangePwd() {
   flex-direction: column;
 }
 
-/* ===== 超薄顶栏：透明、无边框，两角布局 ===== */
+/* ===== 超薄顶栏：固定顶部 + 毛玻璃半透明（与 Dock 同风格），滚动时锁定不动 ===== */
 .topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 95;
   height: 46px;
-  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 0 18px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
 }
 .brand-mini {
   display: inline-flex;
@@ -321,7 +330,7 @@ async function doChangePwd() {
 .main {
   flex: 1;
   min-width: 0;
-  padding: 4px 22px 100px;
+  padding: 54px 22px 100px; /* 顶部补偿固定顶栏高度 */
 }
 
 /* 路由过渡：轻微上浮淡入 */
@@ -333,12 +342,12 @@ async function doChangePwd() {
    响应式
    ============================================================ */
 @media (max-width: 1024px) {
-  .main { padding: 4px 14px 96px; }
+  .main { padding: 54px 14px 96px; }
 }
 @media (max-width: 768px) {
   .topbar { padding: 0 10px; }
   .brand-name { display: none; }
   .user-name, .role-chip { display: none; }
-  .main { padding: 2px 10px 92px; }
+  .main { padding: 52px 10px 92px; }
 }
 </style>
