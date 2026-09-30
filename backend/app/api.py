@@ -33,7 +33,16 @@ from app.routers.deps import CurrentUser, require_perm
 from app.schemas import AnomalyOut, ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.services import provision as provision_svc
 from app.services import diagnostics as diagnostics_svc
-from app.services.alert_policy import DEFAULT_POLICY, effective_policy, normalize_policy
+from app.services.alert_policy import (
+    ALERT_LEVELS,
+    DEFAULT_POLICY,
+    LEVEL_COLORS,
+    LEVEL_LABELS,
+    POLICY_TEMPLATES,
+    RULE_CATALOG,
+    effective_policy,
+    normalize_policy,
+)
 from app.services.audit import add_audit, add_event
 from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
@@ -227,9 +236,10 @@ from app.services.metrics_store import (  # noqa: E402
 
 
 def _children_agent_summary(rows: list[dict]) -> dict[str, dict[str, float | None]]:
-    """批量取子机 4 项指标最新值（来自子机 agent 上报的内存缓存，无外部 RPC）。
+    """批量取子机指标最新值（来自子机 agent 上报的内存缓存，无外部 RPC）。
 
-    返回 {asset_id: {cpu, mem, disk, load}}；无 agent 数据的子机为 None（前端显示 "-"）。
+    返回 {asset_id: {cpu, mem, disk, load, net_rx_bps, net_tx_bps}}；
+    无 agent 数据的子机为 None（前端显示 "-"）。
     """
     from app.routers.agent_api import LATEST, _LATEST_LOCK
 
@@ -244,6 +254,8 @@ def _children_agent_summary(rows: list[dict]) -> dict[str, dict[str, float | Non
                 "mem": frame.get("mem"),
                 "disk": frame.get("disk"),
                 "load": frame.get("load1", frame.get("load")),
+                "net_rx_bps": frame.get("net_rx_bps"),
+                "net_tx_bps": frame.get("net_tx_bps"),
             }
     return out
 
@@ -327,6 +339,8 @@ def list_mothers(db: Session = Depends(get_db)):
             if child is not None:
                 row["reachable"] = agent_status_of(child, db)["online"]
                 row["self_child_online"] = row["reachable"]
+        # 本机子机 agent 部署中：在线状态尚未确立，前端显示「纳管中」而非「离线」
+        row["provisioning"] = ((a.extra or {}).get("provision") or {}).get("status") == "running" and not self_child_id
         items.append(row)
     return {"items": items, "default_id": settings.mother_asset_id}
 
@@ -398,6 +412,44 @@ def mother_overview_by_id(mother_id: str, db: Session = Depends(get_db)):
     if mother is None or mother.kind != "mother":
         raise HTTPException(404, "母机不存在")
     return _overview_payload(db, mother)
+
+
+@router.get("/api/v1/assets/mothers/{mother_id}/children/realtime", dependencies=[Depends(require_perm("assets:read"))])
+def children_realtime(mother_id: str, db: Session = Depends(get_db)):
+    """母机名下全部子机的实时指标批量端点（分组卡片 1 秒轮询专用）。
+
+    数据源与监控详情实时面板同源：agent 上报内存缓存 LATEST；online 口径同列表页
+    （last_seen 未超 offline_after）。轻量设计：仅返回指标与在线态，供高频轮询。
+    """
+    from app.routers.agent_api import agent_status_of
+
+    mother = db.get(Asset, mother_id)
+    if mother is None or mother.kind != "mother":
+        raise HTTPException(404, "母机不存在")
+    default_mother_id = get_settings().mother_asset_id
+    rows = []
+    for a in db.scalars(select(Asset).where(Asset.mother_id == mother_id, Asset.kind != "mother")).all():
+        rows.append(a)
+    # 存量未归属母机的子机归默认母机（口径与 _overview_payload 一致）
+    if mother_id == default_mother_id:
+        for a in db.scalars(select(Asset).where(Asset.mother_id == "", Asset.kind != "mother")).all():
+            rows.append(a)
+    items: dict[str, dict] = {}
+    for a in rows:
+        status = agent_status_of(a, db)
+        latest = status["latest"]
+        items[a.id] = {
+            "online": bool(status["online"]),
+            "last_seen": status["last_seen"],
+            "ts": latest.get("ts"),
+            "cpu": latest.get("cpu"),
+            "mem": latest.get("mem"),
+            "disk": latest.get("disk"),
+            "load": latest.get("load1", latest.get("load")),
+            "net_rx_bps": latest.get("net_rx_bps"),
+            "net_tx_bps": latest.get("net_tx_bps"),
+        }
+    return {"items": items}
 
 
 @router.post("/api/v1/assets/mothers", dependencies=[Depends(require_perm("assets:write"))])
@@ -531,15 +583,25 @@ def create_mother(
     return row
 
 
-class AlertPolicyIn(BaseModel):
-    """母机告警策略：阈值（%）与触发窗口（分钟），平台纯存储（供本地越限判定与展示）。"""
+def _policy_meta() -> dict:
+    """策略元数据：级别定义（含颜色）、规则目录、可选模板（配置界面渲染数据源）。"""
+    return {
+        "levels": [
+            {"value": lv, "label": LEVEL_LABELS[lv], "color": LEVEL_COLORS[lv]}
+            for lv in ALERT_LEVELS
+        ],
+        "catalog": RULE_CATALOG,
+        "templates": [
+            {"id": tid, "label": tpl["label"], "policy": normalize_policy(tpl["policy"])}
+            for tid, tpl in POLICY_TEMPLATES.items()
+        ],
+    }
 
-    cpu_threshold: int = Field(ge=1, le=99)
-    cpu_window_minutes: int = Field(ge=1, le=120)
-    mem_threshold: int = Field(ge=1, le=99)
-    mem_window_minutes: int = Field(ge=1, le=120)
-    load_threshold: float = Field(ge=0.1, le=100)
-    load_window_minutes: int = Field(ge=1, le=120)
+
+@router.get("/api/v1/alert-policy/meta", dependencies=[Depends(require_perm("assets:read"))])
+def alert_policy_meta():
+    """告警策略元数据：P0-P3 级别（颜色）/ 规则目录 / 配置模板。"""
+    return _policy_meta()
 
 
 @router.get("/api/v1/assets/mothers/{mother_id}/alert-policy", dependencies=[Depends(require_perm("assets:read"))])
@@ -550,22 +612,26 @@ def get_alert_policy(mother_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "母机不存在")
     return {
         "policy": normalize_policy((mother.extra or {}).get("alert_policy")),
-        "defaults": dict(DEFAULT_POLICY),
+        "defaults": normalize_policy(None),
+        **_policy_meta(),
     }
 
 
 @router.put("/api/v1/assets/mothers/{mother_id}/alert-policy", dependencies=[Depends(require_perm("assets:write"))])
 def update_alert_policy(
     mother_id: str,
-    body: AlertPolicyIn,
+    body: dict,
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """保存母机告警策略（纯存储）。"""
+    """保存母机告警策略（纯存储，v2 秒制 + 规则目录；写审计日志）。"""
     mother = db.get(Asset, mother_id)
     if mother is None or mother.kind != "mother":
         raise HTTPException(404, "母机不存在")
-    policy = normalize_policy(body.model_dump())
+    try:
+        policy = normalize_policy(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     mother.extra = {**(mother.extra or {}), "alert_policy": policy}
     db.commit()
     add_audit(
@@ -587,24 +653,33 @@ def get_asset_alert_policy(asset_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "资产不存在")
     own = (asset.extra or {}).get("alert_policy")
     policy, source = effective_policy(db, asset)
-    return {"policy": policy, "inherited": own is None, "source": source, "defaults": dict(DEFAULT_POLICY)}
+    return {
+        "policy": policy,
+        "inherited": own is None,
+        "source": source,
+        "defaults": normalize_policy(None),
+        **_policy_meta(),
+    }
 
 
 @router.put("/api/v1/assets/{asset_id}/alert-policy", dependencies=[Depends(require_perm("assets:write"))])
 def update_asset_alert_policy(
     asset_id: str,
-    body: AlertPolicyIn,
+    body: dict,
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """保存资产告警策略：母机/子机均写自身 extra.alert_policy（子机保存后覆盖继承）。
+    """保存资产告警策略（v2 秒制 + 规则目录）：母机/子机均写自身 extra.alert_policy。
 
-    子机自有策略只影响该子机（如 186 阈值 100%/1 分钟、92 阈值 50%/1 分钟各自生效）。
+    子机自有策略只影响该子机；保存写审计日志；agent 下轮 config_refresh 拉取即生效。
     """
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(404, "资产不存在")
-    policy = normalize_policy(body.model_dump())
+    try:
+        policy = normalize_policy(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     asset.extra = {**(asset.extra or {}), "alert_policy": policy}
     db.commit()
     add_audit(
@@ -649,29 +724,30 @@ def uninstall_mother(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除母机：级联删除名下全部子机台账（纯台账操作，不触碰任何服务器）。
+    """删除母机：仅删除台账记录；名下仍有子机时拒绝（必须先删除全部子机）。
 
-    母机或任一子机被工单/维护窗口/备份任务引用时直接拒绝（提交时校验）。
+    被工单/维护窗口/备份任务引用时直接拒绝（提交时校验）。
     """
     a = db.get(Asset, mother_id)
     if a is None or a.kind != "mother":
         raise HTTPException(404, "母机不存在")
-    # 级联范围：母机连同名下全部子机一起删（子机不悬空）
-    cascade_children = _mother_children(db, mother_id)
-    _assert_refs_free(db, [a, *cascade_children])
-    cascade_ids = [c.id for c in cascade_children]
-    for cid in cascade_ids:
-        db.delete(db.get(Asset, cid))
+    children = _mother_children(db, mother_id)
+    if children:
+        raise HTTPException(
+            400,
+            f"该母机名下仍有 {len(children)} 台子机，请先删除全部子机后再删除母机",
+        )
+    _assert_refs_free(db, [a])
     db.delete(a)
     add_audit(
         db,
         ticket_id=None,
         event_type="mother_uninstall",
         actor=current.username,
-        result={"asset_id": mother_id, "status": "deleted", "cascade_children": cascade_ids},
+        result={"asset_id": mother_id, "status": "deleted", "children_blocked": False},
     )
     db.commit()
-    return {"deleted": mother_id, "cascade_children": cascade_ids}
+    return {"deleted": mother_id, "cascade_children": []}
 
 
 class GroupRenameIn(BaseModel):
@@ -809,7 +885,15 @@ def get_asset(asset_id: str, db: Session = Depends(get_db)):
     if a is None:
         raise HTTPException(404, "资产不存在")
     row = _asset_row(a)
-    row["extra"] = dict(a.extra or {})
+    extra = dict(a.extra or {})
+    # netdata 的 token 类字段脱敏后返回（zabbix 段已随栈卸载移除）
+    ncfg = dict(extra.get("netdata") or {})
+    for secret_key in ("token", "bearer_token"):
+        if ncfg.get(secret_key):
+            ncfg[secret_key] = "******"
+    if ncfg:
+        extra["netdata"] = ncfg
+    row["extra"] = extra
     row["tickets"] = db.query(Ticket).filter(Ticket.asset_id == asset_id).count()
     row["maintenance_windows"] = db.query(MaintenanceWindow).filter(MaintenanceWindow.asset_id == asset_id).count()
     row["backup_jobs"] = db.query(BackupJob).filter(BackupJob.asset_id == asset_id).count()
@@ -835,36 +919,28 @@ def _assert_refs_free(db: Session, assets: list[Asset]) -> None:
 
 @router.delete("/api/v1/assets/{asset_id}", dependencies=[Depends(require_perm("assets:write"))])
 def delete_asset(asset_id: str, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("assets:write"))):
-    """删除资产；母机级联删除名下全部子机；母机或任一子机被引用时拒绝（不产生部分删除）。"""
+    """删除资产台账；母机名下仍有子机时拒绝（必须先删除全部子机）。"""
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    # 级联范围：母机 → 名下全部子机一起删（避免子机悬空产生脏数据）
-    cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
-    _assert_refs_free(db, [a, *cascade_children])
-    for t in [a, *cascade_children]:
-        db.delete(t)
+    if a.kind == "mother":
+        children = _mother_children(db, asset_id)
+        if children:
+            raise HTTPException(
+                400,
+                f"该母机名下仍有 {len(children)} 台子机，请先删除全部子机后再删除母机",
+            )
+    _assert_refs_free(db, [a])
+    db.delete(a)
     add_audit(
         db,
         ticket_id=None,
         event_type="asset_delete",
         actor=current.username,
-        result={
-            "asset_id": asset_id,
-            "hostname": a.hostname,
-            "cascade_children": [c.id for c in cascade_children],
-        },
+        result={"asset_id": asset_id, "hostname": a.hostname},
     )
     db.commit()
-    return {"deleted": asset_id, "cascade_children": [c.id for c in cascade_children]}
-
-
-@router.post("/api/v1/assets/probe", dependencies=[Depends(require_perm("assets:read"))])
-def probe_assets_now(db: Session = Depends(get_db)):
-    """立即对全部资产做一轮连通性探测（TCP 探活），返回本轮统计。"""
-    from app.services.probe import run_probe_cycle
-
-    return run_probe_cycle(db)
+    return {"deleted": asset_id, "cascade_children": []}
 
 
 class AssetRemoveIn(BaseModel):
@@ -881,20 +957,25 @@ def remove_asset(
     current: CurrentUser = Depends(require_perm("assets:write")),
     db: Session = Depends(get_db),
 ):
-    """删除子机资产；勾选卸载时先 SSH 到来源机停止并清理自研 agent。
+    """删除子机资产；默认先 SSH 到来源机停止并清理自研 agent（go/py）。
 
-    母机走"仅删除记录"时级联删除名下全部子机（与 DELETE /assets/{id} 行为一致）。
+    母机名下仍有子机时拒绝删除（必须先删除全部子机）。
     """
     from app.services import agent_deployer
 
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    if a.kind == "mother" and body.uninstall:
-        raise HTTPException(400, "母机删除请走「删除母机」流程（纯台账级联删除，无需卸载）")
-    # 级联范围：母机 → 名下全部子机一起删，引用检查覆盖全部删除对象
-    cascade_children: list[Asset] = _mother_children(db, asset_id) if a.kind == "mother" else []
-    _assert_refs_free(db, [a, *cascade_children])
+    if a.kind == "mother":
+        children = _mother_children(db, asset_id)
+        if children:
+            raise HTTPException(
+                400,
+                f"该母机名下仍有 {len(children)} 台子机，请先删除全部子机后再删除母机",
+            )
+        if body.uninstall:
+            raise HTTPException(400, "母机删除为纯台账操作（需先删净子机），不支持卸载")
+    _assert_refs_free(db, [a])
 
     # 1) 远程卸载自研 agent（纳管来源机；密码仅本次使用）
     uninstall_logs: list[str] = []
@@ -919,8 +1000,7 @@ def remove_asset(
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"SSH 连接失败（{ip}:{port}）：{exc}")
 
-    for t in [a, *cascade_children]:
-        db.delete(t)
+    db.delete(a)
     add_audit(
         db,
         ticket_id=None,
@@ -931,7 +1011,6 @@ def remove_asset(
             "hostname": a.hostname,
             "uninstalled": body.uninstall,
             "uninstall_logs": uninstall_logs[-8:],
-            "cascade_children": [c.id for c in cascade_children],
         },
     )
     db.commit()
@@ -939,7 +1018,7 @@ def remove_asset(
         "deleted": asset_id,
         "uninstalled": body.uninstall,
         "uninstall_logs": uninstall_logs[-8:],
-        "cascade_children": [c.id for c in cascade_children],
+        "cascade_children": [],
     }
 
 
@@ -1607,6 +1686,11 @@ def _infer_scenario(trigger: str) -> str:
 
 
 SEVERITY_LABELS = {
+    "P0": "P0 严重故障",
+    "P1": "P1 重要告警",
+    "P2": "P2 一般告警",
+    "P3": "P3 提示信息",
+    # 历史（Zabbix 时代）级别值，仅兼容展示
     "disaster": "灾难",
     "high": "严重",
     "average": "较严重",

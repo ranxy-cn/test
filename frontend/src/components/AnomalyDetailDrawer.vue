@@ -179,9 +179,13 @@ import { fmtTimeCol } from '../time'
 import { TRIGGER_CN } from '../trigger-cn'
 
 const SEV_LABELS = {
+  P0: 'P0 严重故障', P1: 'P1 重要告警', P2: 'P2 一般告警', P3: 'P3 提示信息',
   disaster: '灾难', high: '严重', average: '较严重', warning: '警告', information: '提示', not_classified: '未知',
 }
-const SEV_TAGS = { disaster: 'danger', high: 'danger', average: 'warning', warning: 'warning', information: 'info', not_classified: 'info' }
+const SEV_TAGS = {
+  P0: 'danger', P1: 'warning', P2: 'warning', P3: 'info',
+  disaster: 'danger', high: 'danger', average: 'warning', warning: 'warning', information: 'info', not_classified: 'info',
+}
 
 const visible = ref(false)
 const detail = ref(null)

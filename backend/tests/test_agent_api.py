@@ -44,6 +44,40 @@ def test_report_requires_token(client, db):
     assert r.status_code == 401
 
 
+def test_report_ext_metrics_and_config_policy(client, auth_token, db):
+    """扩展指标进 ext 列；agent 配置端点下发生效告警策略（热生效通道）。"""
+    _child(db, extra={"alert_policy": {"cpu_threshold": 70, "swap_enabled": True}})
+    token = _mk_token(client, auth_token, "ch-agent-01")
+    now = utcnow().timestamp()
+    sample = {
+        "ts": now, "cpu": 12.5,
+        "swap": 85.0, "await_ms": 120.0, "oom_events": 1,
+        "procs_missing": ["nginx"], "ports_down": [8080],
+        "metrics": {"app_http_5xx_rate": 2.0, "junk": "str-value"},
+    }
+    r = client.post(
+        "/api/v1/agent/report",
+        json={"asset_id": "ch-agent-01", "samples": [sample]},
+        headers={"X-Agent-Token": token},
+    )
+    assert r.status_code == 200
+
+    row = db.query(SystemMetricSample).filter(SystemMetricSample.asset_id == "ch-agent-01").one()
+    ext = row.ext or {}
+    assert ext["swap"] == 85.0 and ext["oom_events"] == 1
+    assert ext["procs_missing"] == ["nginx"] and ext["ports_down"] == ["8080"]
+    assert ext["metrics"] == {"app_http_5xx_rate": 2.0}  # 非数值字段被过滤
+
+    # agent 配置端点：alert_policy 为生效策略（秒制 v2）
+    r = client.get("/api/v1/agent/config", params={"asset_id": "ch-agent-01"}, headers={"X-Agent-Token": token})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["config"]["report_interval"] == 5
+    assert body["alert_policy"]["cpu_threshold"] == 70
+    assert body["alert_policy"]["swap_enabled"] is True
+    assert body["alert_policy"]["swap_threshold"] == 80
+
+
 def test_report_persists_and_caches(client, auth_token, db):
     _child(db)
     token = _mk_token(client, auth_token, "ch-agent-01")

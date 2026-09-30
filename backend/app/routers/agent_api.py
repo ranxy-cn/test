@@ -28,6 +28,7 @@ from app.database import get_db
 from app.models import AppSetting, Asset, SystemMetricSample, utcnow
 from app.routers.deps import CurrentUser, require_perm
 from app.services.audit import add_audit
+from app.services.alert_policy import effective_policy
 from sqlalchemy import select
 
 router = APIRouter()
@@ -45,13 +46,45 @@ DEFAULT_AGENT_CONFIG = {
     "offline_after": 30,    # 超过该秒数无上报视为离线
 }
 
-
 # 系统级全局默认配置的 kv 键（app_settings 表）；无记录时用代码内置默认
 GLOBAL_CFG_KEY = "agent_config_default"
 
 # 数值配置项（秒/条），管理端写入时收敛到 [1, 86400]
 _INT_KEYS = ("report_interval", "collect_interval", "buffer_max", "config_refresh", "offline_after")
-_COLLECT_ITEMS = ("cpu", "mem", "disk", "load", "net")
+# 采集项白名单：基础 5 项 + v1.1 扩展项（由告警策略开关驱动是否采集）
+_COLLECT_ITEMS = (
+    "cpu", "mem", "disk", "load", "net",
+    "swap", "inode", "disk_io", "tcp", "oom", "process", "port", "net_probe", "bandwidth", "metrics",
+)
+
+# 帧内 ext 扩展字段白名单（进 SystemMetricSample.ext，供告警引擎判定）
+_EXT_NUM_KEYS = (
+    "swap", "inode", "await_ms", "tcp_tw", "tcp_total", "tcp_conn_pct",
+    "loss_pct", "latency_ms", "bw_rx_pct", "bw_tx_pct", "oom_events",
+)
+_EXT_LIST_KEYS = ("procs_missing", "ports_down")
+
+
+def _ext_of(sample: dict) -> dict | None:
+    """从上报帧提取扩展指标（白名单收敛，防注入任意数据）。"""
+    ext: dict = {}
+    for k in _EXT_NUM_KEYS:
+        v = sample.get(k)
+        if isinstance(v, (int, float)):
+            ext[k] = round(float(v), 3)
+    for k in _EXT_LIST_KEYS:
+        v = sample.get(k)
+        if isinstance(v, list):
+            ext[k] = [str(x)[:128] for x in v[:32]]
+    m = sample.get("metrics")
+    if isinstance(m, dict):
+        clean: dict = {}
+        for name, val in list(m.items())[:128]:
+            if isinstance(val, (int, float)):
+                clean[str(name)[:128]] = round(float(val), 4)
+        if clean:
+            ext["metrics"] = clean
+    return ext or None
 
 
 def _global_cfg(db: Session | None) -> dict:
@@ -82,7 +115,7 @@ def _sanitize_cfg(patch: dict) -> dict:
             except (TypeError, ValueError):
                 continue
         elif k == "collect_items":
-            v = sorted({x for x in (v or []) if x in _COLLECT_ITEMS}, key=_COLLECT_ITEMS.index) or list(_COLLECT_ITEMS)
+            v = sorted({x for x in (v or []) if x in _COLLECT_ITEMS}, key=_COLLECT_ITEMS.index) or list(DEFAULT_AGENT_CONFIG["collect_items"])
         out[k] = v
     return out
 
@@ -127,6 +160,7 @@ def agent_report(
             load1=_f(s.get("load1")),
             net_rx_bps=_f(s.get("net_rx_bps")),
             net_tx_bps=_f(s.get("net_tx_bps")),
+            ext=_ext_of(s),
             source="agent",
         )
         rows.append(row)
@@ -159,9 +193,11 @@ def agent_config(
     db: Session = Depends(get_db),
     x_agent_token: str = Header(default=""),
 ):
+    """子机拉取采集/推送配置 + 生效告警策略（配置变更无需重启 agent 即生效）。"""
     _get_asset_by_token(db, asset_id, x_agent_token)
     asset = db.get(Asset, asset_id)
-    return {"config": agent_cfg_of(asset, db)}
+    policy, _source = effective_policy(db, asset)
+    return {"config": agent_cfg_of(asset, db), "alert_policy": policy}
 
 
 def agent_status_of(asset: Asset, db: Session | None = None) -> dict:

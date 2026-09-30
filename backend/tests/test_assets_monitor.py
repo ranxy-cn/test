@@ -75,9 +75,10 @@ def test_probe_via_api_and_list_fields(client, db):
         db.add(_mk("ast-api-01", ip="127.0.0.1", port=port))
         db.commit()
 
-        r = client.post("/api/v1/assets/probe")
-        assert r.status_code == 200
-        body = r.json()
+        # 手动探查入口已移除；后台探活周期直接调用服务验证
+        from app.services.probe import run_probe_cycle
+
+        body = run_probe_cycle(db)
         assert body["total"] >= 1 and "reachable" in body
 
         row = client.get("/api/v1/assets", params={"keyword": "ast-api-01"}).json()["items"][0]

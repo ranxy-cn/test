@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     chat_timeout_seconds: float = 60.0
     knowledge_max_upload_bytes: int = 20 * 1024 * 1024
 
+    # Netdata 只读采集：默认从资产登记的 IP 访问 Agent 的 19999 端口。
+    # 单资产可在 extra.netdata 中覆盖 url/port/enabled。
+    netdata_enabled: bool = True
+    netdata_port: int = 19999
+    netdata_timeout_seconds: float = 2.5
+    netdata_max_assets: int = 12
+
     policy_version: str = "policy-v1.0.0"
     mock_model_version: str = "mock-diagnoser-v1"
     tenant_id: str = "tenant-default"

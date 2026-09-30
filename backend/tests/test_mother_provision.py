@@ -236,3 +236,77 @@ def test_history_of_bare_mother_is_empty(auth_token, client, db):
         headers=_h(auth_token),
     ).json()
     assert hist["count"] == 0 and hist["items"] == []
+
+
+def test_children_realtime_batch(auth_token, client, db, monkeypatch):
+    """分组卡片批量实时端点：返回母机名下全部子机的指标（含网络）与在线态。"""
+    from app.routers import agent_api
+
+    db.add(
+        Asset(
+            id="mother-10-12-12-12",
+            hostname="m-rt",
+            kind="mother",
+            app="",
+            role="app",
+            env="prod",
+            owner="",
+            tenant_id="t1",
+        )
+    )
+    db.add(
+        Asset(
+            id="node-10-12-12-12-22",
+            hostname="10.12.12.12:22",
+            kind="child",
+            app="",
+            role="other",
+            env="prod",
+            owner="",
+            mother_id="mother-10-12-12-12",
+            tenant_id="t1",
+            extra={"agent_token": "t", "agent": {"last_seen": utcnow().isoformat()}},
+        )
+    )
+    db.add(
+        Asset(
+            id="node-10-12-12-99-22",
+            hostname="10.12.12.99:22",
+            kind="child",
+            app="",
+            role="other",
+            env="prod",
+            owner="",
+            mother_id="mother-other",
+            tenant_id="t1",
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(
+        agent_api,
+        "LATEST",
+        {
+            "node-10-12-12-12-22": {
+                "cpu": 11.1,
+                "mem": 22.2,
+                "disk": 33.3,
+                "load1": 0.5,
+                "net_rx_bps": 2048.0,
+                "net_tx_bps": 1024.0,
+                "ts": utcnow().isoformat(),
+            }
+        },
+    )
+
+    r = client.get("/api/v1/assets/mothers/mother-10-12-12-12/children/realtime", headers=_h(auth_token))
+    assert r.status_code == 200
+    items = r.json()["items"]
+    # 只含该母机名下子机；不属于该母机的子机不出现
+    assert set(items) == {"node-10-12-12-12-22"}
+    m = items["node-10-12-12-12-22"]
+    assert m["cpu"] == 11.1 and m["load"] == 0.5
+    assert m["net_rx_bps"] == 2048.0 and m["net_tx_bps"] == 1024.0
+    assert m["online"] is True
+
+    r404 = client.get("/api/v1/assets/mothers/no-such/children/realtime", headers=_h(auth_token))
+    assert r404.status_code == 404

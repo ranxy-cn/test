@@ -43,7 +43,7 @@ const router = createRouter({
     { path: '/users', component: UsersView, meta: { perm: 'users:manage' } },
     { path: '/roles', component: RolesView, meta: { perm: 'roles:manage' } },
     { path: '/menus', component: MenusView, meta: { perm: 'menus:manage' } },
-    { path: '/:pathMatch(.*)*', redirect: '/anomalies' },
+    { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
   ],
 })
 
@@ -57,7 +57,7 @@ setUnauthorizedHandler(() => {
 
 router.beforeEach(async (to) => {
   if (to.meta.public) {
-    if (auth.isLoggedIn()) return { path: '/anomalies' }
+    if (auth.isLoggedIn()) return { path: '/dashboard' }
     return true
   }
   if (!auth.isLoggedIn()) {

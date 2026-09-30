@@ -451,6 +451,9 @@ class SystemMetricSample(Base):
     # 网络速率（字节/秒）
     net_rx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
     net_tx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 扩展指标（agent v1.1+）：swap/inode/await_ms/tcp_tw/tcp_conn_pct/loss_pct/
+    # latency_ms/bw_rx_pct/bw_tx_pct/oom_events/procs_missing/ports_down/metrics
+    ext: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(16), default="real")
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 

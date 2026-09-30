@@ -280,6 +280,10 @@ const stressPrinciple = computed(() => {
 })
 
 const SEV_LABELS = {
+  P0: 'P0 严重故障',
+  P1: 'P1 重要告警',
+  P2: 'P2 一般告警',
+  P3: 'P3 提示信息',
   disaster: '灾难',
   high: '严重',
   average: '较严重',
@@ -288,6 +292,10 @@ const SEV_LABELS = {
   not_classified: '未知',
 }
 const SEV_TAGS = {
+  P0: 'danger',
+  P1: 'warning',
+  P2: 'warning',
+  P3: 'info',
   disaster: 'danger',
   high: 'danger',
   average: 'warning',
@@ -295,7 +303,12 @@ const SEV_TAGS = {
   information: 'info',
   not_classified: 'info',
 }
+// P0-P3 与后端 LEVEL_COLORS 一致；历史 Zabbix 风格 key 保留兼容
 const SEV_COLORS = {
+  P0: '#ff3b30',
+  P1: '#ff9500',
+  P2: '#f7ba2a',
+  P3: '#909399',
   disaster: '#d70015',
   high: '#ff3b30',
   average: '#ff9500',

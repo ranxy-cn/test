@@ -76,6 +76,8 @@ export const fetchMotherOverview = () => http.get('/assets/mother')
 export const fetchMothers = () => http.get('/assets/mothers')
 export const fetchMotherGroups = (id) => http.get(`/assets/mothers/${id}/groups`)
 export const fetchMotherOverviewById = (id) => http.get(`/assets/mothers/${id}/overview`)
+// 母机名下全部子机实时指标批量端点（分组卡片 1 秒轮询；与监控详情实时面板同源）
+export const fetchChildrenRealtime = (id) => http.get(`/assets/mothers/${id}/children/realtime`)
 export const createMother = (payload) => http.post('/assets/mothers', payload)
 export const renameGroup = (motherId, name, newName) =>
   http.post(`/assets/mothers/${motherId}/groups/rename`, { name, new_name: newName })
@@ -99,7 +101,6 @@ export const provisionAsset = (payload) => http.post('/assets/provision', payloa
 export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
 // 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的自研 agent 再删台账
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })
-export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })
 // 本机系统资源实时监控（类 macOS 活动监视器）：1 秒轮询实时值 / 后台采样落库历史
 // assetId：子机=该子机 Agent 上报；母机=其本机子机曲线；留空=平台本机
@@ -144,6 +145,7 @@ export const fetchStressTargets = () => http.get('/tools/stress-targets')
 export const fetchRemoteStress = () => http.get('/tools/remote-stress')
 export const stopRemoteStress = (assetId) => http.post('/tools/stress/stop', { asset_id: assetId })
 export const fetchDashboardOverview = () => http.get('/dashboard/overview')
+export const fetchDashboardNetdata = (params) => http.get('/dashboard/netdata', { params: params || { limit: 12, minutes: 5 } })
 export const fetchKnowledgeDocuments = () => http.get('/knowledge/documents')
 export const searchKnowledge = (q, limit = 6) => http.get('/knowledge/search', { params: { q, limit } })
 export const uploadKnowledgeDocument = (file) => {
