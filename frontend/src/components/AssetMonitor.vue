@@ -9,24 +9,11 @@
     @closed="onClosed"
   >
     <div v-if="asset" class="monitor">
-      <!-- 健康总览 -->
-      <el-row :gutter="12">
-        <el-col v-for="card in healthCards" :key="card.label" :xs="12" :sm="6">
-          <el-card shadow="never" class="metric-card">
-            <div class="metric-label">
-              {{ card.label }}
-              <el-tooltip :content="card.tip" placement="top"><el-icon><QuestionFilled /></el-icon></el-tooltip>
-            </div>
-            <div class="metric-value" :class="card.cls">
-              {{ card.value }}<span class="metric-unit">{{ card.unit }}</span>
-            </div>
-            <el-progress :percentage="card.pct" :color="card.color" :show-text="false" :stroke-width="6" />
-          </el-card>
-        </el-col>
-      </el-row>
-
-      <!-- 实时系统监控（类 macOS 活动监视器）：顶部选项卡切换指标视图，1 秒/次刷新 -->
-      <el-card shadow="never" class="block">
+      <!-- 顶部导航栏：实时监控 / 进程巡检 / 服务器详情 / 异常告警 / 纳管记录（互斥切换，杜绝重复展示） -->
+      <el-tabs v-model="navTab" class="nav-tabs">
+        <el-tab-pane name="live">
+          <template #label>实时监控</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
             <span>
@@ -59,49 +46,13 @@
         </div>
 
         <div ref="liveChartEl" class="chart live-chart" />
-      </el-card>
-
-      <!-- 历史全揽：落库数据（最长 2 个月）时间范围切换 + 五指标小图网格 -->
-      <el-dialog
-        v-model="ovVisible"
-        title="历史全揽 · 系统资源落库数据"
-        width="94%"
-        top="4vh"
-        append-to-body
-        destroy-on-close
-      >
-        <div class="row-between ov-toolbar">
-          <el-radio-group v-model="ovRange" size="small" @change="loadOverview">
-            <el-radio-button v-for="r in OV_RANGES" :key="r.m" :value="r.m">{{ r.label }}</el-radio-button>
-          </el-radio-group>
-          <span class="live-src">
-            落库粒度 5 秒 · {{ ovBucketNote }} · 保留 60 天（过期自动清理）
-          </span>
-        </div>
-
-        <div class="ov-summary">
-          <div v-for="s in ovSummary" :key="s.label" class="ov-kpi">
-            <div class="ov-kpi-label">{{ s.label }}</div>
-            <div class="ov-kpi-value" :style="{ color: s.color }">
-              {{ s.value }}<span v-if="s.unit" class="ov-kpi-unit">{{ s.unit }}</span>
-            </div>
-            <div class="ov-kpi-sub">峰值 {{ s.max }}</div>
-          </div>
-        </div>
-
-        <div class="ov-grid">
-          <div v-for="c in OV_DEFS" :key="c.key" class="ov-cell">
-            <div class="ov-cell-title">
-              <span :style="{ color: c.color }">■</span>
-              {{ c.name }}<span v-if="ovBucketNote" class="ov-cell-gran">（{{ ovBucketNote }}）</span>
-            </div>
-            <div :ref="(el) => setOvEl(c.key, el)" class="ov-chart" />
-          </div>
-        </div>
-      </el-dialog>
+          </el-card>
+        </el-tab-pane>
 
       <!-- 服务器详情：SSH 全景采集（系统 / 硬件 / 内存 / 磁盘 / 网络 / 进程） -->
-      <el-card shadow="never" class="block">
+      <el-tab-pane name="sysinfo" lazy>
+          <template #label>服务器详情</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
             <span>
@@ -126,6 +77,7 @@
           show-icon
           class="inspect-alert"
         />
+        <div v-else-if="!sysinfo" v-loading="sysinfoLoading" style="min-height: 180px" />
 
         <template v-if="sysinfo">
           <el-tabs v-model="detailTab">
@@ -286,10 +238,13 @@
             </el-tab-pane>
           </el-tabs>
         </template>
-      </el-card>
+          </el-card>
+        </el-tab-pane>
 
       <!-- 异常告警：该资产名下的全部异常/恢复记录（与异常警告页同源，逐条展示） -->
-      <el-card shadow="never" class="block">
+      <el-tab-pane name="alerts">
+          <template #label>异常告警{{ anomalyTotal ? `（${anomalyTotal}）` : '' }}</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
             <span>
@@ -336,20 +291,22 @@
             @current-change="onAnomalyPage"
           />
         </div>
-      </el-card>
-      <AnomalyDetailDrawer ref="anomalyDrawer" />
+          </el-card>
+        </el-tab-pane>
 
-      <!-- 实时巡检 -->
-      <el-card shadow="never" class="block">
+      <!-- 实时巡检（类似 top）：免密 SSH 进程排行，仅本页签激活时采集，不再重复展示性能指标 -->
+      <el-tab-pane name="inspect">
+          <template #label>进程巡检</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
-            <span>实时巡检（类似 top）
-              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）+ Agent 指标卡/趋势图（10s 刷新）" placement="top">
+            <span>进程巡检
+              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）" placement="top">
                 <el-icon><QuestionFilled /></el-icon>
               </el-tooltip>
             </span>
             <div class="row-gap">
-              <el-switch v-model="autoRefresh" active-text="自动刷新（巡检 3s · 图表 10s）" />
+              <el-switch v-model="autoRefresh" active-text="自动刷新（3s）" />
               <el-button size="small" :loading="inspecting" @click="runInspect">立即刷新</el-button>
             </div>
           </div>
@@ -365,13 +322,6 @@
         />
 
         <template v-if="snapshot">
-          <el-row :gutter="12" class="summary">
-            <el-col :span="6"><el-statistic title="负载 (1/5/15min)" :value="loadText" /></el-col>
-            <el-col :span="6"><el-statistic title="内存已用" :value="memText" /></el-col>
-            <el-col :span="6"><el-statistic title="根分区使用" :value="diskText" /></el-col>
-            <el-col :span="6"><el-statistic title="运行时长" :value="uptimeText" /></el-col>
-          </el-row>
-
           <el-tabs v-model="topTab" class="top-tabs">
             <el-tab-pane label="CPU 占用排行" name="cpu" />
             <el-tab-pane label="内存占用排行" name="mem" />
@@ -390,10 +340,13 @@
           </el-table>
         </template>
         <el-empty v-else-if="!inspecting && !inspectError" description="正在采集…" :image-size="60" />
-      </el-card>
+          </el-card>
+        </el-tab-pane>
 
       <!-- 纳管记录 -->
-      <el-card v-if="asset?.extra?.provision" shadow="never" class="block">
+      <el-tab-pane v-if="asset?.extra?.provision" name="prov">
+          <template #label>纳管记录</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>纳管记录</template>
         <el-descriptions :column="3" border size="small">
           <el-descriptions-item label="状态">
@@ -418,7 +371,49 @@
           :model-value="(asset.extra.provision.logs || []).join('\n')"
           class="log-box"
         />
-      </el-card>
+          </el-card>
+        </el-tab-pane>
+      </el-tabs>
+
+      <!-- 历史全揽：落库数据（最长 2 个月）时间范围切换 + 五指标小图网格 -->
+      <el-dialog
+        v-model="ovVisible"
+        title="历史全揽 · 系统资源落库数据"
+        width="94%"
+        top="4vh"
+        append-to-body
+        destroy-on-close
+      >
+        <div class="row-between ov-toolbar">
+          <el-radio-group v-model="ovRange" size="small" @change="loadOverview">
+            <el-radio-button v-for="r in OV_RANGES" :key="r.m" :value="r.m">{{ r.label }}</el-radio-button>
+          </el-radio-group>
+          <span class="live-src">
+            落库粒度 5 秒 · {{ ovBucketNote }} · 保留 60 天（过期自动清理）
+          </span>
+        </div>
+
+        <div class="ov-summary">
+          <div v-for="s in ovSummary" :key="s.label" class="ov-kpi">
+            <div class="ov-kpi-label">{{ s.label }}</div>
+            <div class="ov-kpi-value" :style="{ color: s.color }">
+              {{ s.value }}<span v-if="s.unit" class="ov-kpi-unit">{{ s.unit }}</span>
+            </div>
+            <div class="ov-kpi-sub">峰值 {{ s.max }}</div>
+          </div>
+        </div>
+
+        <div class="ov-grid">
+          <div v-for="c in OV_DEFS" :key="c.key" class="ov-cell">
+            <div class="ov-cell-title">
+              <span :style="{ color: c.color }">■</span>
+              {{ c.name }}<span v-if="ovBucketNote" class="ov-cell-gran">（{{ ovBucketNote }}）</span>
+            </div>
+            <div :ref="(el) => setOvEl(c.key, el)" class="ov-chart" />
+          </div>
+        </div>
+      </el-dialog>
+      <AnomalyDetailDrawer ref="anomalyDrawer" />
     </div>
   </el-dialog>
 </template>
@@ -438,6 +433,8 @@ const props = defineProps({
 defineEmits(['update:modelValue'])
 
 const asset = ref(null)
+// ===== 顶部导航栏：实时监控 / 进程巡检 / 服务器详情 / 异常告警 / 纳管记录 =====
+const navTab = ref('live')
 // ===== 实时系统监控（类 macOS 活动监视器）=====
 const LIVE_TABS = [
   { key: 'cpu', name: 'CPU', color: '#0a84ff', pct: true },
@@ -528,53 +525,10 @@ const title = computed(() => (asset.value ? `资产监控 · ${asset.value.id}�
 
 const fmtNum = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(2))
 
-const healthCards = computed(() => {
-  const l = live.value || {}
-  const pct = (v) => (v == null ? null : Math.max(0, Math.min(100, v)))
-  const color = (v) => (v == null ? '#d2d2d7' : v >= 90 ? '#ff3b30' : v >= 75 ? '#ff9500' : '#34c759')
-  const items = [
-    { key: 'cpu', label: 'CPU 使用率', unit: '%', tip: '整机 CPU 使用率（/proc/stat 实时计算）' },
-    { key: 'mem', label: '内存使用率', unit: '%', tip: '物理内存已用百分比（/proc/meminfo）' },
-    { key: 'disk', label: '磁盘使用率', unit: '%', tip: '根分区已用百分比' },
-    { key: 'load1', label: '负载 load1', unit: '', tip: '1 分钟平均负载，超过 CPU 核数说明过载', raw: true },
-  ]
-  return items.map((it) => {
-    const v = l[it.key]
-    const show = v == null ? '—' : it.raw ? fmtNum(v) : `${fmtNum(v)}`
-    const p = it.raw ? null : pct(v)
-    return {
-      label: it.label,
-      tip: it.tip,
-      unit: it.unit,
-      value: show,
-      pct: p ?? 0,
-      color: color(v),
-      cls: v != null && v >= 90 ? 'danger' : v != null && v >= 75 ? 'warn' : '',
-    }
-  })
-})
-
 const loadText = computed(() => {
   const ld = snapshot.value?.load
   if (!ld || ld.load1 == null) return '—'
   return `${fmtNum(ld.load1)} / ${fmtNum(ld.load5)} / ${fmtNum(ld.load15)}`
-})
-
-const memText = computed(() => {
-  const m = snapshot.value?.mem
-  if (!m || m.total_mb == null) return '—'
-  return `${m.used_mb ?? '—'} / ${m.total_mb} MB`
-})
-
-const diskText = computed(() => (snapshot.value?.disk?.pct != null ? `${fmtNum(snapshot.value.disk.pct)}%` : '—'))
-
-const uptimeText = computed(() => {
-  const s = snapshot.value?.uptime_seconds
-  if (!s) return '—'
-  const d = Math.floor(s / 86400)
-  const h = Math.floor((s % 86400) / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  return d > 0 ? `${d} 天 ${h} 时` : h > 0 ? `${h} 时 ${m} 分` : `${m} 分`
 })
 
 const topRows = computed(() => {
@@ -661,6 +615,7 @@ function reset() {
   anomalyPage.value = 1
   live.value = {}
   liveTab.value = 'cpu'
+  navTab.value = 'live'
   for (const k of Object.keys(liveBufs)) liveBufs[k] = []
   stopAuto()
 }
@@ -693,12 +648,25 @@ async function loadAll() {
     const { data } = await fetchAsset(props.assetId)
     asset.value = data
   } finally {
-    // 打开弹窗即开始免密巡检 + 自动刷新
-    runInspect()
+    loadAnomalies()
   }
-  loadSysinfo()
-  loadAnomalies()
 }
+
+// 导航切换：按需采集（进程巡检/服务器详情为 SSH 操作，只在首次进入时触发，切走即停）
+watch(navTab, (tab, prev) => {
+  if (tab === 'inspect') {
+    if (!snapshot.value && !inspecting.value) runInspect()
+    ensureInspectTimer()
+  } else if (prev === 'inspect') {
+    stopAuto() // 离开巡检页签停止 3s 轮询，避免后台空耗 SSH
+  }
+  if (tab === 'sysinfo' && !sysinfo.value && !sysinfoLoading.value && !sysinfoError.value) {
+    loadSysinfo()
+  }
+  if (tab === 'live') {
+    nextTick(() => liveChart && liveChart.resize())
+  }
+})
 
 // ===== 实时监控：1 秒/次读 /proc 快照，滑动窗口渲染（自打开起累积，不回填历史） =====
 
@@ -1047,14 +1015,18 @@ function stopAuto() {
   }
 }
 
-watch(autoRefresh, (on) => {
+// 进程巡检自动刷新定时器：仅在巡检页签激活时真正采集，其他页签下空转不跑 SSH
+function ensureInspectTimer() {
   stopAuto()
-  if (on) {
+  if (autoRefresh.value) {
     inspectTimer = setInterval(() => {
-      if (!inspecting.value) runInspect()
+      if (navTab.value !== 'inspect' || inspecting.value) return
+      runInspect()
     }, 3000)
   }
-})
+}
+
+watch(autoRefresh, (on) => (on ? ensureInspectTimer() : stopAuto()))
 </script>
 
 <style scoped>
@@ -1062,35 +1034,18 @@ watch(autoRefresh, (on) => {
   max-width: 1280px;
   margin: 0 auto;
 }
-.metric-card {
-  border-radius: var(--r-lg);
+/* 顶部导航栏：各功能区域互斥切换 */
+.nav-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
 }
-.metric-card :deep(.el-card__body) {
-  padding: 14px 18px;
+.nav-tabs :deep(.el-tabs__item) {
+  font-size: 15px;
 }
-.metric-label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 13px;
+.nav-tabs :deep(.el-tabs__content) {
+  overflow: visible;
 }
-.metric-value {
-  font-size: 28px;
-  font-weight: 600;
-  margin: 4px 0 8px;
-  font-variant-numeric: tabular-nums;
-}
-.metric-value .metric-unit {
-  font-size: 13px;
-  color: var(--muted);
-  margin-left: 2px;
-}
-.metric-value.danger {
-  color: var(--danger);
-}
-.metric-value.warn {
-  color: var(--warn);
+.pane-card {
+  border-radius: 8px;
 }
 .block {
   margin-top: 12px;
@@ -1111,9 +1066,6 @@ watch(autoRefresh, (on) => {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-.summary {
-  margin-bottom: 8px;
 }
 .top-tabs {
   margin-top: 8px;

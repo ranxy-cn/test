@@ -227,9 +227,10 @@ from app.services.metrics_store import (  # noqa: E402
 
 
 def _children_agent_summary(rows: list[dict]) -> dict[str, dict[str, float | None]]:
-    """批量取子机 4 项指标最新值（来自子机 agent 上报的内存缓存，无外部 RPC）。
+    """批量取子机指标最新值（来自子机 agent 上报的内存缓存，无外部 RPC）。
 
-    返回 {asset_id: {cpu, mem, disk, load}}；无 agent 数据的子机为 None（前端显示 "-"）。
+    返回 {asset_id: {cpu, mem, disk, load, net_rx_bps, net_tx_bps}}；
+    无 agent 数据的子机为 None（前端显示 "-"）。
     """
     from app.routers.agent_api import LATEST, _LATEST_LOCK
 
@@ -244,6 +245,8 @@ def _children_agent_summary(rows: list[dict]) -> dict[str, dict[str, float | Non
                 "mem": frame.get("mem"),
                 "disk": frame.get("disk"),
                 "load": frame.get("load1", frame.get("load")),
+                "net_rx_bps": frame.get("net_rx_bps"),
+                "net_tx_bps": frame.get("net_tx_bps"),
             }
     return out
 
@@ -398,6 +401,44 @@ def mother_overview_by_id(mother_id: str, db: Session = Depends(get_db)):
     if mother is None or mother.kind != "mother":
         raise HTTPException(404, "母机不存在")
     return _overview_payload(db, mother)
+
+
+@router.get("/api/v1/assets/mothers/{mother_id}/children/realtime", dependencies=[Depends(require_perm("assets:read"))])
+def children_realtime(mother_id: str, db: Session = Depends(get_db)):
+    """母机名下全部子机的实时指标批量端点（分组卡片 1 秒轮询专用）。
+
+    数据源与监控详情实时面板同源：agent 上报内存缓存 LATEST；online 口径同列表页
+    （last_seen 未超 offline_after）。轻量设计：仅返回指标与在线态，供高频轮询。
+    """
+    from app.routers.agent_api import agent_status_of
+
+    mother = db.get(Asset, mother_id)
+    if mother is None or mother.kind != "mother":
+        raise HTTPException(404, "母机不存在")
+    default_mother_id = get_settings().mother_asset_id
+    rows = []
+    for a in db.scalars(select(Asset).where(Asset.mother_id == mother_id, Asset.kind != "mother")).all():
+        rows.append(a)
+    # 存量未归属母机的子机归默认母机（口径与 _overview_payload 一致）
+    if mother_id == default_mother_id:
+        for a in db.scalars(select(Asset).where(Asset.mother_id == "", Asset.kind != "mother")).all():
+            rows.append(a)
+    items: dict[str, dict] = {}
+    for a in rows:
+        status = agent_status_of(a, db)
+        latest = status["latest"]
+        items[a.id] = {
+            "online": bool(status["online"]),
+            "last_seen": status["last_seen"],
+            "ts": latest.get("ts"),
+            "cpu": latest.get("cpu"),
+            "mem": latest.get("mem"),
+            "disk": latest.get("disk"),
+            "load": latest.get("load1", latest.get("load")),
+            "net_rx_bps": latest.get("net_rx_bps"),
+            "net_tx_bps": latest.get("net_tx_bps"),
+        }
+    return {"items": items}
 
 
 @router.post("/api/v1/assets/mothers", dependencies=[Depends(require_perm("assets:write"))])

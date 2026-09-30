@@ -116,8 +116,8 @@
       <template v-if="detailView && mothers.length">
         <div class="overview-toolbar">
           <span class="section-title">已接入子机</span>
-          <span class="sync-hint" title="卡片 CPU/内存/磁盘/负载 每 10 秒自动拉取 Agent 最新上报值">
-            指标每 10 秒自动同步<template v-if="lastSyncAt"> · 最后 {{ lastSyncAt }}</template>
+          <span class="sync-hint" title="卡片 CPU/内存/磁盘/负载/网络 每 1 秒拉取 Agent 最新帧，与监控详情实时面板同源同频">
+            指标 1 秒/次实时同步<template v-if="lastSyncAt"> · 最后 {{ lastSyncAt }}</template>
           </span>
           <div class="children-toolbar">
             <el-button size="small" :loading="motherLoading" title="立即拉取最新指标" @click="loadOverview">
@@ -233,6 +233,8 @@
                     <div class="nm-l">{{ k.label }}</div>
                   </div>
                 </div>
+                <!-- 网络实时速率：与资产监控页同口径（↓ 下载 / ↑ 上传，B/s→KB/s→MB/s） -->
+                <div class="nm-net" v-html="netCell(c)"></div>
                 <div class="node-foot">
                   <span>{{ c.owner || '未指定负责人' }}</span>
                   <span :class="{ stale: !c.reachable }">{{ relTime(c.last_seen_at) }}</span>
@@ -258,11 +260,12 @@
     <!-- ===== 详情 / 监控大弹窗 ===== -->
     <AssetMonitor v-model="monitorVisible" :asset-id="monitorId" />
 
-    <!-- 添加母机：纯业务登记（不触碰目标服务器） -->
+    <!-- 添加母机：SSH 验证 + 自动纳管本机子机 -->
     <el-dialog v-model="addMotherVisible" title="添加母机" width="560">
       <el-alert type="info" :closable="false" class="db-note">
-        母机为纯业务登记：仅记录台账信息作为子机归属节点，不会登录或改动目标服务器。
-        子机自研 Agent 上报的数据按归属母机汇聚展示。
+        提交时将验证 SSH 连通性（用户名 / 密码，密码仅本次验证与部署使用，不落库），
+        验证失败不会创建；成功后自动纳管一台「本机子机」并部署自研 Agent，
+        母机的在线状态与监控数据均来自该子机的真实上报。
       </el-alert>
       <el-form label-width="110" style="margin-top: 12px">
         <el-form-item required label="主机名">
@@ -273,6 +276,18 @@
         </el-form-item>
         <el-form-item label="SSH 端口">
           <el-input-number v-model="motherForm.ssh_port" :min="1" :max="65535" />
+        </el-form-item>
+        <el-form-item label="用户名">
+          <el-input v-model="motherForm.username" style="width: 160px" />
+        </el-form-item>
+        <el-form-item label="SSH 密码" required>
+          <el-input
+            v-model="motherForm.password"
+            type="password"
+            show-password
+            placeholder="仅本次验证与部署使用，不落库"
+            style="width: 240px"
+          />
         </el-form-item>
         <el-form-item label="环境">
           <el-select v-model="motherForm.env" style="width: 200px">
@@ -300,8 +315,12 @@
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button :loading="sshTesting === 'mother'" @click="runSshTest('mother')">
+          <el-icon style="margin-right: 4px"><Connection /></el-icon>
+          测试连接
+        </el-button>
         <el-button @click="addMotherVisible = false">取消</el-button>
-        <el-button type="primary" :loading="addingMother" @click="submitMother">登记母机</el-button>
+        <el-button type="primary" :loading="addingMother" @click="submitMother">创建母机</el-button>
       </template>
     </el-dialog>
 
@@ -374,6 +393,10 @@
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button :loading="sshTesting === 'child'" @click="runSshTest('child')">
+          <el-icon style="margin-right: 4px"><Connection /></el-icon>
+          测试连接
+        </el-button>
         <el-button @click="addChildVisible = false">取消</el-button>
         <el-button type="primary" :loading="childProvisioning" @click="submitAddChild">开始纳管</el-button>
       </template>
@@ -520,7 +543,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell } from '@element-plus/icons-vue'
+import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection } from '@element-plus/icons-vue'
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
 import {
@@ -530,6 +553,7 @@ import {
   fetchAlertPolicy,
   fetchMotherOverview,
   fetchMotherOverviewById,
+  fetchChildrenRealtime,
   fetchMothers,
   probeAssets,
   provisionAsset,
@@ -638,16 +662,41 @@ async function runSshTest(target) {
 }
 
 let overviewTimer = null
+let realtimeTimer = null
 onMounted(() => {
   refresh()
-  // 子机卡片指标（CPU/内存等）准实时：10s 轮询 overview（Agent 最新上报值）
+  // 全量 overview 低频轮询：分组统计 / 告警徽标 / 归属关系（10s）
   overviewTimer = setInterval(() => {
     if (!motherLoading.value) loadOverview()
   }, 10000)
+  // 分组卡片实时轮询：1 秒/次批量拉 Agent 最新帧（与监控详情实时面板同源同频）
+  realtimeTimer = setInterval(loadChildrenRealtime, 1000)
 })
 onBeforeUnmount(() => {
   if (overviewTimer) clearInterval(overviewTimer)
+  if (realtimeTimer) clearInterval(realtimeTimer)
 })
+
+// 分组卡片实时刷新：仅轻量指标，在线态翻转时触发一次全量 overview 同步徽标/分组统计
+async function loadChildrenRealtime() {
+  if (document.hidden || !detailView.value || !selectedMotherId.value) return
+  try {
+    const { data } = await fetchChildrenRealtime(selectedMotherId.value)
+    const items = data.items || {}
+    let flipped = false
+    for (const c of children.value) {
+      const m = items[c.id]
+      if (!m) continue
+      c.metrics = { ...m }
+      if (c.reachable !== m.online) flipped = true
+      c.reachable = m.online
+    }
+    lastSyncAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    if (flipped) loadOverview()
+  } catch {
+    /* 单次拉取失败静默，下一秒重试 */
+  }
+}
 
 // 子机卡片指标单元格（Agent 最新上报；无数据显示 "—"）
 function nodeMetricCells(c) {
@@ -660,6 +709,26 @@ function nodeMetricCells(c) {
     { label: '磁盘', value: fmt(m.disk), unit: '%', cls: cls(m.disk) },
     { label: '负载', value: fmt(m.load), unit: '', cls: '' },
   ]
+}
+
+// 网速格式化（与 AssetMonitor 实时面板一致）：B/s → KB/s → MB/s → GB/s
+function speedText(bps) {
+  if (bps == null) return '—'
+  if (bps >= 1024 ** 3) return `${(bps / 1024 ** 3).toFixed(2)} GB/s`
+  if (bps >= 1024 ** 2) return `${(bps / 1024 ** 2).toFixed(2)} MB/s`
+  if (bps >= 1024) return `${(bps / 1024).toFixed(1)} KB/s`
+  return `${Math.round(bps)} B/s`
+}
+
+// 卡片网络行：↓ 下载 / ↑ 上传（与资产监控页网络视图同口径）；无数据返回空（CSS 隐藏）
+function netCell(c) {
+  const m = c.metrics || {}
+  if (m.net_rx_bps == null && m.net_tx_bps == null) return ''
+  return (
+    `<span style="color:#34c759">↓ ${speedText(m.net_rx_bps)}</span>` +
+    '<span class="nm-net-dot">·</span>' +
+    `<span style="color:#ff9500">↑ ${speedText(m.net_tx_bps)}</span>`
+  )
 }
 
 function openMotherDetail(m) {
@@ -1092,23 +1161,33 @@ async function submitMother() {
     ElMessage.warning('请填写主机名和服务器 IP')
     return
   }
+  if (!motherForm.password) {
+    ElMessage.warning('请填写 SSH 密码（用于验证连通性并自动纳管本机子机）')
+    return
+  }
   addingMother.value = true
   try {
     const { data: row } = await createMother({
       hostname: motherForm.hostname.trim(),
       ip: motherForm.ip.trim(),
       ssh_port: motherForm.ssh_port,
+      username: motherForm.username,
+      password: motherForm.password,
       env: motherForm.env,
       owner: motherForm.owner,
       alert_policy: { ...motherForm.alert_policy },
     })
-    ElMessage.success('母机已登记')
+    ElMessage.success(
+      row.provision_started
+        ? `母机已创建，本机子机 ${row.self_child_id} 纳管与 Agent 部署已启动（约 1 分钟）`
+        : '母机已登记',
+    )
     addMotherVisible.value = false
     // 选中刚登记的母机并进入详情
     selectedMotherId.value = row.id
     await loadOverview()
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '登记失败')
+    ElMessage.error(err.response?.data?.detail || '创建失败')
   } finally {
     addingMother.value = false
   }
@@ -1348,6 +1427,24 @@ async function resetAlertPolicy() {
 .nm-l {
   margin-top: 1px;
   font-size: 11px;
+  color: var(--muted);
+}
+/* 网络实时速率行（↓ 下载 / ↑ 上传）；无 Agent 数据时为空并隐藏 */
+.nm-net {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.nm-net:empty {
+  display: none;
+}
+.nm-net :deep(.nm-net-dot) {
   color: var(--muted);
 }
 .field-hint {

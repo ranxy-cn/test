@@ -148,7 +148,14 @@ def test_mother_overview_children_and_agent_metrics(auth_token, client, db, monk
     assert r.status_code == 200
     children = {c["id"]: c for c in r.json()["children"]}
     assert "node-legacy" in children  # 存量未归属子机归默认母机（另含 seed 演示资产）
-    assert children["node-legacy"]["metrics"] == {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load": 0.42}
+    assert children["node-legacy"]["metrics"] == {
+        "cpu": 23.46,
+        "mem": 38.8,
+        "disk": 45.1,
+        "load": 0.42,
+        "net_rx_bps": None,
+        "net_tx_bps": None,
+    }
     assert all(not i.startswith("mother-") for i in children)  # 母机自身不在子机列表
 
     # 未上报的子机 metrics=None（前端显示 "-"）；其他母机的子机不出现
@@ -225,7 +232,7 @@ def test_uninstall_mother_404_and_ref_guard(auth_token, client, db):
 
 
 def test_children_agent_summary_mapping(monkeypatch):
-    """_children_agent_summary：LATEST 命中 → 4 项指标；未命中 → 不在结果里。"""
+    """_children_agent_summary：LATEST 命中 → 指标全量（含网络，缺省 None）；未命中 → 不在结果里。"""
     import app.routers.agent_api as agent_api
     from app.api import _children_agent_summary
 
@@ -239,7 +246,18 @@ def test_children_agent_summary_mapping(monkeypatch):
     )
     rows = [{"id": "node-1"}, {"id": "node-2"}]
     out = _children_agent_summary(rows)
-    assert out == {"node-1": {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load": 0.42}}
+    assert out == {
+        "node-1": {
+            "cpu": 23.46,
+            "mem": 38.8,
+            "disk": 45.1,
+            "load": 0.42,
+            "net_rx_bps": None,
+            "net_tx_bps": None,
+        }
+    }
 
     out2 = _children_agent_summary([{"id": "node-load"}, {"id": "node-x"}])
-    assert out2 == {"node-load": {"cpu": 1.0, "mem": 2.0, "disk": 3.0, "load": 5.5}}
+    assert out2 == {
+        "node-load": {"cpu": 1.0, "mem": 2.0, "disk": 3.0, "load": 5.5, "net_rx_bps": None, "net_tx_bps": None}
+    }

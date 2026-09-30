@@ -76,6 +76,8 @@ export const fetchMotherOverview = () => http.get('/assets/mother')
 export const fetchMothers = () => http.get('/assets/mothers')
 export const fetchMotherGroups = (id) => http.get(`/assets/mothers/${id}/groups`)
 export const fetchMotherOverviewById = (id) => http.get(`/assets/mothers/${id}/overview`)
+// 母机名下全部子机实时指标批量端点（分组卡片 1 秒轮询；与监控详情实时面板同源）
+export const fetchChildrenRealtime = (id) => http.get(`/assets/mothers/${id}/children/realtime`)
 export const createMother = (payload) => http.post('/assets/mothers', payload)
 export const renameGroup = (motherId, name, newName) =>
   http.post(`/assets/mothers/${motherId}/groups/rename`, { name, new_name: newName })
