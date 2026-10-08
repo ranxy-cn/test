@@ -31,7 +31,11 @@ def _netdata_summary(snapshot: dict) -> dict:
 
 @router.get("/api/v1/dashboard/overview", dependencies=[Depends(require_perm("dashboard:read"))])
 def dashboard_overview(db: Session = Depends(get_db)):
-    assets = db.scalars(select(Asset).order_by(Asset.hostname)).all()
+    assets = db.scalars(
+        select(Asset).where(
+            (Asset.kind == "mother") | ((Asset.kind == "child") & (Asset.mother_id != ""))
+        ).order_by(Asset.hostname)
+    ).all()
     active_count = db.scalar(
         select(func.count()).select_from(AnomalyEvent).where(AnomalyEvent.status == "abnormal")
     ) or 0
