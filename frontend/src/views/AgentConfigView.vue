@@ -127,7 +127,7 @@ const form = reactive({
   collect_interval: 5,
   collect_items: [],
   buffer_max: 600,
-  config_refresh: 300,
+  config_refresh: 30,
   offline_after: 30,
 })
 

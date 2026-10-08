@@ -539,6 +539,9 @@
             <div v-for="s in sectionsOf('basic')" :key="s.key" class="policy-section">
               <div class="section-head">
                 <span class="section-title">{{ s.title }}</span>
+                <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="sectionTip(s)">
+                  <el-icon class="section-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
                 <span class="section-desc">{{ s.desc }}</span>
               </div>
               <div class="section-body">
@@ -583,6 +586,9 @@
               <div class="section-head">
                 <el-switch v-if="s.noSwitch !== true" v-model="policyForm[`${s.key}_enabled`]" />
                 <span class="section-title">{{ s.title }}</span>
+                <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="sectionTip(s)">
+                  <el-icon class="section-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
                 <span class="section-desc">{{ s.desc }}</span>
               </div>
               <div class="section-body">
@@ -627,6 +633,9 @@
               <div class="section-head">
                 <el-switch v-model="policyForm[`${s.key}_enabled`]" />
                 <span class="section-title">{{ s.title }}</span>
+                <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="sectionTip(s)">
+                  <el-icon class="section-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
                 <span class="section-desc">{{ s.desc }}</span>
               </div>
               <div class="section-body">
@@ -672,6 +681,9 @@
             <div class="scrape-box">
               <el-switch v-model="policyForm.metrics_scrape_enabled" size="small" />
               <span class="section-title">指标抓取数据源</span>
+              <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="SCRAPE_TIP">
+                <el-icon class="section-help"><QuestionFilled /></el-icon>
+              </el-tooltip>
               <el-input
                 :model-value="(policyForm.metrics_urls || []).join('\n')"
                 type="textarea"
@@ -684,7 +696,12 @@
             <el-table :data="catalogRows('app')" size="small" class="rule-table">
               <el-table-column label="规则" min-width="210">
                 <template #default="{ row }">
-                  <div class="rule-name">{{ row.name }}</div>
+                  <div class="rule-name">
+                    {{ row.name }}
+                    <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="ruleTip(row)">
+                      <el-icon class="section-help"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </div>
                   <div class="rule-metric">{{ row.metric }}</div>
                 </template>
               </el-table-column>
@@ -734,7 +751,12 @@
             <el-table :data="catalogRows('db')" size="small" class="rule-table">
               <el-table-column label="规则" min-width="210">
                 <template #default="{ row }">
-                  <div class="rule-name">{{ row.name }}</div>
+                  <div class="rule-name">
+                    {{ row.name }}
+                    <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="ruleTip(row)">
+                      <el-icon class="section-help"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </div>
                   <div class="rule-metric">{{ row.metric }}</div>
                 </template>
               </el-table-column>
@@ -804,7 +826,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection } from '@element-plus/icons-vue'
+import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection, QuestionFilled } from '@element-plus/icons-vue'
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
 import {
@@ -928,47 +950,55 @@ const POLICY_FIELDS = [
 // 策略抽屉分组配置描述（数据驱动渲染；enabled 开关/阈值/窗口/级别全部可配）
 const POLICY_SECTIONS = [
   { tab: 'basic', key: 'cpu', title: 'CPU 使用率', desc: 'CPU 使用率持续高位运行', noSwitch: true,
+    tip: '监控 CPU 使用率：持续超过阈值达到触发窗口即告警。用于发现死循环、流量激增、进程异常抢占 CPU 等导致的 CPU 打满。',
     fields: [
       { key: 'cpu_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
       { key: 'cpu_window_seconds', label: '触发窗口', unit: '秒' },
       { key: 'cpu_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'basic', key: 'mem', title: '内存使用率', desc: '内存使用率持续高位运行', noSwitch: true,
+    tip: '监控物理内存使用率：持续超过阈值达到触发窗口即告警。用于发现内存泄漏、缓存膨胀等可能演变为 OOM 的风险。',
     fields: [
       { key: 'mem_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
       { key: 'mem_window_seconds', label: '触发窗口', unit: '秒' },
       { key: 'mem_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'basic', key: 'load', title: '系统负载（load1）', desc: '1 分钟平均负载持续越限', noSwitch: true,
+    tip: '监控 1 分钟平均负载（load1）：持续超过阈值即告警。负载表示正在运行+等待 CPU 的任务数，过高说明机器已过载、任务在排队（如 4 核机器负载长期 > 4）。',
     fields: [
       { key: 'load_threshold', label: '负载阈值', min: 0.1, max: 100, step: 0.1, precision: 1 },
       { key: 'load_window_seconds', label: '触发窗口', unit: '秒' },
       { key: 'load_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'oom', title: 'OOM Kill', desc: '发生 OOM kill 事件即告警；恢复窗口内无新事件自动恢复',
+    tip: '监控内核 OOM Kill 事件：内存不足时内核会强制杀掉占用内存最大的进程（dmesg 记录 oom-killer），一旦发生立即告警；恢复窗口内无新事件则自动恢复。用于兜底发现内存耗尽导致的进程被杀。',
     fields: [
       { key: 'oom_window_seconds', label: '恢复窗口', unit: '秒' },
       { key: 'oom_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '瞬时事件默认 0：发生提醒一次，恢复后再次发生重新告警' },
     ] },
   { tab: 'sys', key: 'swap', title: 'Swap 使用率', desc: 'Swap 使用率持续越限',
+    tip: '监控 Swap 交换分区使用率：持续超过阈值即告警。Swap 被大量使用说明物理内存已不够、系统开始换页，性能明显下降（未配 Swap 的机器不会触发）。',
     fields: [
       { key: 'swap_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
       { key: 'swap_window_seconds', label: '触发窗口', unit: '秒' },
       { key: 'swap_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'inode', title: 'Inode 使用率', desc: '文件系统 inode 持续越限（耗尽前预警）',
+    tip: '监控文件系统 inode（索引节点）使用率：持续超过阈值即告警。inode 耗尽后即使磁盘空间未满也无法创建新文件，常见于海量小文件（会话文件、图片缩略图、日志碎片），属于磁盘写满前的预警。',
     fields: [
       { key: 'inode_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
       { key: 'inode_window_seconds', label: '触发窗口', unit: '秒' },
       { key: 'inode_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'disk_io', title: '磁盘 IO 延迟', desc: '磁盘 await（平均 IO 等待时间）持续过高',
+    tip: '监控磁盘 IO 延迟（await，平均每次 IO 的等待时间）：持续超过阈值即告警。用于发现磁盘写满/打满、坏盘、大量随机读写导致的系统卡顿（数据库、日志写入慢常常因此引起）。',
     fields: [
       { key: 'disk_io_threshold', label: 'await 阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
       { key: 'disk_io_window_seconds', label: '触发窗口', unit: '秒' },
       { key: 'disk_io_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'net_perf', title: '网络性能（丢包/延迟）', desc: 'agent 对探测目标 TCP 拨测，丢包率或延迟持续越限',
+    tip: '网络拨测：agent 定期对探测目标发起 TCP 建连，统计丢包率与建连延迟，任一持续超过阈值即告警。用于发现网络抖动、丢包、跨机房专线质量劣化（探测目标应选业务依赖的关键地址或公网基准点）。',
     fields: [
       { key: 'net_loss_threshold', label: '丢包率阈值', unit: '%', min: 0.1, max: 100, step: 0.1, precision: 1 },
       { key: 'net_latency_threshold', label: '延迟阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
@@ -977,12 +1007,14 @@ const POLICY_SECTIONS = [
     ],
     text: { key: 'net_probe_target', label: '探测目标', placeholder: '223.5.5.5:443' } },
   { tab: 'sys', key: 'bandwidth', title: '带宽使用率', desc: '出口/入口带宽使用率持续越限',
+    tip: '监控出口/入口带宽利用率：持续超过阈值即告警。用于发现流量打满带宽（大文件传输、被刷、CC 攻击、异常外发）导致的网络拥塞和业务变慢。',
     fields: [
       { key: 'bandwidth_threshold', label: '带宽阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
       { key: 'bandwidth_window_seconds', label: '触发窗口', unit: '秒' },
       { key: 'bandwidth_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'sys', key: 'tcp_conn', title: 'TCP 连接', desc: 'TIME_WAIT 过多或总连接数接近系统上限',
+    tip: '监控 TCP 连接状态：TIME_WAIT 数量过多，或总连接数占系统上限（somaxconn/文件句柄）比例持续超过阈值即告警。用于发现连接泄漏、短连接滥用、端口/句柄耗尽导致无法建立新连接的风险。',
     fields: [
       { key: 'tcp_time_wait_threshold', label: 'TIME_WAIT 数', unit: '个', min: 1, max: 1000000, step: 100, precision: 0 },
       { key: 'tcp_conn_pct_threshold', label: '连接上限比', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
@@ -990,18 +1022,98 @@ const POLICY_SECTIONS = [
       { key: 'tcp_conn_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'proc', key: 'process', title: '关键进程消失', desc: '核心进程异常退出即告警（按 /proc 进程名子串匹配）',
+    tip: '守护关键进程：按进程名子串匹配 /proc 下的进程，列表中任一进程消失且持续超过恢复窗口即告警，进程重新出现自动恢复。用于发现核心服务进程崩溃/被误杀（systemd 拉起失败、被 OOM 杀掉等）。',
     items: { key: 'process_items', label: '监控进程', placeholder: 'nginx, mysqld, java' },
     fields: [
       { key: 'process_window_seconds', label: '恢复窗口', unit: '秒' },
       { key: 'process_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '进程持续消失期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
   { tab: 'proc', key: 'port', title: '关键端口探活', desc: '本机端口 TCP 探活失败即告警',
+    tip: '本机端口探活：agent 对列表中的端口发起 TCP 连接，连续失败且持续超过恢复窗口即告警，端口恢复可达自动恢复。用于发现服务挂掉、端口未监听、防火墙误封等（比进程监控更贴近「服务真正可连接」）。',
     items: { key: 'port_items', label: '监控端口', placeholder: '22, 80, 443', numeric: true },
     fields: [
       { key: 'port_window_seconds', label: '恢复窗口', unit: '秒' },
       { key: 'port_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '端口持续不可达期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
     ] },
 ]
+// ===== 告警策略问号悬浮提示：说明策略作用 + 下方各配置项含义 =====
+const LABEL_TIPS = {
+  使用率阈值: '指标持续超过该百分比进入告警判定',
+  负载阈值: 'load1 超过该值进入判定（约等于 CPU 核数即满载，建议按核数调整）',
+  'await 阈值': '平均每次 IO 等待超过该毫秒数进入判定',
+  丢包率阈值: '拨测丢包率超过该百分比进入判定',
+  延迟阈值: 'TCP 建连延迟超过该毫秒数进入判定',
+  带宽阈值: '出口/入口带宽利用率超过该百分比进入判定',
+  'TIME_WAIT 数': 'TIME_WAIT 状态连接数超过该值进入判定',
+  连接上限比: '总连接数占系统上限的比例超过该百分比进入判定',
+  触发窗口: '指标持续越限达到该时长才真正触发告警（防瞬时抖动误报）',
+  恢复窗口: '该窗口内不再出现新事件/持续异常，则告警自动恢复',
+  重复告警: '故障持续期间每隔该分钟数重新提醒一次；0=不重复，仅触发/恢复时各提醒一次',
+  监控进程: '逗号分隔进程名子串（按 /proc 匹配），任一进程消失即触发判定',
+  监控端口: '逗号分隔端口号，任一端口 TCP 探活失败即触发判定',
+  探测目标: 'agent 发起 TCP 拨测的目标地址（ip:port），需从本机网络可达',
+}
+function sectionTip(s) {
+  const lines = [`<b>作用</b>：${s.tip}`, '<b>下方配置</b>']
+  for (const item of [s.items, s.text]) {
+    if (item) lines.push(`· ${item.label}：${LABEL_TIPS[item.label] || ''}`)
+  }
+  for (const f of s.fields) lines.push(`· ${f.label}${f.unit ? `（${f.unit}）` : ''}：${f.hint || LABEL_TIPS[f.label] || ''}`)
+  lines.push('· 告警级别：P0 严重故障 / P1 重要告警 / P2 一般告警 / P3 提示信息')
+  return lines.join('<br/>')
+}
+// 指标抓取数据源说明（应用层规则的数据来源）
+const SCRAPE_TIP = [
+  '<b>作用</b>：应用层/数据库层规则基于 agent 抓取的指标判定，此处配置指标来源（Prometheus 文本格式）',
+  '<b>行为</b>：开启后 agent 按周期抓取并上报列表中的 URL（每行一个，最多 16 个）',
+  '<b>注意</b>：未接入数据源的规则不会触发，但阈值/窗口/级别均可先配置好，接入后自动生效',
+].join('<br/>')
+// 应用/数据库层规则目录说明（id → 作用一句话）
+const RULE_TIPS = {
+  app_health: '对应用健康检查接口连续探测失败达到阈值次数即告警，通常意味着服务假死、崩溃或端口未监听，属最高级故障。',
+  app_http_5xx: '统计服务端错误（5xx）占比，持续超过阈值说明服务内部异常（代码错误、依赖故障），用户请求正在失败。',
+  app_http_5xx_critical: '5xx 错误率的紧急档：突破更高阈值立即按 P0 升级处理，用于重大故障的快速升级。',
+  app_http_4xx_surge: '4xx 客户端错误较昨日同时段增长率超阈值，通常是攻击扫描、爬虫或上游参数/路由变更引起。',
+  app_latency_p95: '95% 的请求响应时间低于该值，P95 超阈值说明大部分用户已明显感到变慢。',
+  app_latency_p99: '99% 的请求响应时间低于该值，P99 超阈值说明存在长尾慢请求（GC 停顿、慢 SQL、锁竞争等）。',
+  app_qps_drop: 'QPS 较昨日同时段下降超阈值，可能是上游流量异常或服务假死（还活着但没人访问进来）。',
+  app_qps_overload: '当前 QPS 达到压测容量上限的比例超阈值，说明接近过载，需要扩容或限流。',
+  app_timeout: '请求超时占比超阈值，说明下游变慢或线程/连接池耗尽，用户请求正在大量失败。',
+  app_thread_pool: '线程池使用率超阈值，线程耗尽后新请求将排队或被拒绝，是容量不足的预警信号。',
+  app_conn_pool_wait: '连接池出现等待（获取连接排队数 > 0）即告警，说明连接数不够或数据库变慢。',
+  app_queue_backlog: '任务/消息队列深度持续增长即告警，消费速度跟不上生产速度，积压会持续放大延迟。',
+  app_jvm_full_gc: 'JVM Full GC 频率超阈值（默认每分钟 2 次），频繁 Full GC 伴随长时间停顿（STW），服务周期性卡死。',
+  app_jvm_gc_time: 'GC 总耗时占比超阈值，说明 JVM 花大量时间做垃圾回收，有效吞吐明显下降。',
+  app_heap_high: 'JVM 堆内存使用率持续超阈值，逼近 OOM，多由内存泄漏或堆配置过小引起。',
+  app_log_error_surge: 'ERROR 日志量较基线突增超过阈值倍数，是应用内部异常最直接的信号（无需埋点即可发现）。',
+  app_deploy_anomaly: '发布后 5xx 率或延迟上升超阈值即告警，用于发布事故的快速发现与回滚决策。',
+  app_downstream_fail: '调用下游服务（RPC/HTTP）失败率超阈值，说明依赖服务异常，需要降级、熔断或切换节点。',
+  mysql_conn_pct: 'MySQL 已用连接数占 max_connections 比例超阈值，连接耗尽后新请求无法建立会话。',
+  mysql_slow_query_surge: '慢查询数量较基线增长率超阈值，通常是慢 SQL 上线、缺索引或数据量突增。',
+  mysql_replica_lag: '主从复制延迟秒数超阈值，从库数据落后会导致读到旧数据，并影响故障切换安全性。',
+  mysql_replica_broken: '复制线程停止（IO/SQL 线程异常）即告警，主从一致性被破坏，属 P0 级故障。',
+  mysql_lock_waits: '锁等待/死锁每分钟次数超阈值，说明存在锁热点，事务相互阻塞导致业务卡顿。',
+  mysql_disk_free: 'MySQL 数据盘剩余空间低于阈值即告警，磁盘写满后数据库不可写，属 P0 级故障。',
+  redis_mem_pct: 'Redis 内存使用率超阈值，达到 maxmemory 后开始淘汰键或拒绝写入，可能引发缓存击穿。',
+  redis_hit_rate_drop: '缓存命中率下降幅度超阈值，命中率暴跌会让回源流量打垮数据库。',
+  redis_replica_broken: 'Redis 主从复制断开/故障切换即告警，影响读扩展能力与高可用。',
+  redis_persist_fail: 'RDB/AOF 持久化失败即告警，实例宕机后可能丢失数据且无法恢复。',
+  mq_backlog: '消息队列积压条数超阈值，生产快于消费，通常是消费者挂了或下游处理能力不足。',
+  mq_consume_delay: '消息从产生到被消费的延迟超阈值，实时性业务（风控、通知、同步）会受影响。',
+  mq_no_consumer: '队列消费者数量为 0 即告警，消息将持续无限堆积，通常消费者进程已挂。',
+  mq_dlq_growth: '死信队列消息占比增长超阈值，说明大量消息反复消费失败，需要人工介入排查。',
+  nginx_5xx_rate: 'Nginx 返回 5xx 的比例超阈值，说明 upstream 异常或 Nginx 自身配置/资源问题。',
+  nginx_upstream_fail: 'Nginx 连接 upstream 失败次数超阈值，后端节点不可达、超时或被摘除。',
+  nginx_conn_pct: 'Nginx 活跃连接数占 worker_connections 上限比例超阈值，连接耗尽后会拒绝新请求。',
+}
+const OP_LABELS = { gte: '≥', ge: '≥', gt: '>', lte: '≤', lt: '<' }
+function ruleTip(r) {
+  return [
+    `<b>作用</b>：${RULE_TIPS[r.id] || '基于 agent 抓取的指标进行阈值判定'}`,
+    `<b>判定</b>：指标 <code>${r.metric}</code> ${OP_LABELS[r.op] || r.op} 阈值（默认 ${r.threshold}${r.unit || ''}），持续 ${r.window_seconds} 秒触发`,
+    '<b>配置</b>：启用开关 / 阈值 / 窗口 / 级别 / 重复告警（0=仅触发与恢复时各提醒一次）均可按行调整',
+  ].join('<br/>')
+}
 const policyVisible = ref(false)
 const policySaving = ref(false)
 const policyResetting = ref(false)
@@ -1679,7 +1791,7 @@ async function submitAlertPolicy() {
   try {
     await updateAlertPolicy(policyTarget.value.id, { ...policyForm })
     ElMessage.success(
-      policyIsChild.value ? '告警策略已保存（子机自有策略，立即生效）' : '告警策略已保存（母机与所有接入子机统一生效）',
+      policyIsChild.value ? '告警策略已保存（子机 agent 将在约 30 秒内自动同步生效）' : '告警策略已保存（母机与所有接入子机统一生效，agent 约 30 秒内自动同步）',
     )
     policyVisible.value = false
   } catch (err) {
@@ -1961,6 +2073,16 @@ async function resetAlertPolicy() {
 .section-desc {
   color: var(--faint);
   font-size: 12px;
+}
+.section-help {
+  color: #86868b;
+  font-size: 14px;
+  cursor: help;
+  flex-shrink: 0;
+  transition: color 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.section-help:hover {
+  color: var(--brand, #0071e3);
 }
 .section-body {
   margin-top: 8px;
@@ -2300,5 +2422,24 @@ async function resetAlertPolicy() {
 }
 .muted {
   color: var(--faint);
+}
+</style>
+
+<style>
+/* 告警策略问号提示弹层（teleport 到 body，需全局样式） */
+.policy-tip {
+  max-width: 420px;
+  line-height: 1.7;
+  font-size: 12px;
+}
+.policy-tip b {
+  color: #ffd04b;
+}
+.policy-tip code {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 0 4px;
+  border-radius: 4px;
 }
 </style>

@@ -11,6 +11,8 @@ celery beat 每分钟调用 run_alert_cycle。规则来源：资产生效策略�
 
 from __future__ import annotations
 
+import logging
+import threading
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -18,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from app.models import AnomalyEvent, Asset, SystemMetricSample, utcnow
 from app.services.alert_policy import RULE_CATALOG_BY_ID, effective_policy
+
+log = logging.getLogger("devops.alert_engine")
 
 # 基础指标：(样本字段, 阈值key, 窗口key, 级别key, 展示名, 单位)；均为「越高越坏」
 BASE_METRICS: list[tuple[str, str, str, str, str, str]] = [
@@ -83,12 +87,18 @@ def _upsert_event(
     policy_source: str = "default",
     metric: str = "",
     notify_minutes: int = 0,
+    window_series: list | None = None,
+    extra: dict | None = None,
 ) -> None:
     """统一事件写入：breach 建/重开/刷新事件；不越限或规则禁用时自动恢复。
 
     重复提醒：事件持续 abnormal 期间，每满 notify_minutes 分钟在原事件上
     重复提醒一次（repeat_count +1、last_notified_at 刷新），不产生新事件；
     notify_minutes=0 时仅「触发 / 恢复后再次触发」这类状态变化时提醒（瞬时事件）。
+
+    上下文增强：payload 携带 window_series（窗口内样本值序列 [(ts, val)]，最多
+    60 点，便于回看告警前后曲线）与 extra（规则特有上下文，如 OOM 被杀进程明细）。
+    首次触发/恢复后再次触发时登记 diag_ids，扫描提交后自动 SSH 采集进程快照。
     """
     event_id = f"metric-{asset.id}-{rule_key}"
     ev = db.scalar(select(AnomalyEvent).where(AnomalyEvent.event_id == event_id))
@@ -104,12 +114,15 @@ def _upsert_event(
         "samples": samples,
         "latest": latest,
         "policy_source": policy_source,
+        "window_series": list(window_series or [])[-60:],
+        **(extra or {}),
     }
     if (not enabled) or (not breach):
         if ev is not None and ev.status == "abnormal":
             ev.status = "recovered"
             ev.recovered_at = now
             ev.payload = {**(ev.payload or {}), **payload, "recovered": "窗口内不再越限" if enabled else "规则已禁用"}
+            log.info("告警恢复 asset=%s rule=%s latest=%s", asset.id, rule_key, latest)
             stats["recovered"] += 1
         return
     message = (
@@ -119,29 +132,41 @@ def _upsert_event(
         else f"{asset.hostname or asset.id} {detail}"
     )
     if ev is None:
-        db.add(
-            AnomalyEvent(
-                event_id=event_id,
-                hostid="",
-                host=asset.id,
-                hostname=asset.hostname or asset.id,
-                ip=ip,
-                trigger_name=label,
-                severity=level,
-                message=message,
-                status="abnormal",
-                asset_id=asset.id,
-                payload={**payload, "repeat_count": 1, "notify_minutes": notify_minutes, "last_notified_at": now.isoformat()},
-            )
+        ev = AnomalyEvent(
+            event_id=event_id,
+            hostid="",
+            host=asset.id,
+            hostname=asset.hostname or asset.id,
+            ip=ip,
+            trigger_name=label,
+            severity=level,
+            message=message,
+            status="abnormal",
+            asset_id=asset.id,
+            payload={**payload, "repeat_count": 1, "notify_minutes": notify_minutes, "last_notified_at": now.isoformat()},
         )
+        db.add(ev)
+        db.flush()  # 取自增 id，供自动诊断采集
         stats["triggered"] += 1
+        stats.setdefault("diag_ids", []).append(ev.id)
+        log.warning(
+            "告警触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
+            asset.id, rule_key, level, latest, threshold, win, message,
+        )
     elif ev.status != "abnormal":
         ev.status = "abnormal"
         ev.recovered_at = None
         ev.last_seen_at = now
         ev.severity = level
+        ev.message = message
         ev.payload = {**payload, "repeat_count": 1, "notify_minutes": notify_minutes, "last_notified_at": now.isoformat()}
+        db.flush()
         stats["triggered"] += 1
+        stats.setdefault("diag_ids", []).append(ev.id)
+        log.warning(
+            "告警再次触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
+            asset.id, rule_key, level, latest, threshold, win, message,
+        )
     else:
         ev.last_seen_at = now
         if ev.severity != level:
@@ -222,6 +247,21 @@ def run_alert_cycle(db: Session) -> dict:
                     out.append(v)
             return out
 
+        def series_pts(field: str, win: int, *, ext_key: bool = False, numeric: bool = True) -> list:
+            """窗口内样本序列（带时间戳，告警 payload 上下文用）：[(iso_ts, value)]。"""
+            start = now - timedelta(seconds=win)
+            out = []
+            for r in rows:
+                if r.ts < start:
+                    continue
+                v = (r.ext or {}).get(field) if ext_key else getattr(r, field)
+                if numeric:
+                    if isinstance(v, (int, float)):
+                        out.append((r.ts.isoformat(timespec="seconds"), round(float(v), 3)))
+                elif v is not None:
+                    out.append((r.ts.isoformat(timespec="seconds"), v))
+            return out
+
         # 1) 基础指标（CPU/内存/负载）
         for field, th_key, win_key, level_key, label, unit in BASE_METRICS:
             win = int(policy[win_key])
@@ -234,6 +274,7 @@ def run_alert_cycle(db: Session) -> dict:
                 win=win, threshold=policy[th_key], op="gte",
                 samples=len(values), metric=field, **common,
                 notify_minutes=int(policy.get(f"{field}_notify_minutes") or 0),
+                window_series=series_pts(field, win),
             )
 
         # 2) 系统扩展指标（swap/inode/IO/网络/带宽/TCP）
@@ -249,21 +290,34 @@ def run_alert_cycle(db: Session) -> dict:
                 win=win, threshold=policy[th_key], op="gte",
                 samples=len(values), metric=ext_key, **common,
                 notify_minutes=int(policy.get(notify_key) or 0),
+                window_series=series_pts(ext_key, win, ext_key=True),
             )
 
         # 3) OOM kill（事件型：窗口内出现过 oom_events>0 即异常；瞬时事件默认不重复提醒）
+        # 上下文：agent 上报的 oom_detail（被杀进程 pid/名称/内存占用/kmsg 时刻），
+        # 告警消息直接点名受害进程，payload 保留全部明细供详情页回溯。
         win = int(policy["oom_window_seconds"])
         oom_vals = series("oom_events", win, ext_key=True)
         oom_breach = bool(oom_vals) and any(v > 0 for v in oom_vals)
         oom_count = int(sum(v for v in oom_vals if v > 0)) if oom_vals else 0
+        oom_details: list[str] = []
+        for item in series("oom_detail", win, ext_key=True, numeric=False):
+            if isinstance(item, list):
+                oom_details.extend(str(x) for x in item)
+        oom_details = list(dict.fromkeys(oom_details))[-8:]  # 去重保序，最多留 8 条
+        detail = f"检测到 OOM kill（窗口 {win} 秒内 {oom_count} 次）"
+        if oom_details:
+            detail = f"检测到 OOM kill：{oom_details[-1]}（窗口 {win} 秒内 {oom_count} 次）"
         _upsert_event(
             db, stats, now, asset, ip,
             rule_key="oom", label="OOM kill 事件", unit="次", level=policy["oom_level"],
             enabled=bool(policy["oom_enabled"]), breach=oom_breach,
             latest=oom_count or None, win=win, threshold=1, op="gte",
-            samples=len(oom_vals), detail=f"检测到 OOM kill（窗口 {win} 秒内 {oom_count} 次）",
+            samples=len(oom_vals), detail=detail,
             metric="oom_events", **common,
             notify_minutes=int(policy.get("oom_notify_minutes") or 0),
+            window_series=series_pts("oom_events", win, ext_key=True),
+            extra={"oom_detail": oom_details},
         )
 
         # 4) 关键进程消失
@@ -300,6 +354,7 @@ def run_alert_cycle(db: Session) -> dict:
             detail=f"端口探活失败：{', '.join(down_ports)}" if down_ports else "",
             samples=len(port_series), metric="ports_down", **common,
             notify_minutes=int(policy.get("port_notify_minutes") or 0),
+            window_series=series_pts("ports_down", win, ext_key=True, numeric=False),
         )
 
         # 6) 应用/数据库层规则目录（数据源：agent metrics 抓取，ext.metrics）
@@ -311,6 +366,7 @@ def run_alert_cycle(db: Session) -> dict:
             enabled = bool(cfg.get("enabled"))
             win = int(cfg["window_seconds"])
             values: list[float] = []
+            pts: list[tuple[str, float]] = []
             if enabled:
                 start = now - timedelta(seconds=win)
                 for r in rows:
@@ -320,6 +376,7 @@ def run_alert_cycle(db: Session) -> dict:
                     v = m.get(meta["metric"])
                     if isinstance(v, (int, float)):
                         values.append(float(v))
+                        pts.append((r.ts.isoformat(timespec="seconds"), round(float(v), 4)))
             breach = enabled and len(values) >= 2 and all(_breach(meta["op"], v, cfg["threshold"]) for v in values)
             _upsert_event(
                 db, stats, now, asset, ip,
@@ -328,6 +385,21 @@ def run_alert_cycle(db: Session) -> dict:
                 win=win, threshold=cfg["threshold"], op=meta["op"],
                 samples=len(values), metric=meta["metric"], **common,
                 notify_minutes=int(cfg.get("notify_minutes", meta.get("notify_minutes", 0)) or 0),
+                window_series=pts,
             )
     db.commit()
+    # 首次触发/再次触发的 agent 告警：提交后自动 SSH 采集异常时刻进程快照
+    # （独立 Session，与 webhook 链路同一诊断入口；默认后台线程，不阻塞扫描）
+    diag_ids = stats.get("diag_ids") or []
+    if diag_ids:
+        from app.config import get_settings
+        from app.services import diagnostics as diagnostics_svc
+
+        if get_settings().diagnostics_async:
+            for aid in diag_ids:
+                threading.Thread(target=diagnostics_svc.collect_for_anomaly, args=(aid,), daemon=True).start()
+        else:
+            for aid in diag_ids:
+                diagnostics_svc.collect_for_anomaly(aid)
+        stats["diag_snapshot"] = len(diag_ids)
     return stats

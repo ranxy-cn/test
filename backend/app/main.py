@@ -1,9 +1,16 @@
 from contextlib import asynccontextmanager
+import logging
+import time
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
+from app.logging_setup import request_id_var, setup_logging
+
+setup_logging("devops-api")
+log = logging.getLogger("devops.http")
 from app.routers.admin_perms import router as admin_perms_router
 from app.routers.admin_users import router as admin_users_router
 from app.routers.auth import router as auth_router
@@ -62,6 +69,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    """每请求注入 request_id 并输出结构化访问日志；未捕获异常记录完整堆栈。
+
+    agent 高频上报/拉配置路径（每 5s 一次）跳过 INFO 访问日志，异常仍记录。
+    """
+    rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+    token = request_id_var.set(rid)
+    client = request.client.host if request.client else "-"
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception(
+            "请求未捕获异常 %s %s client=%s", request.method, request.url.path, client
+        )
+        request_id_var.reset(token)
+        raise
+    request_id_var.reset(token)
+    cost_ms = int((time.perf_counter() - t0) * 1000)
+    if not request.url.path.startswith("/api/v1/agent/"):
+        log.info(
+            "http %s %s -> %s %dms client=%s",
+            request.method, request.url.path, response.status_code, cost_ms, client,
+        )
+    response.headers["X-Request-ID"] = rid
+    return response
+
+
 app.include_router(router)
 app.include_router(ops_router)
 app.include_router(auth_router)

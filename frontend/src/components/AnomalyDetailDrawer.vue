@@ -22,6 +22,35 @@
         </el-descriptions>
       </section>
 
+      <!-- 告警上下文（触发时关键数据） -->
+      <section v-if="hasCtx" class="block">
+        <h4 class="block-title">告警上下文</h4>
+        <el-descriptions :column="3" border size="small">
+          <el-descriptions-item v-for="item in ctxItems" :key="item.label" :label="item.label">{{ item.value }}</el-descriptions-item>
+        </el-descriptions>
+        <template v-if="(payload.oom_detail || []).length">
+          <h5 class="sub-title">OOM 被杀进程明细</h5>
+          <el-table :data="payload.oom_detail" size="small" border max-height="220">
+            <el-table-column label="#" type="index" width="50" />
+            <el-table-column label="明细（时间 / PID / 进程 / 内存 / 评分）">
+              <template #default="{ row }"><span class="oom-line">{{ row }}</span></template>
+            </el-table-column>
+          </el-table>
+        </template>
+        <template v-if="(payload.window_series || []).length">
+          <h5 class="sub-title">窗口内样本序列（时间 → 数值，共 {{ payload.window_series.length }} 点）</h5>
+          <pre class="snap-plain">{{ seriesText }}</pre>
+        </template>
+        <el-collapse v-if="ctxExtraKeys.length" class="snap-extra">
+          <el-collapse-item name="extra">
+            <template #title>
+              <span class="snap-collapse-title">其他上下文字段（{{ ctxExtraKeys.length }}）</span>
+            </template>
+            <pre class="snap-plain">{{ ctxExtraText }}</pre>
+          </el-collapse-item>
+        </el-collapse>
+      </section>
+
       <!-- 异常时刻快照（进程详情） -->
       <section class="block">
         <h4 class="block-title">异常时刻快照（进程详情）</h4>
@@ -196,6 +225,30 @@ const fmtTime = fmtTimeCol('')
 
 // 快照数据与系统状态摘要
 const snap = computed(() => detail.value?.diagnostics || {})
+
+// 告警上下文（触发时引擎写入 payload 的关键数据）
+const payload = computed(() => detail.value?.payload || {})
+const CTX_LABELS = [
+  ['latest', '当前值'], ['threshold', '阈值'], ['op', '比较方式'],
+  ['window_seconds', '窗口（秒）'], ['samples', '样本数'], ['policy_source', '策略来源'],
+]
+const ctxItems = computed(() =>
+  CTX_LABELS
+    .filter(([k]) => payload.value[k] !== undefined && payload.value[k] !== null && payload.value[k] !== '')
+    .map(([k, label]) => ({ label, value: payload.value[k] }))
+)
+const hasCtx = computed(() => ctxItems.value.length > 0 || (payload.value.oom_detail || []).length > 0 || (payload.value.window_series || []).length > 0)
+const seriesText = computed(() =>
+  (payload.value.window_series || []).map(([ts, v]) => `${ts}  →  ${v}`).join('\n')
+)
+const ctxExtraKeys = computed(() =>
+  Object.keys(payload.value).filter(
+    (k) => !['latest', 'threshold', 'op', 'window_seconds', 'samples', 'policy_source', 'oom_detail', 'window_series'].includes(k)
+  )
+)
+const ctxExtraText = computed(() =>
+  JSON.stringify(Object.fromEntries(ctxExtraKeys.map((k) => [k, payload.value[k]])), null, 2)
+)
 const sysText = computed(() => {
   const s = snap.value.system
   if (!s || s.load1 == null) return '—'
@@ -320,6 +373,10 @@ defineExpose({ open })
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.oom-line {
+  font-family: Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 .log-time {
   margin-left: 10px;

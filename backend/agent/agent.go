@@ -11,6 +11,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -401,10 +403,20 @@ func newOomWatcher() *oomWatcher {
 	return &oomWatcher{f: f, offset: end}
 }
 
-// collectOOM：返回自上次调用以来的 OOM kill 事件数。
-func (w *oomWatcher) collectOOM() int {
+// kmsg OOM 记录解析：一次真实 OOM 通常是两条独立记录——
+// "Out of memory: Kill process <pid> (<proc>) score <n>" 与续记录
+// "Killed process <pid> (<proc>) ... anon-rss:<n>kB"（老内核合并为一条）。
+var (
+	reOOMKill   = regexp.MustCompile(`Kill process (\d+) \(([^)]*)\)(?: score (\d+))?`)
+	reOOMKilled = regexp.MustCompile(`Killed process (\d+) \(([^)]*)\)`)
+	reOOMRss    = regexp.MustCompile(`anon-rss:(\d+)kB`)
+)
+
+// collectOOM：返回自上次调用以来的 OOM kill 事件数，以及受害进程明细
+// （"HH:MM:SS pid=N proc=NAME rss=NMB score=N"，供平台告警展示事故现场）。
+func (w *oomWatcher) collectOOM() (int, []string) {
 	if w == nil {
-		return 0
+		return 0, nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -418,18 +430,77 @@ func (w *oomWatcher) collectOOM() int {
 			w.offset += int64(n)
 		}
 		if err != nil {
+			// kmsg 缓冲被清空（dmesg -C）或溢出覆盖后，旧 offset 失效返回 EPIPE，
+			// 若不处理会永久失明：重开文件并自愈
+			if errors.Is(err, syscall.EPIPE) {
+				w.reopen()
+			}
 			break
 		}
 		if n == 0 {
 			break
 		}
 	}
+	type oomEvt struct {
+		pid, proc, score, rss string
+	}
+	var events []*oomEvt
+	pending := map[string]*oomEvt{} // pid → 等待 "Killed" 行补充内存占用的事件
 	for _, line := range strings.Split(string(buf), "\n") {
-		if strings.Contains(line, "Out of memory") && strings.Contains(line, "Killed process") {
+		if m := reOOMKill.FindStringSubmatch(line); m != nil && strings.Contains(line, "Out of memory") {
 			count++
+			ev := &oomEvt{pid: m[1], proc: m[2], score: m[3]}
+			events = append(events, ev)
+			pending[m[1]] = ev
+			continue
+		}
+		if m := reOOMKilled.FindStringSubmatch(line); m != nil {
+			ev := pending[m[1]]
+			if ev == nil {
+				// 只捕到 "Killed" 行（"Kill" 行被缓冲覆盖）：同样计为一次 OOM
+				count++
+				ev = &oomEvt{pid: m[1], proc: m[2]}
+				events = append(events, ev)
+			}
+			if rm := reOOMRss.FindStringSubmatch(line); rm != nil {
+				ev.rss = rm[1]
+			}
+			delete(pending, m[1])
 		}
 	}
-	return count
+	details := make([]string, 0, len(events))
+	stamp := time.Now().Format("15:04:05")
+	for _, ev := range events {
+		d := fmt.Sprintf("%s pid=%s proc=%s", stamp, ev.pid, ev.proc)
+		if ev.rss != "" {
+			if kb, err := strconv.Atoi(ev.rss); err == nil {
+				d += fmt.Sprintf(" rss=%dMB", kb/1024)
+			}
+		}
+		if ev.score != "" {
+			d += " score=" + ev.score
+		}
+		details = append(details, d)
+	}
+	return count, details
+}
+
+// reopen：kmsg offset 失效（缓冲清空/溢出）后重开文件并从头读缓冲。
+// 真实 OOM 时内核瞬间倾倒大量日志极易触发溢出，若跳到末尾会恰好丢掉刚发生的
+// OOM 消息（漏报）；从头读最多重放少量旧消息导致重复计数，漏报比重复更严重。
+func (w *oomWatcher) reopen() bool {
+	f, err := os.Open("/dev/kmsg")
+	if err != nil {
+		return false
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
+		return false
+	}
+	w.f.Close()
+	w.f = f
+	w.offset = 0
+	return true
 }
 
 // processCheck：/proc/<pid>/comm 扫描，返回缺失的关键进程列表。
@@ -703,8 +774,12 @@ func (a *Agent) collect(items []string) map[string]interface{} {
 				}
 			}
 		case "oom":
-			if n := a.oom.collectOOM(); n > 0 {
+			n, det := a.oom.collectOOM()
+			if n > 0 {
 				s["oom_events"] = float64(n)
+			}
+			if len(det) > 0 {
+				s["oom_detail"] = det
 			}
 		case "process":
 			if missing := processCheck(p.ProcessItems); len(missing) > 0 {

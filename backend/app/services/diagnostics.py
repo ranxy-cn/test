@@ -10,6 +10,7 @@ CPU / 内存 TOP 进程（PID、父进程、用户、占比、运行时长、完
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -27,6 +28,8 @@ from app.services.inspector import (
     _parse_listen,
     _split_sections,
 )
+
+log = logging.getLogger("devops.diagnostics")
 
 # 单次 SSH 采集总超时（秒）
 CMD_TIMEOUT = 20
@@ -220,6 +223,7 @@ def collect_for_anomaly(anomaly_id: int) -> None:
         anomaly.diag_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as exc:
+        log.exception("诊断快照采集失败 anomaly_id=%s", anomaly_id)
         try:
             db.rollback()
             anomaly = db.get(AnomalyEvent, anomaly_id)
@@ -228,6 +232,6 @@ def collect_for_anomaly(anomaly_id: int) -> None:
                 anomaly.diag_error = str(exc)[:500]
                 db.commit()
         except Exception:
-            pass
+            log.exception("诊断失败状态回写异常 anomaly_id=%s", anomaly_id)
     finally:
         db.close()

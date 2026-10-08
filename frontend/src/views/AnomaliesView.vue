@@ -73,29 +73,6 @@
         </div>
       </template>
 
-      <!-- 压测演练：制造真实异常，验证「异常 → 恢复」链路 -->
-      <el-collapse v-if="stressEnabled" class="stress-box">
-        <el-collapse-item name="tools">
-          <template #title><span class="stress-title">压测演练（制造真实异常，验证告警链路）</span></template>
-          <div class="row-gap">
-            <el-button type="warning" plain @click="openStress('cpu')">CPU 飙高</el-button>
-            <el-button type="warning" plain @click="openStress('mem')">内存飙高</el-button>
-            <el-tag v-if="cpuState.running" type="danger">
-              本机 CPU 压测中 · {{ cpuState.cores }} 核满载 · 剩余 {{ cpuState.seconds_remaining }}s
-            </el-tag>
-            <el-tag v-if="memState.running" type="danger">
-              本机内存压测中 · 目标 {{ memState.target_percent }}% · 剩余 {{ memState.seconds_remaining }}s
-            </el-tag>
-            <el-tag
-              v-for="r in remoteState" :key="r.asset_id + r.kind" type="danger" effect="dark"
-              closable @close="doStopRemote(r)"
-            >
-              {{ r.hostname }} {{ r.kind === 'cpu' ? 'CPU 压测中' : `内存压测中 · 目标 ${r.target_percent}%` }} · 剩余 {{ r.seconds_remaining }}s
-            </el-tag>
-          </div>
-        </el-collapse-item>
-      </el-collapse>
-
       <el-table :data="items" v-loading="loading" empty-text="当前没有异常">
         <el-table-column prop="mother_name" label="母机" width="140">
           <template #default="{ row }">
@@ -114,6 +91,9 @@
         </el-table-column>
         <el-table-column prop="trigger_name" label="异常项" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">{{ cnTrigger(row.trigger_name) }}</template>
+        </el-table-column>
+        <el-table-column prop="message" label="告警消息" min-width="280" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.message || '—' }}</template>
         </el-table-column>
         <el-table-column label="级别" width="100">
           <template #default="{ row }">
@@ -148,83 +128,16 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="stressVisible" :title="stressType === 'cpu' ? 'CPU 飙高演练' : '内存飙高演练'" width="560px">
-      <el-alert
-        type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-        :title="stressAlertText"
-      />
-      <el-descriptions :column="1" border size="small" style="margin-bottom: 12px">
-        <el-descriptions-item label="目标">
-          {{ selectedTarget ? `${selectedTarget.hostname}（${selectedTarget.ip}）SSH 上机压测` : '本机（API 容器所在机器）' }}
-        </el-descriptions-item>
-        <el-descriptions-item label="原理">{{ stressPrinciple }}</el-descriptions-item>
-        <el-descriptions-item label="异常">持续超阈值 5 分钟 → 自研 Agent 上报越限 → 平台判定告警 → 本页出现「异常」条目</el-descriptions-item>
-        <el-descriptions-item label="恢复">停止压测 → 指标回落 → 条目自动变「恢复」</el-descriptions-item>
-      </el-descriptions>
-      <el-form label-width="90px">
-        <el-form-item label="目标机器">
-          <el-select v-model="stressAssetId" style="width: 100%" filterable>
-            <el-option-group label="本机">
-              <el-option label="本机（API 容器所在机器）" value="" />
-            </el-option-group>
-            <el-option-group v-if="motherTargets.length" label="母机">
-              <el-option
-                v-for="t in motherTargets" :key="t.asset_id" :value="t.asset_id"
-                :label="t.ssh_ready ? `${t.hostname}（${t.ip}）` : `${t.hostname}（未录入 SSH 信息）`"
-                :disabled="!t.ssh_ready"
-              />
-            </el-option-group>
-            <el-option-group v-if="childTargets.length" label="子机">
-              <el-option
-                v-for="t in childTargets" :key="t.asset_id" :value="t.asset_id"
-                :label="t.ssh_ready ? `${t.hostname}（${t.ip}）` : `${t.hostname}（未录入 SSH 信息）`"
-                :disabled="!t.ssh_ready"
-              />
-            </el-option-group>
-          </el-select>
-        </el-form-item>
-        <el-form-item label="持续时长">
-          <el-select v-model="stressDuration" style="width: 100%">
-            <el-option label="5 分钟（可能不足以覆盖 5 分钟均值窗口）" :value="300" />
-            <el-option label="7 分钟（推荐）" :value="420" />
-            <el-option label="10 分钟" :value="600" />
-            <el-option label="15 分钟" :value="900" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="stressType === 'mem'" label="内存目标">
-          <el-select v-model="stressTarget" style="width: 100%">
-            <el-option label="92%（刚好超过 90% 告警线）" :value="92" />
-            <el-option label="95%（推荐，明显超标）" :value="95" />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button type="warning" :loading="stressLoading" @click="doStartStress">启动压测</el-button>
-        <el-button type="danger" @click="doStopStress">停止压测</el-button>
-        <el-button @click="stressVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
     <AnomalyDetailDrawer ref="detailDrawer" />
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import {
   fetchAnomalies,
   fetchAnomalyStats,
-  fetchStressStatus,
-  startCpuStress,
-  stopCpuStress,
-  fetchMemStressStatus,
-  startMemStress,
-  stopMemStress,
-  fetchStressTargets,
-  fetchRemoteStress,
-  stopRemoteStress,
 } from '../api'
 import { fmtTimeCol } from '../time'
 import { cnTrigger } from '../trigger-cn'
@@ -250,34 +163,6 @@ let trendChart = null
 
 const autoRefresh = ref(true)
 let timer = null
-
-const stressEnabled = ref(false)
-const cpuState = ref({})
-const memState = ref({})
-const stressVisible = ref(false)
-const stressType = ref('cpu')
-const stressDuration = ref(420)
-const stressTarget = ref(95)
-const stressLoading = ref(false)
-const stressAssetId = ref('')
-const stressTargets = ref([])
-const remoteState = ref([])
-
-const motherTargets = computed(() => stressTargets.value.filter((t) => t.kind === 'mother'))
-const childTargets = computed(() => stressTargets.value.filter((t) => t.kind !== 'mother'))
-const selectedTarget = computed(() => stressTargets.value.find((t) => t.asset_id === stressAssetId.value) || null)
-const stressAlertText = computed(() => {
-  const where = selectedTarget.value ? `子机 ${selectedTarget.value.hostname}（${selectedTarget.value.ip}）` : '服务器'
-  return stressType.value === 'cpu'
-    ? `压测会把 ${where}全部 CPU 核打满，确认当前无人依赖该机器性能`
-    : `压测会把 ${where}内存利用率顶到目标值（保留安全余量，不会 OOM）`
-})
-const stressPrinciple = computed(() => {
-  const where = selectedTarget.value ? `在 ${selectedTarget.value.hostname}（${selectedTarget.value.ip}）上` : '在 API 容器内'
-  return stressType.value === 'cpu'
-    ? `${where}按核数拉起死循环进程（timeout 到期自灭），自研 Agent 采集到真实 CPU 利用率`
-    : `${where}分配内存到目标利用率（tmpfs 文件，退出自动清理），自研 Agent 采集到真实内存利用率`
-})
 
 const SEV_LABELS = {
   P0: 'P0 严重故障',
@@ -472,91 +357,8 @@ function handleResize() {
   trendChart?.resize()
 }
 
-// ===== 压测演练 =====
-async function loadStressState() {
-  try {
-    const [{ data: cpu }, { data: mem }, { data: remote }] = await Promise.all([
-      fetchStressStatus(),
-      fetchMemStressStatus(),
-      fetchRemoteStress(),
-    ])
-    stressEnabled.value = !!(cpu.enabled && mem.enabled)
-    cpuState.value = cpu
-    memState.value = mem
-    remoteState.value = remote.items || []
-  } catch {
-    /* 工具状态获取失败不影响主列表 */
-  }
-}
-
-async function loadStressTargets() {
-  try {
-    const { data } = await fetchStressTargets()
-    stressTargets.value = data.targets || []
-  } catch {
-    /* 目标列表获取失败不影响主列表 */
-  }
-}
-
-function openStress(type) {
-  stressType.value = type
-  stressDuration.value = 420
-  stressTarget.value = 95
-  stressAssetId.value = ''
-  loadStressTargets()
-  stressVisible.value = true
-}
-
-function errText(e) {
-  return e?.response?.data?.detail || '操作失败，请稍后重试'
-}
-
-async function doStartStress() {
-  stressLoading.value = true
-  try {
-    if (stressType.value === 'cpu') await startCpuStress(stressDuration.value, stressAssetId.value)
-    else await startMemStress(stressTarget.value, stressDuration.value, stressAssetId.value)
-    ElMessage.success(
-      selectedTarget.value
-        ? `已在 ${selectedTarget.value.hostname} 启动压测，约 6~9 分钟后本页会出现异常条目`
-        : '压测已启动，约 6~9 分钟后本页会出现异常条目',
-    )
-    stressVisible.value = false
-  } catch (e) {
-    ElMessage.error(errText(e))
-  } finally {
-    stressLoading.value = false
-    loadStressState()
-  }
-}
-
-async function doStopStress() {
-  try {
-    if (stressAssetId.value) await stopRemoteStress(stressAssetId.value)
-    else if (stressType.value === 'cpu') await stopCpuStress()
-    else await stopMemStress()
-    ElMessage.success('压测已停止，触发器恢复后条目会自动变「恢复」')
-  } catch (e) {
-    ElMessage.error(errText(e))
-  } finally {
-    loadStressState()
-  }
-}
-
-async function doStopRemote(r) {
-  try {
-    await stopRemoteStress(r.asset_id)
-    ElMessage.success(`已停止 ${r.hostname} 上的压测`)
-  } catch (e) {
-    ElMessage.error(errText(e))
-  } finally {
-    loadStressState()
-  }
-}
-
 function tick() {
   if (!loading.value) load()
-  loadStressState()
   loadStats()
 }
 
@@ -583,8 +385,6 @@ onMounted(() => {
   })
   load()
   loadStats()
-  loadStressState()
-  loadStressTargets()
   startAuto()
 })
 

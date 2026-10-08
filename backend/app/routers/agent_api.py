@@ -42,7 +42,7 @@ DEFAULT_AGENT_CONFIG = {
     "collect_interval": 5,  # 采集间隔（秒）
     "collect_items": ["cpu", "mem", "disk", "load", "net"],
     "buffer_max": 600,      # 断网本地缓存上限（条）
-    "config_refresh": 300,  # 配置拉取间隔（秒）
+    "config_refresh": 30,   # 配置拉取间隔（秒）：策略/配置变更最迟约 30 秒同步到子机
     "offline_after": 30,    # 超过该秒数无上报视为离线
 }
 
@@ -62,7 +62,7 @@ _EXT_NUM_KEYS = (
     "swap", "inode", "await_ms", "tcp_tw", "tcp_total", "tcp_conn_pct",
     "loss_pct", "latency_ms", "bw_rx_pct", "bw_tx_pct", "oom_events",
 )
-_EXT_LIST_KEYS = ("procs_missing", "ports_down")
+_EXT_LIST_KEYS = ("procs_missing", "ports_down", "oom_detail")
 
 
 def _ext_of(sample: dict) -> dict | None:

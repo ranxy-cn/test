@@ -34,11 +34,6 @@
       <el-button type="primary" plain @click="search">查询</el-button>
       <el-button @click="resetFilters">重置</el-button>
       <span class="spacer"></span>
-      <el-tooltip :disabled="stressEnabled" content="仅服务器开启 STRESS_TOOLS_ENABLED 后可用">
-        <span>
-          <el-button v-perm="'tools:operate'" type="warning" plain :disabled="!stressEnabled" @click="openStress">CPU 压测</el-button>
-        </span>
-      </el-tooltip>
       <el-button @click="load">刷新</el-button>
     </div>
 
@@ -95,50 +90,17 @@
         @size-change="search"
       />
     </div>
-
-    <el-dialog v-model="stressVisible" title="真实 CPU 压测（让自研 Agent 采到真数据）" width="580px">
-      <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-        title="压测会把服务器全部 CPU 核打满，确认当前无人依赖服务器性能" />
-      <el-descriptions :column="1" border size="small" style="margin-bottom: 12px">
-        <el-descriptions-item label="原理">在 API 容器内按核数拉起死循环进程，自研 Agent 采集到真实 CPU 利用率</el-descriptions-item>
-        <el-descriptions-item label="告警">CPU 持续高于阈值 5 分钟 → 平台越限判定自动立案</el-descriptions-item>
-        <el-descriptions-item label="预计">压测启动后约 6~9 分钟出现新任务单，并自动走绿灯修复</el-descriptions-item>
-      </el-descriptions>
-      <el-form label-width="90px">
-        <el-form-item label="压测时长">
-          <el-select v-model="stressDuration" style="width: 100%" :disabled="stressRunning">
-            <el-option label="5 分钟（可能不足以覆盖 5 分钟均值窗口）" :value="300" />
-            <el-option label="7 分钟（推荐）" :value="420" />
-            <el-option label="10 分钟" :value="600" />
-            <el-option label="15 分钟" :value="900" />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <div v-if="stressRunning">
-        <el-tag type="danger">压测进行中 · {{ stressCores }} 核满载 · 剩余 {{ stressRemaining }} 秒</el-tag>
-      </div>
-      <template #footer>
-        <el-button v-if="stressRunning" v-perm="'tools:operate'" type="danger" @click="doStopStress">停止压测</el-button>
-        <el-button v-else v-perm="'tools:operate'" type="warning" :loading="stressStarting" @click="doStartStress">启动压测</el-button>
-        <el-button @click="stressVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import {
   fetchTickets,
-  fetchStatus,
-  fetchStressStatus,
   fetchDict,
   fetchMothers,
   fetchMotherGroups,
-  startCpuStress,
-  stopCpuStress,
 } from '../api'
 import { fmtTimeCol } from '../time'
 
@@ -263,74 +225,14 @@ function go(row) {
   router.push(`/tickets/${row.id}`)
 }
 
-// ===== CPU 压测状态 =====
-const stressVisible = ref(false)
-const stressEnabled = ref(false)
-const stressRunning = ref(false)
-const stressRemaining = ref(0)
-const stressCores = ref(0)
-const stressDuration = ref(420)
-const stressStarting = ref(false)
-let stressTimer
-
-async function loadStressState() {
-  try {
-    const { data } = await fetchStressStatus()
-    stressEnabled.value = !!data.enabled
-    stressRunning.value = !!data.running
-    stressRemaining.value = data.seconds_remaining || 0
-    stressCores.value = data.cores || 0
-  } catch {
-    stressEnabled.value = false
-  }
-}
-
-function openStress() {
-  stressVisible.value = true
-  loadStressState()
-  clearInterval(stressTimer)
-  stressTimer = setInterval(loadStressState, 5000)
-}
-
-async function doStartStress() {
-  stressStarting.value = true
-  try {
-    const { data } = await startCpuStress(stressDuration.value)
-    stressRunning.value = !!data.running
-    stressRemaining.value = data.seconds_remaining || 0
-    stressCores.value = data.cores || 0
-    stressVisible.value = false
-    clearInterval(stressTimer)
-    ElMessage.success(`压测已启动（${stressCores.value} 核满载 ${stressDuration.value} 秒），约 6~9 分钟后关注任务单列表`)
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '启动失败')
-  } finally {
-    stressStarting.value = false
-  }
-}
-
-async function doStopStress() {
-  try {
-    await stopCpuStress()
-    ElMessage.success('压测已停止')
-  } finally {
-    loadStressState()
-  }
-}
-
 onMounted(() => {
   load()
   loadDict()
   loadMothers()
-  loadStressState()
-  fetchStatus().then(({ data }) => {
-    stressEnabled.value = !!data.integrations?.stress_tools_enabled
-  }).catch(() => {})
   timer = setInterval(load, 4000)
 })
 onUnmounted(() => {
   clearInterval(timer)
-  clearInterval(stressTimer)
 })
 </script>
 
