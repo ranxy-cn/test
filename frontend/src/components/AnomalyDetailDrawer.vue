@@ -51,6 +51,31 @@
         </el-collapse>
       </section>
 
+      <!-- AI 日志分析（与告警双向关联） -->
+      <section class="block">
+        <h4 class="block-title">AI 日志分析</h4>
+        <div class="ai-head">
+          <el-tag :type="AI_TAGS[detail.ai_status] || 'info'" size="small">{{ AI_LABELS[detail.ai_status] || '未分析' }}</el-tag>
+          <el-button
+            v-if="canFeedback"
+            size="small" type="primary" plain
+            :loading="detail.ai_status === 'pending' || detail.ai_status === 'running'"
+            @click="triggerAi"
+          >
+            {{ ['none', 'skipped', 'failed'].includes(detail.ai_status) ? 'AI 分析' : '重新分析' }}
+          </el-button>
+          <el-button v-if="hasAiResult" link type="primary" size="small" @click="goAiAnalyses">查看分析结果 →</el-button>
+        </div>
+        <el-alert
+          v-if="detail.ai_status === 'running' || detail.ai_status === 'pending'"
+          type="info" :closable="false" show-icon title="AI 正在分析该告警的日志上下文，完成后自动刷新…"
+        />
+        <el-alert
+          v-else-if="detail.ai_status === 'skipped'"
+          type="info" :closable="false" show-icon title="AI 分析未启用或未命中联动条件，可在系统管理→AI 服务配置中开启"
+        />
+      </section>
+
       <!-- 异常时刻快照（进程详情） -->
       <section class="block">
         <h4 class="block-title">异常时刻快照（进程详情）</h4>
@@ -202,10 +227,12 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { fetchAnomalyDetail, runAnomalySnapshot } from '../api'
+import { fetchAnomalyDetail, runAnomalySnapshot, triggerAiAnalysis } from '../api'
 import { fmtTimeCol } from '../time'
 import { TRIGGER_CN } from '../trigger-cn'
+import { auth } from '../auth'
 
 const SEV_LABELS = {
   P0: 'P0 严重故障', P1: 'P1 重要告警', P2: 'P2 一般告警', P3: 'P3 提示信息',
@@ -220,6 +247,35 @@ const visible = ref(false)
 const detail = ref(null)
 const anomalyId = ref(null)
 let pollTimer = null
+
+const router = useRouter()
+
+// AI 日志分析状态（anomaly.ai_status 由后端联动引擎/手动触发更新）
+const AI_LABELS = {
+  none: '未分析', pending: '排队中', running: '分析中',
+  done: '已完成', blocked: '已拦截', failed: '失败', skipped: '未启用',
+}
+const AI_TAGS = {
+  none: 'info', pending: 'info', running: 'primary',
+  done: 'success', blocked: 'warning', failed: 'danger', skipped: 'info',
+}
+const canFeedback = auth.has('ai:feedback')
+const hasAiResult = computed(() => ['done', 'blocked'].includes(detail.value?.ai_status))
+
+function triggerAi() {
+  triggerAiAnalysis(anomalyId.value)
+    .then(() => {
+      ElMessage.success('已派发 AI 分析任务')
+      startPoll()
+    })
+    .catch((e) => ElMessage.error(e?.response?.data?.detail || '触发 AI 分析失败'))
+}
+
+// 双向关联：从告警跳转到分析结果列表
+function goAiAnalyses() {
+  visible.value = false
+  router.push({ path: '/ai-analyses', query: { anomaly_id: String(anomalyId.value) } })
+}
 
 const fmtTime = fmtTimeCol('')
 
@@ -339,6 +395,12 @@ defineExpose({ open })
   display: flex;
   align-items: center;
   gap: 12px;
+}
+.ai-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 .diag-target {
   margin-bottom: 10px;

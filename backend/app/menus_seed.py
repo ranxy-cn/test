@@ -18,6 +18,10 @@ from app.models import Menu, RoleMenu
 MENU_TREE: list[tuple] = [
     ("menu:dashboard", "运维大屏", "menu", "/dashboard", "dashboard:read", "data-analysis", 1, []),
     ("menu:anomalies", "异常告警", "menu", "/anomalies", "anomalies:read", "warning", 5, []),
+    ("menu:ai-analyses", "AI 日志分析", "menu", "/ai-analyses", "ai:view", "magic-stick", 6, [
+        ("btn:ai-feedback", "人工处理结果", "button", "", "ai:feedback", "", 10, []),
+        ("btn:ai-reanalyze", "手动重新分析", "button", "", "ai:feedback", "", 20, []),
+    ]),
     ("menu:tickets", "任务单", "menu", "/tickets", "tickets:read", "tickets", 10, [
         ("btn:ticket-approve", "审批通过/驳回", "button", "", "tickets:operate", "", 10, []),
         ("btn:ticket-retry", "重试执行", "button", "", "tickets:operate", "", 20, []),
@@ -47,6 +51,7 @@ MENU_TREE: list[tuple] = [
         ("menu:users", "用户管理", "menu", "/users", "users:manage", "user-filled", 10, []),
         ("menu:roles", "角色权限", "menu", "/roles", "roles:manage", "key", 20, []),
         ("menu:menus", "菜单管理", "menu", "/menus", "menus:manage", "menu", 30, []),
+        ("menu:ai-config", "AI 服务配置", "menu", "/ai-config", "ai:config", "cpu", 40, []),
     ]),
 ]
 

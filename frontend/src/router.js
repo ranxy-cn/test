@@ -17,6 +17,8 @@ import DashboardView from './views/DashboardView.vue'
 import KnowledgeView from './views/KnowledgeView.vue'
 import ChatView from './views/ChatView.vue'
 import StandaloneScreenView from './views/StandaloneScreenView.vue'
+import AiConfigView from './views/AiConfigView.vue'
+import AiAnalysesView from './views/AiAnalysesView.vue'
 import { auth } from './auth'
 import { setUnauthorizedHandler } from './api'
 import { ElMessage } from 'element-plus'
@@ -29,6 +31,8 @@ const router = createRouter({
     { path: '/dashboard', component: DashboardView, meta: { perm: 'dashboard:read' } },
     { path: '/screen', component: StandaloneScreenView, meta: { standalone: true, perm: 'dashboard:read' } },
     { path: '/anomalies', component: AnomaliesView, meta: { perm: 'anomalies:read' } },
+    { path: '/ai-analyses', component: AiAnalysesView, meta: { perm: 'ai:view' } },
+    { path: '/ai-config', component: AiConfigView, meta: { perm: 'ai:config' } },
     { path: '/tickets', component: TicketsView, meta: { perm: 'tickets:read' } },
     { path: '/tickets/:id', component: TicketDetailView, props: true, meta: { perm: 'tickets:read' } },
     { path: '/employee', component: EmployeeView, meta: { perm: 'catalog:read' } },

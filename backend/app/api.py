@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import logging
 import threading
 from datetime import date, datetime, timedelta, timezone
 
@@ -14,6 +15,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.domain.catalog import dump_catalog
 from app.models import (
+    AiAuditLog,
     AlertEvent,
     AnomalyEvent,
     AnomalyLog,
@@ -48,6 +50,8 @@ from app.services.notify import notify_ticket
 from app.services.pipeline import approve_ticket, dispatch_investigation, in_maintenance, reject_ticket
 from app.services.tickets import make_idempotency_key, next_ticket_number
 from pydantic import BaseModel, Field
+
+log = logging.getLogger("devops.api")
 
 router = APIRouter()
 
@@ -1591,6 +1595,28 @@ def zabbix_webhook(
         else:
             diagnostics_svc.collect_for_anomaly(anomaly.id)
 
+    # 告警 → AI 日志分析联动（仅首次异常；级别映射优先级；未启用则跳过；失败不影响 webhook 应答）
+    ai_dispatched = False
+    if not recovered and not duplicate:
+        try:
+            from app.services.ai_analyzer import get_ai_config, priority_for
+            from app.workers.tasks import analyze_anomaly_logs
+
+            cfg = get_ai_config(db)
+            if cfg.get("enabled") and anomaly.ai_status not in ("pending", "running", "done"):
+                anomaly.ai_status = "pending"
+                db.add(AiAuditLog(anomaly_id=anomaly.id, action="trigger", operator="webhook",
+                                  ok=True, detail={"source": "webhook"}))
+                db.commit()
+                if get_settings().use_celery:
+                    analyze_anomaly_logs.apply_async(args=[anomaly.id], priority=priority_for(anomaly))
+                else:
+                    analyze_anomaly_logs.run(anomaly.id)
+                ai_dispatched = True
+        except Exception:
+            db.rollback()
+            log.exception("AI 分析联动派发失败 anomaly_id=%s", anomaly.id)
+
     ticket_out = None
     skipped = False
     if get_settings().webhook_auto_ticket and not recovered and asset is not None:
@@ -1602,6 +1628,7 @@ def zabbix_webhook(
         "status": anomaly.status,
         "duplicate": duplicate,
         "skipped": skipped,
+        "ai_dispatched": ai_dispatched,
         "anomaly": AnomalyOut.model_validate(anomaly),
         "ticket": ticket_out,
     }

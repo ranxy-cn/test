@@ -382,6 +382,8 @@ class AnomalyEvent(Base):
     message: Mapped[str] = mapped_column(String(256), default="")
     # abnormal 异常 / recovered 恢复
     status: Mapped[str] = mapped_column(String(16), default="abnormal", index=True)
+    # AI 日志分析状态：none 未触发 / pending 已入队 / running 分析中 / done 完成 / failed 失败 / skipped 未启用
+    ai_status: Mapped[str] = mapped_column(String(16), default="none", server_default="none", comment="AI 日志分析状态")
     asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     diagnostics: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="异常时刻进程快照（TOP 进程/负载/内存/监听/会话）")
@@ -538,3 +540,53 @@ class KnowledgeDocument(Base):
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+
+
+class AiAnalysis(Base):
+    """AI 日志分析结果：与异常告警（anomaly_events）双向关联，仅文字性诊断与建议。"""
+
+    __tablename__ = "ai_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[int] = mapped_column(Integer, ForeignKey("anomaly_events.id"), index=True)
+    # pending 排队 / running 分析中 / done 完成 / blocked 响应含指令被屏蔽 / failed 失败 / skipped 未启用
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    # 分析优先级：0（P0 最高）~ 9（P3 最低），来自告警级别映射
+    priority: Mapped[int] = mapped_column(Integer, default=5)
+    severity: Mapped[str] = mapped_column(String(16), default="", comment="AI 判定严重程度：critical/high/medium/low/info")
+    summary: Mapped[str] = mapped_column(Text, default="", comment="一句话结论")
+    diagnosis: Mapped[str] = mapped_column(Text, default="", comment="问题诊断")
+    causes: Mapped[list] = mapped_column(JSON, default=list, comment="可能原因列表")
+    # 解决方案列表：[{title, detail, tag, severity}]
+    solutions: Mapped[list] = mapped_column(JSON, default=list)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, comment="置信度 0~1")
+    model: Mapped[str] = mapped_column(String(128), default="", comment="产生该结果的模型（mock 前缀表示演示模式）")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, comment="AI 请求耗时（毫秒）")
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False, comment="响应是否命中操作指令过滤")
+    error: Mapped[str] = mapped_column(String(1024), default="", comment="失败原因")
+    raw_response: Mapped[str] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"), default="", comment="模型原始响应（审计留痕）")
+    context_digest: Mapped[str] = mapped_column(String(64), default="", comment="送审日志上下文摘要指纹（sha256 前 16 位）")
+    # 人工处理记录
+    handled_by: Mapped[str] = mapped_column(String(64), default="", comment="处理人")
+    handled_note: Mapped[str] = mapped_column(Text, default="", comment="人工处理备注")
+    handled_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)
+
+
+class AiAuditLog(Base):
+    """AI 操作审计：记录每次配置变更/连接测试/分析触发/结果/人工处理。"""
+
+    __tablename__ = "ai_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    analysis_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # config_update / connection_test / trigger / success / failed / blocked / skipped / feedback
+    action: Mapped[str] = mapped_column(String(32), index=True)
+    operator: Mapped[str] = mapped_column(String(64), default="system", comment="触发者（用户名或 system）")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict, comment="动作详情（请求摘要/错误/变更字段等，不含密钥明文）")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)

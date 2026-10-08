@@ -158,3 +158,12 @@ export const uploadKnowledgeDocument = (file) => {
 }
 export const deleteKnowledgeDocument = (id) => http.delete(`/knowledge/documents/${id}`)
 export const sendKnowledgeChat = (message, history = []) => http.post('/knowledge/chat', { message, history }, { timeout: 90000 })
+
+// ===== AI 日志分析 =====
+export const getAiSettings = () => http.get('/ai/settings')
+export const saveAiSettings = (payload) => http.put('/ai/settings', payload)
+export const testAiConnection = (payload = {}) => http.post('/ai/settings/test', payload, { timeout: 120000 })
+export const listAiAnalyses = (params) => http.get('/ai/analyses', { params: params || {} })
+export const getAiAnalysis = (id) => http.get(`/ai/analyses/${id}`)
+export const feedbackAiAnalysis = (id, payload) => http.post(`/ai/analyses/${id}/feedback`, payload)
+export const triggerAiAnalysis = (anomalyId) => http.post(`/ai/anomalies/${anomalyId}/analyze`)

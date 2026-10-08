@@ -134,6 +134,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import {
   fetchAnomalies,
@@ -203,6 +204,9 @@ const SEV_COLORS = {
 }
 
 const detailDrawer = ref(null)
+
+const route = useRoute()
+const router = useRouter()
 
 function openDetail(row) {
   detailDrawer.value?.open(row.id)
@@ -386,6 +390,12 @@ onMounted(() => {
   load()
   loadStats()
   startAuto()
+  // 从 AI 分析页等外部跳转：?anomaly_id=xx 自动打开对应告警详情
+  const fromQuery = route.query.anomaly_id
+  if (fromQuery) {
+    openDetail({ id: Number(fromQuery) })
+    router.replace({ query: { ...route.query, anomaly_id: undefined } })
+  }
 })
 
 onBeforeUnmount(() => {

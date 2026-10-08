@@ -285,10 +285,79 @@ class AnomalyOut(BaseModel):
     severity: str = "high"
     message: str = ""
     status: str  # abnormal | recovered
+    ai_status: str = "none"  # AI 日志分析状态：none|pending|running|done|blocked|failed|skipped
     asset_id: str | None = None
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
     recovered_at: datetime | None = None
+
+
+class AiSettingsOut(BaseModel):
+    """AI 服务配置（api_key 脱敏，仅返回末 4 位）。"""
+
+    enabled: bool = False
+    base_url: str = ""
+    model: str = ""
+    timeout_seconds: int = 60
+    max_retries: int = 3
+    has_api_key: bool = False
+    api_key_tail: str = ""
+
+
+class AiSettingsIn(BaseModel):
+    """AI 服务配置保存请求。keep_api_key=True 表示沿用已存密钥不修改。"""
+
+    enabled: bool = False
+    base_url: str = Field(default="", max_length=256)
+    api_key: str = Field(default="", max_length=256)
+    keep_api_key: bool = True
+    model: str = Field(default="", max_length=128)
+    timeout_seconds: int = Field(default=60, ge=5, le=600)
+    max_retries: int = Field(default=3, ge=0, le=10)
+
+
+class AiConnectionTestOut(BaseModel):
+    ok: bool
+    message: str = ""
+    model: str = ""
+    latency_ms: int = 0
+    mock: bool = False
+
+
+class AiSolutionItem(BaseModel):
+    title: str = ""
+    detail: str = ""
+    tag: str = "通用"
+    severity: str = "medium"
+
+
+class AiAnalysisOut(BaseModel):
+    """AI 日志分析结果：与告警双向关联。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    anomaly_id: int
+    status: str
+    priority: int = 5
+    severity: str = ""
+    summary: str = ""
+    diagnosis: str = ""
+    causes: list[str] = []
+    solutions: list[AiSolutionItem] = []
+    confidence: float = 0.0
+    model: str = ""
+    latency_ms: int = 0
+    blocked: bool = False
+    error: str = ""
+    handled_by: str = ""
+    handled_note: str = ""
+    handled_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class AiFeedbackIn(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
 
 
 class TicketOut(BaseModel):

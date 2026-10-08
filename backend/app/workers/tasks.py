@@ -82,6 +82,30 @@ def scan_alerts() -> dict:
         db.close()
 
 
+@celery_app.task(name="analyze_anomaly_logs", base=LoggedTask, bind=True, max_retries=3)
+def analyze_anomaly_logs(self, anomaly_id: int) -> str:
+    """AI 日志分析任务：告警联动/手动触发入口。
+
+    异步执行不阻塞告警主流程；失败指数退避重试（30/60/120s），重试耗尽由
+    ai_analyzer.run_analysis 落库 failed 状态并写审计，系统降级为仅告警无分析。
+    """
+    from app.database import SessionLocal
+    from app.logging_setup import task_var
+    from app.services.ai_analyzer import run_analysis
+
+    token = task_var.set("ai_analysis")
+    try:
+        run_analysis(anomaly_id)
+    except Exception as exc:
+        if self.request.retries < 3:
+            log.warning("AI 分析失败准备重试 anomaly_id=%s retry=%s", anomaly_id, self.request.retries + 1)
+            raise self.retry(exc=exc, countdown=30 * (2 ** self.request.retries))
+        log.exception("AI 分析重试耗尽 anomaly_id=%s", anomaly_id)
+    finally:
+        task_var.reset(token)
+    return "done"
+
+
 @celery_app.task(name="run_due_backups", base=LoggedTask, max_retries=0)
 def run_due_backups() -> int:
     from app.database import SessionLocal

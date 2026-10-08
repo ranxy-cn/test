@@ -163,6 +163,7 @@ def _upsert_event(
         db.flush()
         stats["triggered"] += 1
         stats.setdefault("diag_ids", []).append(ev.id)
+        stats.setdefault("ai_ids", []).append(ev.id)
         log.warning(
             "告警再次触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
             asset.id, rule_key, level, latest, threshold, win, message,
@@ -402,4 +403,30 @@ def run_alert_cycle(db: Session) -> dict:
             for aid in diag_ids:
                 diagnostics_svc.collect_for_anomaly(aid)
         stats["diag_snapshot"] = len(diag_ids)
+    # 告警 → AI 日志分析联动：级别映射队列优先级（P0/P1 插队），异步派发不阻塞扫描；
+    # 未启用 AI 时跳过（幂等：pending/running/done 不重复派发），AI 不可用仅影响分析不影响告警。
+    ai_ids = stats.get("ai_ids") or []
+    if ai_ids:
+        from app.config import get_settings
+        from app.services.ai_analyzer import get_ai_config, priority_for
+
+        cfg = get_ai_config(db)
+        if cfg.get("enabled"):
+            from app.workers.tasks import analyze_anomaly_logs
+
+            dispatched = 0
+            for aid in ai_ids:
+                ev = db.get(AnomalyEvent, aid)
+                if ev is None or ev.ai_status in ("pending", "running", "done"):
+                    continue
+                ev.ai_status = "pending"
+                if get_settings().use_celery:
+                    analyze_anomaly_logs.apply_async(args=[aid], priority=priority_for(ev))
+                else:
+                    analyze_anomaly_logs.run(aid)
+                dispatched += 1
+            if dispatched:
+                db.commit()
+                stats["ai_dispatched"] = dispatched
+                log.info("AI 日志分析已派发 count=%s", dispatched)
     return stats
