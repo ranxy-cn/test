@@ -49,7 +49,7 @@ def test_upload_limit(client, monkeypatch):
 
 def test_chat_and_history(client, monkeypatch):
     captured = []
-    def complete(messages):
+    def complete(messages, **kwargs):
         captured.extend(messages)
         return "当前平台状态已检查，请先审批。"
     monkeypatch.setattr("app.routers.knowledge.chat_completion", complete)

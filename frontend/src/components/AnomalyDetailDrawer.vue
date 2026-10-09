@@ -1,5 +1,5 @@
 <template>
-  <el-drawer v-model="visible" size="64%" :title="`异常详情 · ${detail?.event_id || ''}`" destroy-on-close @closed="stopPoll">
+  <el-drawer v-model="visible" size="64%" :title="`异常详情 · ${detail?.event_id || ''}`" destroy-on-close :z-index="93" @closed="stopPoll">
     <div v-if="detail" class="detail">
       <!-- 基本信息 -->
       <section class="block">

@@ -88,6 +88,10 @@
           </div>
           <div class="toolbar">
             <el-button type="primary" size="small" :disabled="!mother" @click="openMonitor(mother)">监控详情</el-button>
+            <el-button size="small" plain :disabled="!mother" @click="agentCfgVisible = true">
+              <el-icon style="margin-right: 4px"><Setting /></el-icon>
+              Agent 配置
+            </el-button>
             <el-button
               v-perm="'assets:write'"
               size="small"
@@ -263,6 +267,7 @@
 
     <!-- ===== 详情 / 监控大弹窗 ===== -->
     <AssetMonitor v-model="monitorVisible" :asset-id="monitorId" />
+    <AgentConfigDialog v-model="agentCfgVisible" />
 
     <!-- 添加母机：SSH 验证 + 自动纳管本机子机 -->
     <el-dialog v-model="addMotherVisible" title="添加母机" width="560">
@@ -829,6 +834,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection, QuestionFilled } from '@element-plus/icons-vue'
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
+import AgentConfigDialog from '../components/AgentConfigDialog.vue'
 import {
   createMother,
   deleteAsset,
@@ -865,6 +871,7 @@ const ENV_OPTIONS = Object.entries(ENV_LABELS).map(([value, label]) => ({ value,
 // ===== 详情 / 监控大弹窗 =====
 const monitorVisible = ref(false)
 const monitorId = ref('')
+const agentCfgVisible = ref(false)
 
 // ===== 编辑资产 / 分组 =====
 const editVisible = ref(false)

@@ -83,23 +83,48 @@ def extract_text(filename: str, payload: bytes) -> str:
     return payload.decode("utf-8", errors="ignore")
 
 
-def _chat_config() -> tuple[str, str, str]:
-    settings = get_settings()
-    api_key = settings.chat_api_key or settings.openai_api_key
-    base_url = settings.chat_base_url or settings.openai_base_url
-    model = settings.chat_model if settings.chat_api_key else settings.openai_model
-    return api_key, base_url.rstrip("/"), model
+def _chat_config(db: Session | None = None) -> tuple[str, str, str, int]:
+    """智能对话/知识分析的模型配置：全局 AI 服务配置（系统管理→AI 服务配置，AppSetting 加密存储）。
+
+    传 db 时优先读取平台全局配置；未配置时 get_ai_config 内部回退 settings 的
+    chat/openai 默认值。返回 (api_key, base_url, model, timeout_seconds)。
+    """
+    fallback = get_settings()
+    cfg: dict[str, Any] = {
+        "api_key": fallback.chat_api_key or fallback.openai_api_key or "",
+        "base_url": (fallback.chat_base_url or fallback.openai_base_url or "").rstrip("/"),
+        "model": (fallback.chat_model if fallback.chat_api_key else fallback.openai_model) or "gpt-4o-mini",
+        "timeout_seconds": fallback.chat_timeout_seconds,
+    }
+    if db is not None:
+        try:
+            from app.services.ai_analyzer import get_ai_config
+
+            cfg = get_ai_config(db)
+        except Exception:
+            pass
+    return (
+        cfg.get("api_key") or "",
+        (cfg.get("base_url") or "").rstrip("/"),
+        cfg.get("model") or "gpt-4o-mini",
+        int(cfg.get("timeout_seconds") or 60),
+    )
 
 
-def chat_completion(messages: list[dict[str, str]], max_tokens: int = 1200) -> str:
-    api_key, base_url, model = _chat_config()
+def chat_model_name(db: Session | None = None) -> str:
+    """当前对话实际使用的模型名（全局 AI 服务配置优先，供前端展示/审计）。"""
+    return _chat_config(db)[2]
+
+
+def chat_completion(messages: list[dict[str, str]], max_tokens: int = 1200, db: Session | None = None) -> str:
+    api_key, base_url, model, timeout = _chat_config(db)
     if not api_key:
-        raise RuntimeError("未配置 AI API Key，请设置 CHAT_API_KEY")
+        raise RuntimeError("未配置 AI API Key，请在「系统管理 → AI 服务配置」中填写并启用")
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2},
-        timeout=get_settings().chat_timeout_seconds,
+        timeout=timeout,
     )
     response.raise_for_status()
     content = response.json()["choices"][0]["message"].get("content", "")
@@ -121,6 +146,7 @@ def analyze_document(title: str, content: str) -> dict[str, Any]:
                 {"role": "user", "content": prompt},
             ],
             max_tokens=900,
+            db=db,
         )
         raw = raw.strip().removeprefix("```").removeprefix("json").removesuffix("```").strip()
         data = json.loads(raw)

@@ -86,8 +86,11 @@
       </router-view>
     </main>
 
-    <!-- 底部 Dock：主要功能模块入口（通知中心与系统管理收进右上角） -->
+    <!-- 底部 Dock：主要功能模块入口（通知中心与系统管理收进右上角，智能对话改为右侧悬浮条） -->
     <AppDock :items="dockItems" />
+
+    <!-- 智能对话：右侧悬浮条 + 抽屉（任意界面可用，按 knowledge:chat 权限显隐） -->
+    <ChatDockFloat />
 
     <el-dialog v-model="pwdVisible" title="修改密码" width="440px">
       <el-form label-width="90px">
@@ -125,9 +128,10 @@ const isPublicPage = computed(() => Boolean(route.meta.public || route.meta.stan
 // 动态菜单树（登录接口返回，来自 menus 表按角色授权过滤）
 const menuItems = computed(() => auth.user?.menus || [])
 
-// Dock：一级页面菜单（通知中心收进右上角弹出面板，系统管理目录收进右上角下拉）
+// Dock：一级页面菜单（通知中心收进右上角弹出面板，系统管理目录收进右上角下拉，
+// 智能对话不走 Dock —— 改为右侧悬浮条入口，权限仍由后端菜单授权控制）
 const dockItems = computed(() =>
-  menuItems.value.filter((m) => m.type === 'menu' && m.path && m.path !== '/notifications'),
+  menuItems.value.filter((m) => m.type === 'menu' && m.path && m.path !== '/notifications' && m.path !== '/chat'),
 )
 
 // 系统设置下拉：目录（无 path）下的子页面

@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import AnomalyEvent, Asset, KnowledgeDocument, Ticket
 from app.routers.deps import CurrentUser, require_perm
-from app.services.knowledge import analyze_document, chat_completion, extract_text, new_document_id, redact_sensitive, search_knowledge
+from app.services.knowledge import analyze_document, chat_completion, chat_model_name, extract_text, new_document_id, redact_sensitive, search_knowledge
 
 router = APIRouter()
 
@@ -143,8 +143,8 @@ def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Dep
     messages.extend({"role": item.role, "content": redact_sensitive(item.content)} for item in body.history[-12:])
     messages.append({"role": "user", "content": redact_sensitive(body.message)})
     try:
-        answer = chat_completion(messages)
-        model = get_settings().chat_model if get_settings().chat_api_key else get_settings().openai_model
+        answer = chat_completion(messages, db=db)
+        model = chat_model_name(db)
         source = "ai"
     except Exception:
         answer = (

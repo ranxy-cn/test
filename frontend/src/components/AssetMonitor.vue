@@ -1,13 +1,21 @@
 <template>
-  <el-dialog
-    :model-value="modelValue"
-    fullscreen
-    :title="title"
-    destroy-on-close
-    @update:model-value="$emit('update:modelValue', $event)"
-    @opened="onOpened"
-    @closed="onClosed"
-  >
+  <Teleport to="body">
+    <!-- 悬浮监控窗：标题栏可拖动；z-index 90 低于顶栏(95)/Dock(2002)，全局导航始终可见可点 -->
+    <div v-if="modelValue" class="float-win" :style="floatStyle">
+      <div
+        class="float-head"
+        :class="{ dragging }"
+        @pointerdown="onDragDown"
+        @pointermove="onDragMove"
+        @pointerup="onDragUp"
+        @pointercancel="onDragUp"
+      >
+        <span class="float-head-title" :title="title"><el-icon :size="14"><Monitor /></el-icon>{{ title }}</span>
+        <button class="float-close" type="button" aria-label="关闭" @click="$emit('update:modelValue', false)">
+          <el-icon :size="15"><Close /></el-icon>
+        </button>
+      </div>
+      <div class="float-body">
     <div v-if="asset" class="monitor">
       <!-- 顶部导航栏：实时监控 / 进程巡检 / 服务器详情 / 异常告警 / 纳管记录（互斥切换，杜绝重复展示） -->
       <el-tabs v-model="navTab" class="nav-tabs">
@@ -383,6 +391,7 @@
         top="4vh"
         append-to-body
         destroy-on-close
+        :z-index="93"
       >
         <div class="row-between ov-toolbar">
           <el-radio-group v-model="ovRange" size="small" @change="loadOverview">
@@ -415,7 +424,9 @@
       </el-dialog>
       <AnomalyDetailDrawer ref="anomalyDrawer" />
     </div>
-  </el-dialog>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
@@ -628,27 +639,59 @@ function reset() {
   stopAuto()
 }
 
-function onOpened() {
-  window.addEventListener('resize', resizeChart)
-  loadAll()
-  // 等弹窗 DOM 布局完成后再初始化图表并启动 1 秒轮询
-  nextTick(() => {
-    startLive()
-  })
-}
-
-function onClosed() {
-  stopAuto()
-  stopLive()
-  window.removeEventListener('resize', resizeChart)
-  if (liveChart) {
-    liveChart.dispose()
-    liveChart = null
-  }
-}
-
 function resizeChart() {
   liveChart && liveChart.resize()
+}
+
+/* ===== 悬浮窗位置：初始水平居中偏上，标题栏拖动，窗口缩放时越界自愈 ===== */
+const posX = ref(0)
+const posY = ref(0)
+const dragging = ref(false)
+let posInit = false
+let dragSX = 0
+let dragSY = 0
+let dragPX = 0
+let dragPY = 0
+
+const winW = () => Math.min(920, window.innerWidth - 48)
+const clampX = (v) => Math.min(Math.max(v, 8), Math.max(8, window.innerWidth - winW() - 8))
+const clampY = (v) => Math.min(Math.max(v, 54), window.innerHeight - 60)
+
+const floatStyle = computed(() => ({ left: `${posX.value}px`, top: `${posY.value}px`, width: `${winW()}px` }))
+
+function ensureFloatPos() {
+  if (posInit) return
+  posInit = true
+  posX.value = clampX((window.innerWidth - winW()) / 2)
+  posY.value = clampY(60)
+}
+
+function onDragDown(e) {
+  if (e.button !== undefined && e.button !== 0) return
+  dragging.value = true
+  dragSX = e.clientX
+  dragSY = e.clientY
+  dragPX = posX.value
+  dragPY = posY.value
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+}
+
+function onDragMove(e) {
+  if (!dragging.value) return
+  posX.value = clampX(dragPX + (e.clientX - dragSX))
+  posY.value = clampY(dragPY + (e.clientY - dragSY))
+}
+
+function onDragUp(e) {
+  if (!dragging.value) return
+  dragging.value = false
+  e.currentTarget?.releasePointerCapture?.(e.pointerId)
+}
+
+function onWinResize() {
+  posX.value = clampX(posX.value)
+  posY.value = clampY(posY.value)
+  resizeChart()
 }
 
 async function loadAll() {
@@ -1038,9 +1081,72 @@ watch(autoRefresh, (on) => (on ? ensureInspectTimer() : stopAuto()))
 </script>
 
 <style scoped>
+/* ===== 悬浮监控窗：不遮顶栏与 Dock，标题栏拖动 ===== */
+.float-win {
+  position: fixed;
+  z-index: 90; /* 低于顶栏(95)与 Dock(2002)：监控打开时全局导航仍可见可点 */
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 130px); /* 顶部避开顶栏，底部避开 Dock */
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+.float-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 42px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.float-head.dragging {
+  cursor: grabbing;
+}
+.float-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.float-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.float-close:hover {
+  background: var(--el-fill-color-dark);
+  color: var(--el-color-danger);
+}
+.float-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px 16px;
+}
 .monitor {
-  max-width: 1280px;
-  margin: 0 auto;
+  width: 100%;
 }
 /* 顶部导航栏：各功能区域互斥切换 */
 .nav-tabs :deep(.el-tabs__header) {
