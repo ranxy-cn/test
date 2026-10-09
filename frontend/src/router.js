@@ -19,6 +19,7 @@ import ChatView from './views/ChatView.vue'
 import StandaloneScreenView from './views/StandaloneScreenView.vue'
 import AiConfigView from './views/AiConfigView.vue'
 import AiAnalysesView from './views/AiAnalysesView.vue'
+import RecoveryScriptsView from './views/RecoveryScriptsView.vue'
 import { auth } from './auth'
 import { setUnauthorizedHandler } from './api'
 import { ElMessage } from 'element-plus'
@@ -47,6 +48,7 @@ const router = createRouter({
     { path: '/users', component: UsersView, meta: { perm: 'users:manage' } },
     { path: '/roles', component: RolesView, meta: { perm: 'roles:manage' } },
     { path: '/menus', component: MenusView, meta: { perm: 'menus:manage' } },
+    { path: '/recovery-scripts', component: RecoveryScriptsView, meta: { perm: 'recovery:manage' } },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
   ],
 })

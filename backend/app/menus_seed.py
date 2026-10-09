@@ -26,6 +26,7 @@ MENU_TREE: list[tuple] = [
         ("btn:ticket-approve", "审批通过/驳回", "button", "", "tickets:operate", "", 10, []),
         ("btn:ticket-retry", "重试执行", "button", "", "tickets:operate", "", 20, []),
         ("btn:ticket-webhook", "模拟告警接入", "button", "", "tickets:operate", "", 30, []),
+        ("btn:recovery-execute", "执行/取消恢复任务", "button", "", "recovery:execute", "", 40, []),
     ]),
     ("menu:employee", "数字员工", "menu", "/employee", "catalog:read", "user", 20, []),
     ("menu:assets", "资产台账", "menu", "/assets", "assets:read", "grid", 30, []),
@@ -52,6 +53,7 @@ MENU_TREE: list[tuple] = [
         ("menu:roles", "角色权限", "menu", "/roles", "roles:manage", "key", 20, []),
         ("menu:menus", "菜单管理", "menu", "/menus", "menus:manage", "menu", 30, []),
         ("menu:ai-config", "AI 服务配置", "menu", "/ai-config", "ai:config", "cpu", 40, []),
+        ("menu:recovery-scripts", "恢复脚本", "menu", "/recovery-scripts", "recovery:manage", "video-play", 50, []),
     ]),
 ]
 

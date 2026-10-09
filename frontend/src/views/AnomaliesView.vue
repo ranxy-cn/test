@@ -212,8 +212,9 @@ function openDetail(row) {
   detailDrawer.value?.open(row.id)
 }
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  // silent：5 秒自动刷新等后台轮询不展示 loading 遮罩（遮罩会短暂盖住页面底部）
+  if (!silent) loading.value = true
   try {
     const { data } = await fetchAnomalies({
       page: page.value,
@@ -225,7 +226,7 @@ async function load() {
     abnormalCount.value = data.abnormal_count || 0
     total.value = data.total || 0
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -362,7 +363,7 @@ function handleResize() {
 }
 
 function tick() {
-  if (!loading.value) load()
+  if (!loading.value) load(true)
   loadStats()
 }
 

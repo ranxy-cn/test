@@ -89,6 +89,7 @@ def _upsert_event(
     notify_minutes: int = 0,
     window_series: list | None = None,
     extra: dict | None = None,
+    attribution: dict | None = None,
 ) -> None:
     """统一事件写入：breach 建/重开/刷新事件；不越限或规则禁用时自动恢复。
 
@@ -115,6 +116,7 @@ def _upsert_event(
         "latest": latest,
         "policy_source": policy_source,
         "window_series": list(window_series or [])[-60:],
+        **(attribution or {}),
         **(extra or {}),
     }
     if (not enabled) or (not breach):
@@ -122,6 +124,7 @@ def _upsert_event(
             ev.status = "recovered"
             ev.recovered_at = now
             ev.payload = {**(ev.payload or {}), **payload, "recovered": "窗口内不再越限" if enabled else "规则已禁用"}
+            stats.setdefault("recovery_resolved", []).append(ev.event_id)
             log.info("告警恢复 asset=%s rule=%s latest=%s", asset.id, rule_key, latest)
             stats["recovered"] += 1
         return
@@ -149,6 +152,7 @@ def _upsert_event(
         db.flush()  # 取自增 id，供自动诊断采集
         stats["triggered"] += 1
         stats.setdefault("diag_ids", []).append(ev.id)
+        stats.setdefault("recovery_ids", []).append(ev.id)
         log.warning(
             "告警触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
             asset.id, rule_key, level, latest, threshold, win, message,
@@ -164,6 +168,7 @@ def _upsert_event(
         stats["triggered"] += 1
         stats.setdefault("diag_ids", []).append(ev.id)
         stats.setdefault("ai_ids", []).append(ev.id)
+        stats.setdefault("recovery_ids", []).append(ev.id)
         log.warning(
             "告警再次触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
             asset.id, rule_key, level, latest, threshold, win, message,
@@ -231,7 +236,27 @@ def run_alert_cycle(db: Session) -> dict:
         rows.reverse()  # 恢复时间正序
         provision = (asset.extra or {}).get("provision") or {}
         ip = str(provision.get("ip") or "")
-        common = {"policy_source": source}
+        # 进程归因 + 网络速率上下文：取最新帧，触发时随 payload 落库，
+        # 供前端详情与 AI 分析直接定位元凶（进程名 + PID / 内存% / 带宽速率）
+        attribution: dict = {}
+        if rows:
+            last = rows[-1]
+            procs = (last.ext or {}).get("procs")
+            if procs:
+                attribution["top_processes"] = procs
+            if last.net_rx_bps is not None or last.net_tx_bps is not None:
+                rate = {
+                    "rx_bps": last.net_rx_bps,
+                    "tx_bps": last.net_tx_bps,
+                    "rx_mbps": round((last.net_rx_bps or 0) / 1e6, 3),
+                    "tx_mbps": round((last.net_tx_bps or 0) / 1e6, 3),
+                }
+                for bw in ("bw_rx_pct", "bw_tx_pct"):
+                    v = (last.ext or {}).get(bw)
+                    if isinstance(v, (int, float)):
+                        rate[bw] = v
+                attribution["net_rate"] = rate
+        common = {"policy_source": source, "attribution": attribution}
 
         def series(field: str, win: int, *, ext_key: bool = False, numeric: bool = True) -> list:
             """窗口内样本序列（时间正序）。ext_key=True 时从样本 ext 列取值。"""
@@ -429,4 +454,38 @@ def run_alert_cycle(db: Session) -> dict:
                 db.commit()
                 stats["ai_dispatched"] = dispatched
                 log.info("AI 日志分析已派发 count=%s", dispatched)
+    # 告警 → 恢复任务联动：触发生成任务（命中启用脚本的低风险项后台自动执行），
+    # 告警恢复自动关闭任务（前端默认隐藏未结之外的状态，即「恢复时消失」）。
+    recovery_ids = stats.get("recovery_ids") or []
+    if recovery_ids:
+        from app.services.recovery import ensure_for_anomaly
+
+        ensured = 0
+        for aid in recovery_ids:
+            ev = db.get(AnomalyEvent, aid)
+            if ev is None:
+                continue
+            try:
+                ensure_for_anomaly(db, ev)
+                ensured += 1
+            except Exception:
+                db.rollback()
+                log.exception("恢复任务生成失败 anomaly_id=%s", aid)
+        if ensured:
+            db.commit()
+            stats["recovery_ensured"] = ensured
+    recovery_resolved = stats.get("recovery_resolved") or []
+    if recovery_resolved:
+        from app.services.recovery import resolve_for_anomaly
+
+        resolved = 0
+        for eid in recovery_resolved:
+            try:
+                resolved += resolve_for_anomaly(db, eid)
+            except Exception:
+                db.rollback()
+                log.exception("恢复任务自动关闭失败 event=%s", eid)
+        if resolved:
+            db.commit()
+            stats["recovery_resolved_count"] = resolved
     return stats

@@ -590,3 +590,54 @@ class AiAuditLog(Base):
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict, comment="动作详情（请求摘要/错误/变更字段等，不含密钥明文）")
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)
+
+
+class RecoveryScript(Base):
+    """自定义恢复脚本：告警规则命中后可自动/人工执行的服务器恢复脚本。
+
+    rule_key 匹配告警 payload.rule_id（空串=匹配所有规则）；risk_level 决定
+    执行方式：low 低风险告警触发后自动执行，high 高风险生成任务等人工执行。
+    """
+
+    __tablename__ = "recovery_scripts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), comment="脚本名称")
+    description: Mapped[str] = mapped_column(String(256), default="", comment="用途说明")
+    rule_key: Mapped[str] = mapped_column(String(64), default="", index=True, comment="匹配的告警规则 key（空=全部规则）")
+    # low 低风险（可自动执行）/ high 高风险（需人工确认执行）
+    risk_level: Mapped[str] = mapped_column(String(8), default="low", comment="风险等级：low/high")
+    command: Mapped[str] = mapped_column(Text, comment="Shell 恢复命令（目标机 root 执行）")
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=60, comment="执行超时（秒）")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否启用")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+
+
+class RecoveryTask(Base):
+    """告警恢复任务：告警触发时自动生成，告警恢复自动关闭（done，前端默认隐藏）。
+
+    状态机与工单 Ticket 独立：open 待处理 / executing 执行中 / done 完成 / cancelled 取消。
+    priority 由告警 P 级映射基础分（P0=90/P1=70/P2=50/P3=30），告警持续未恢复时叠加升级。
+    """
+
+    __tablename__ = "recovery_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[int] = mapped_column(Integer, ForeignKey("anomaly_events.id"), index=True)
+    event_id: Mapped[str] = mapped_column(String(128), index=True, comment="告警 event_id（幂等键）")
+    asset_id: Mapped[str] = mapped_column(String(64), default="", comment="资产 ID（空=未关联资产）")
+    rule_key: Mapped[str] = mapped_column(String(64), default="", comment="告警规则 key")
+    severity: Mapped[str] = mapped_column(String(32), default="", comment="告警级别（P0~P3）")
+    priority: Mapped[int] = mapped_column(Integer, default=50, index=True, comment="优先级分 0~99，越大越紧急")
+    # open 待处理 / executing 执行中 / done 完成 / cancelled 已取消
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    script_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("recovery_scripts.id"), nullable=True, comment="命中的恢复脚本（空=纯人工任务）")
+    script_name: Mapped[str] = mapped_column(String(64), default="", comment="脚本名快照")
+    executed_by: Mapped[str] = mapped_column(String(64), default="", comment="执行人（system=自动执行）")
+    execute_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True, comment="最近一次脚本执行结果")
+    execute_output: Mapped[str] = mapped_column(Text, default="", comment="脚本输出留痕")
+    resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True, comment="关闭时间")
+    resolve_reason: Mapped[str] = mapped_column(String(128), default="", comment="关闭原因")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)

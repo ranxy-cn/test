@@ -40,7 +40,7 @@ _LATEST_LOCK = threading.Lock()
 DEFAULT_AGENT_CONFIG = {
     "report_interval": 5,   # 上报间隔（秒）
     "collect_interval": 5,  # 采集间隔（秒）
-    "collect_items": ["cpu", "mem", "disk", "load", "net"],
+    "collect_items": ["cpu", "mem", "disk", "load", "net", "procs"],
     "buffer_max": 600,      # 断网本地缓存上限（条）
     "config_refresh": 30,   # 配置拉取间隔（秒）：策略/配置变更最迟约 30 秒同步到子机
     "offline_after": 30,    # 超过该秒数无上报视为离线
@@ -51,9 +51,9 @@ GLOBAL_CFG_KEY = "agent_config_default"
 
 # 数值配置项（秒/条），管理端写入时收敛到 [1, 86400]
 _INT_KEYS = ("report_interval", "collect_interval", "buffer_max", "config_refresh", "offline_after")
-# 采集项白名单：基础 5 项 + v1.1 扩展项（由告警策略开关驱动是否采集）
+# 采集项白名单：基础 5 项 + 进程归因 + v1.1 扩展项（由告警策略开关驱动是否采集）
 _COLLECT_ITEMS = (
-    "cpu", "mem", "disk", "load", "net",
+    "cpu", "mem", "disk", "load", "net", "procs",
     "swap", "inode", "disk_io", "tcp", "oom", "process", "port", "net_probe", "bandwidth", "metrics",
 )
 
@@ -63,6 +63,26 @@ _EXT_NUM_KEYS = (
     "loss_pct", "latency_ms", "bw_rx_pct", "bw_tx_pct", "oom_events",
 )
 _EXT_LIST_KEYS = ("procs_missing", "ports_down", "oom_detail")
+# JSON 列表（dict 元素）：进程归因 [{pid, comm, cpu, mem}]
+_EXT_JSON_KEYS = ("procs",)
+
+
+def _clean_procs(v) -> list:
+    """收敛进程归因列表：[{pid:int, comm:str, cpu:float, mem:float}]，最多 10 条。"""
+    out: list = []
+    for p in (v or [])[:10]:
+        if not isinstance(p, dict):
+            continue
+        try:
+            out.append({
+                "pid": int(p.get("pid") or 0),
+                "comm": str(p.get("comm") or "")[:64],
+                "cpu": round(float(p.get("cpu") or 0), 2),
+                "mem": round(float(p.get("mem") or 0), 2),
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _ext_of(sample: dict) -> dict | None:
@@ -76,6 +96,12 @@ def _ext_of(sample: dict) -> dict | None:
         v = sample.get(k)
         if isinstance(v, list):
             ext[k] = [str(x)[:128] for x in v[:32]]
+    for k in _EXT_JSON_KEYS:
+        v = sample.get(k)
+        if isinstance(v, list):
+            cleaned = _clean_procs(v)
+            if cleaned:
+                ext[k] = cleaned
     m = sample.get("metrics")
     if isinstance(m, dict):
         clean: dict = {}

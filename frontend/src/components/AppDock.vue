@@ -148,7 +148,8 @@ onBeforeUnmount(resetScales)
   left: 50%;
   bottom: 12px;
   transform: translateX(-50%);
-  z-index: 90;
+  /* 高于 el-loading-mask（~2001）：表格刷新遮罩不得盖住 Dock；低于弹窗 modal（2003+） */
+  z-index: 2002;
   display: flex;
   align-items: flex-end;
   gap: 8px;

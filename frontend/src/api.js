@@ -167,3 +167,12 @@ export const listAiAnalyses = (params) => http.get('/ai/analyses', { params: par
 export const getAiAnalysis = (id) => http.get(`/ai/analyses/${id}`)
 export const feedbackAiAnalysis = (id, payload) => http.post(`/ai/analyses/${id}/feedback`, payload)
 export const triggerAiAnalysis = (anomalyId) => http.post(`/ai/anomalies/${anomalyId}/analyze`)
+
+// ===== 告警恢复任务 / 恢复脚本 =====
+export const listRecoveryTasks = (params) => http.get('/recovery/tasks', { params: params || {} })
+export const executeRecoveryTask = (id) => http.post(`/recovery/tasks/${id}/execute`, null, { timeout: 180000 })
+export const cancelRecoveryTask = (id) => http.post(`/recovery/tasks/${id}/cancel`)
+export const listRecoveryScripts = () => http.get('/recovery/scripts')
+export const createRecoveryScript = (payload) => http.post('/recovery/scripts', payload)
+export const updateRecoveryScript = (id, payload) => http.put(`/recovery/scripts/${id}`, payload)
+export const deleteRecoveryScript = (id) => http.delete(`/recovery/scripts/${id}`)

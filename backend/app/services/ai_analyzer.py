@@ -168,8 +168,13 @@ def gather_context(db: Session, anomaly: AnomalyEvent) -> str:
     if payload:
         brief = {k: payload.get(k) for k in
                  ("metric", "threshold", "op", "latest", "window_seconds", "samples", "oom_detail",
-                  "policy_source", "rule_id", "level", "window") if payload.get(k) is not None}
+                  "top_processes", "net_rate", "policy_source", "rule_id", "level", "window") if payload.get(k) is not None}
         parts.append("## 告警上下文\n" + json.dumps(brief, ensure_ascii=False))
+    if payload.get("top_processes"):
+        tp = payload["top_processes"]
+        parts.append("## 触发时进程归因 (pid, 进程名, cpu%, mem%)\n"
+                     + json.dumps(tp, ensure_ascii=False)[:1200]
+                     + "\n（cpu/mem 为自进程启动平均值；请结合告警指标判断元凶进程）")
     if payload.get("window_series"):
         pts = payload["window_series"]
         head = pts[:20] if len(pts) <= 40 else pts[:10] + [["..."], ] + pts[-10:]

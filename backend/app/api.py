@@ -1617,6 +1617,21 @@ def zabbix_webhook(
             db.rollback()
             log.exception("AI 分析联动派发失败 anomaly_id=%s", anomaly.id)
 
+    # 告警 → 恢复任务联动：首次异常生成任务（命中脚本低风险自动执行），恢复自动关闭
+    recovery_created = False
+    try:
+        from app.services.recovery import ensure_for_anomaly, resolve_for_anomaly
+
+        if not recovered:
+            if ensure_for_anomaly(db, anomaly) is not None:
+                recovery_created = True
+        else:
+            resolve_for_anomaly(db, anomaly.event_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("恢复任务联动失败 event_id=%s", anomaly.event_id)
+
     ticket_out = None
     skipped = False
     if get_settings().webhook_auto_ticket and not recovered and asset is not None:

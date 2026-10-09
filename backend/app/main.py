@@ -21,6 +21,7 @@ from app.routers.knowledge import router as knowledge_router
 from app.routers.system_metrics import router as system_metrics_router
 from app.routers.agent_api import router as agent_api_router
 from app.routers.ai import router as ai_router
+from app.routers.recovery import router as recovery_router
 from app import database as dbmod
 from app.seed import seed_if_empty
 
@@ -112,3 +113,4 @@ app.include_router(knowledge_router)
 app.include_router(system_metrics_router)
 app.include_router(agent_api_router)
 app.include_router(ai_router)
+app.include_router(recovery_router)

@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,6 +264,109 @@ func netRates() (rx, tx float64, ok bool) {
 		return math2(drx/dt, 1), math2(dtx/dt, 1), true
 	}
 	return 0, 0, false
+}
+
+// ---------- 进程归因（告警窗口样本附带进程名 + PID） ----------
+
+// topProcs：单次扫描 /proc，计算每个进程的平均 CPU%（自进程启动）与内存%，
+// 取 CPU TOP5 与内存 TOP5 的并集（按 pid 去重，最多 10 条），输出 [{pid, comm, cpu, mem}]。
+// cpu = (utime+stime)/USER_HZ / elapsed * 100；elapsed = uptime - starttime/USER_HZ。
+func topProcs() []map[string]interface{} {
+	upSec, ok := uptimeSec()
+	if !ok {
+		return nil
+	}
+	pageSize := float64(os.Getpagesize())
+	const hz = 100.0 // Linux USER_HZ
+	totalKB := memTotalKB()
+	type pinfo struct {
+		pid      int64
+		comm     string
+		cpu, mem float64
+	}
+	var procs []pinfo
+	entries, err := os.ReadDir(procDir)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		data := readFile(name + "/stat")
+		l, r := strings.Index(data, "("), strings.LastIndex(data, ")")
+		if l < 0 || r < l {
+			continue
+		}
+		pid, _ := strconv.ParseInt(name, 10, 64)
+		comm := data[l+1 : r]
+		rest := strings.Fields(data[r+2:]) // 从 state（第 3 字段）开始
+		if len(rest) < 20 {
+			continue
+		}
+		utime, _ := strconv.ParseFloat(rest[11], 64) // 第 14 字段
+		stime, _ := strconv.ParseFloat(rest[12], 64) // 第 15 字段
+		start, _ := strconv.ParseFloat(rest[19], 64) // 第 22 字段
+		cpu := 0.0
+		if elapsed := upSec - start/hz; elapsed > 0 {
+			cpu = (utime + stime) / hz / elapsed * 100
+		}
+		mem := 0.0
+		if st := strings.Fields(readFile(name + "/statm")); len(st) > 1 && totalKB > 0 {
+			rss, _ := strconv.ParseFloat(st[1], 64)
+			mem = rss * pageSize / 1024 / totalKB * 100
+		}
+		procs = append(procs, pinfo{pid: pid, comm: comm, cpu: round2(cpu), mem: round2(mem)})
+	}
+	byCpu := append([]pinfo(nil), procs...)
+	sort.Slice(byCpu, func(i, j int) bool { return byCpu[i].cpu > byCpu[j].cpu })
+	if len(byCpu) > 5 {
+		byCpu = byCpu[:5]
+	}
+	byMem := append([]pinfo(nil), procs...)
+	sort.Slice(byMem, func(i, j int) bool { return byMem[i].mem > byMem[j].mem })
+	if len(byMem) > 5 {
+		byMem = byMem[:5]
+	}
+	seen := map[int64]bool{}
+	out := make([]map[string]interface{}, 0, 10)
+	for _, p := range byCpu {
+		seen[p.pid] = true
+		out = append(out, map[string]interface{}{"pid": p.pid, "comm": p.comm, "cpu": p.cpu, "mem": p.mem})
+	}
+	for _, p := range byMem {
+		if len(out) >= 10 || seen[p.pid] {
+			continue
+		}
+		seen[p.pid] = true
+		out = append(out, map[string]interface{}{"pid": p.pid, "comm": p.comm, "cpu": p.cpu, "mem": p.mem})
+	}
+	return out
+}
+
+func uptimeSec() (float64, bool) {
+	fields := strings.Fields(readFile("uptime"))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+func memTotalKB() float64 {
+	for _, line := range strings.Split(readFile("meminfo"), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			v, err := strconv.ParseFloat(strings.TrimSpace(strings.Fields(strings.SplitN(line, ":", 2)[1])[0]), 64)
+			if err == nil {
+				return v
+			}
+		}
+	}
+	return 0
 }
 
 // ---------- v1.1 扩展采集（按告警策略开关） ----------
@@ -692,6 +796,7 @@ func effectiveItems(items []string, p AlertPolicy) []string {
 	for _, it := range items {
 		set[it] = true
 	}
+	set["procs"] = true // 进程归因：所有告警场景通用（payload 附带 top 进程）
 	if p.SwapEnabled {
 		set["swap"] = true
 	}
@@ -753,6 +858,10 @@ func (a *Agent) collect(items []string) map[string]interface{} {
 		case "net":
 			if rx, tx, ok := netRates(); ok {
 				s["net_rx_bps"], s["net_tx_bps"] = rx, tx
+			}
+		case "procs":
+			if tp := topProcs(); len(tp) > 0 {
+				s["procs"] = tp
 			}
 		case "swap":
 			if v, ok := swapPct(); ok {

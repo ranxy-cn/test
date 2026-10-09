@@ -128,6 +128,74 @@ def _net() -> "tuple[float, float] | None":
     return round(max(0.0, rx - prev[1]) / dt, 1), round(max(0.0, tx - prev[2]) / dt, 1)
 
 
+def _uptime_sec() -> "float | None":
+    try:
+        return float(_read(PROC + "/uptime").split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _mem_total_kb() -> float:
+    try:
+        for line in _read(PROC + "/meminfo").splitlines():
+            if line.startswith("MemTotal:"):
+                return float(line.split(":")[1].strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
+
+
+def _procs() -> "list[dict]":
+    """进程归因：CPU TOP5 + 内存 TOP5 并集（按 pid 去重，最多 10 条）。
+
+    每条 {pid, comm, cpu, mem}；cpu 为自进程启动的平均占用%
+    （(utime+stime)/CLK_TCK / elapsed），mem 为 RSS 占物理内存%。
+    """
+    up = _uptime_sec()
+    if not up:
+        return []
+    try:
+        page_kb = os.sysconf("SC_PAGE_SIZE") / 1024.0
+        hz = os.sysconf("SC_CLK_TCK") or 100
+    except (ValueError, OSError):
+        page_kb, hz = 4.0, 100
+    total_kb = _mem_total_kb()
+    infos: "list[dict]" = []
+    for name in os.listdir(PROC):
+        if not name.isdigit():
+            continue
+        try:
+            stat = _read(PROC + "/" + name + "/stat")
+            l, r = stat.index("("), stat.rindex(")")
+            comm = stat[l + 1:r]
+            rest = stat[r + 2:].split()  # 从 state（第 3 字段）开始
+            if len(rest) < 20:
+                continue
+            utime, stime, start = float(rest[11]), float(rest[12]), float(rest[19])
+            cpu = 0.0
+            elapsed = up - start / hz
+            if elapsed > 0:
+                cpu = (utime + stime) / hz / elapsed * 100
+            mem = 0.0
+            if total_kb > 0:
+                st = _read(PROC + "/" + name + "/statm").split()
+                if len(st) > 1:
+                    mem = float(st[1]) * page_kb / total_kb * 100
+            infos.append({"pid": int(name), "comm": comm, "cpu": round(cpu, 2), "mem": round(mem, 2)})
+        except (OSError, ValueError, IndexError):
+            continue
+    by_cpu = sorted(infos, key=lambda p: p["cpu"], reverse=True)[:5]
+    by_mem = sorted(infos, key=lambda p: p["mem"], reverse=True)[:5]
+    out: "list[dict]" = []
+    seen = set()
+    for p in by_cpu + by_mem:
+        if p["pid"] in seen or len(out) >= 10:
+            continue
+        seen.add(p["pid"])
+        out.append(p)
+    return out
+
+
 def collect(items: "list[str]") -> dict:
     sample: dict = {"ts": time.time()}
     if "cpu" in items:
@@ -142,6 +210,9 @@ def collect(items: "list[str]") -> dict:
         rates = _net()
         if rates:
             sample["net_rx_bps"], sample["net_tx_bps"] = rates
+    procs = _procs()  # 进程归因：所有告警场景通用
+    if procs:
+        sample["procs"] = procs
     return sample
 
 
