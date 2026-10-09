@@ -119,6 +119,7 @@ import { ElMessage } from 'element-plus'
 import { auth } from './auth'
 import { changePassword, fetchNotifications } from './api'
 import AppDock from './components/AppDock.vue'
+import ChatDockFloat from './components/ChatDockFloat.vue'
 import { fmtTime } from './time'
 
 const route = useRoute()
