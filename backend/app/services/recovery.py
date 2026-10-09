@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any
 
 import paramiko
@@ -208,8 +209,20 @@ def execute_task(task_id: int, operator: str = "") -> dict[str, Any]:
 
 
 def _auto_execute(task_id: int) -> None:
-    """低风险脚本自动执行入口（后台线程）。"""
+    """低风险脚本自动执行入口（后台线程）。
+
+    线程启动早于调用方 commit，先等任务落库可见（MySQL REPEATABLE READ
+    下需每次新建事务查询），最多等 10 秒，避免「任务不存在」空跑。
+    """
     try:
+        for _ in range(20):
+            db = SessionLocal()
+            try:
+                if db.get(RecoveryTask, task_id) is not None:
+                    break
+            finally:
+                db.close()
+            time.sleep(0.5)
         execute_task(task_id, operator="system")
     except Exception:
         log.exception("恢复任务自动执行异常 task_id=%s", task_id)
