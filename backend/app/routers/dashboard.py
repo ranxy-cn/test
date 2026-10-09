@@ -31,7 +31,11 @@ def _netdata_summary(snapshot: dict) -> dict:
 
 @router.get("/api/v1/dashboard/overview", dependencies=[Depends(require_perm("dashboard:read"))])
 def dashboard_overview(db: Session = Depends(get_db)):
-    assets = db.scalars(select(Asset).order_by(Asset.hostname)).all()
+    assets = db.scalars(
+        select(Asset).where(
+            (Asset.kind == "mother") | ((Asset.kind == "child") & (Asset.mother_id != ""))
+        ).order_by(Asset.hostname)
+    ).all()
     active_count = db.scalar(
         select(func.count()).select_from(AnomalyEvent).where(AnomalyEvent.status == "abnormal")
     ) or 0
@@ -51,6 +55,30 @@ def dashboard_overview(db: Session = Depends(get_db)):
         .group_by(func.date(AnomalyEvent.last_seen_at))
         .order_by(func.date(AnomalyEvent.last_seen_at))
     ).all()
+    # 告警等级分布：直接全量统计（anomalies 列表只取前 10 条，用列表统计会被截断）
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    for severity, count in db.execute(
+        select(AnomalyEvent.severity, func.count())
+        .where(AnomalyEvent.status == "abnormal")
+        .group_by(AnomalyEvent.severity)
+    ).all():
+        text = str(severity or "").lower()
+        if any(word in text for word in ("high", "critical", "严重", "高")):
+            severity_counts["high"] += count
+        elif any(word in text for word in ("medium", "warning", "warn", "警告", "中")):
+            severity_counts["medium"] += count
+        else:
+            severity_counts["low"] += count
+
+    # 趋势按自然日补齐 7 天（无告警的日期补 0），避免"近 7 日"只显示有数据的 2 天
+    # 以数据库当前日期为准，保证与 func.date(...) 的分组口径一致
+    counts = {str(day): count for day, count in trend_rows}
+    today = db.scalar(select(func.current_date())) or datetime.now(timezone.utc).date()
+    trend_7d = []
+    for offset in range(6, -1, -1):
+        day = today - timedelta(days=offset)
+        trend_7d.append({"date": str(day), "count": int(counts.get(str(day), 0))})
+
     return {
         "generated_at": datetime.now(timezone.utc),
         "kpis": {
@@ -61,7 +89,8 @@ def dashboard_overview(db: Session = Depends(get_db)):
             "recovered_tickets": recovered_tickets,
             "availability": round(sum(1 for asset in assets if asset.reachable) / len(assets) * 100, 1) if assets else 100,
         },
-        "trend": [{"date": str(day), "count": count} for day, count in trend_rows],
+        "trend": trend_7d,
+        "severity": severity_counts,
         "assets": [
             {"hostname": asset.hostname, "app": asset.app, "group": asset.group, "reachable": asset.reachable, "db_ok": asset.db_ok}
             for asset in assets[:30]
