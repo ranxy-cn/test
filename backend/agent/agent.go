@@ -19,9 +19,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,8 +76,8 @@ type AlertPolicy struct {
 func defaults() AgentCfg {
 	return AgentCfg{
 		ReportInterval: 5, CollectInterval: 5,
-		CollectItems:  []string{"cpu", "mem", "disk", "load", "net"},
-		BufferMax:     600, ConfigRefresh: 300, OfflineAfter: 30,
+		CollectItems: []string{"cpu", "mem", "disk", "load", "net"},
+		BufferMax:    600, ConfigRefresh: 300, OfflineAfter: 30,
 	}
 }
 
@@ -132,8 +134,8 @@ type snapshot struct {
 	rx, tx      float64
 	hasCPU, net bool
 	// diskstats 差分：io_ticks(ms) / io_ops
-	ioTicks, ioOps      float64
-	hasIO               bool
+	ioTicks, ioOps float64
+	hasIO          bool
 }
 
 var (
@@ -280,9 +282,10 @@ func topProcs() []map[string]interface{} {
 	const hz = 100.0 // Linux USER_HZ
 	totalKB := memTotalKB()
 	type pinfo struct {
-		pid      int64
-		comm     string
-		cpu, mem float64
+		pid                     int64
+		ppid                    int64
+		comm, user, args, etime string
+		cpu, mem                float64
 	}
 	var procs []pinfo
 	entries, err := os.ReadDir(procDir)
@@ -308,16 +311,19 @@ func topProcs() []map[string]interface{} {
 		utime, _ := strconv.ParseFloat(rest[11], 64) // 第 14 字段
 		stime, _ := strconv.ParseFloat(rest[12], 64) // 第 15 字段
 		start, _ := strconv.ParseFloat(rest[19], 64) // 第 22 字段
+		ppid, _ := strconv.ParseInt(rest[1], 10, 64) // 第 4 字段
 		cpu := 0.0
+		etime := ""
 		if elapsed := upSec - start/hz; elapsed > 0 {
 			cpu = (utime + stime) / hz / elapsed * 100
+			etime = fmtElapsed(elapsed)
 		}
 		mem := 0.0
 		if st := strings.Fields(readFile(name + "/statm")); len(st) > 1 && totalKB > 0 {
 			rss, _ := strconv.ParseFloat(st[1], 64)
 			mem = rss * pageSize / 1024 / totalKB * 100
 		}
-		procs = append(procs, pinfo{pid: pid, comm: comm, cpu: round2(cpu), mem: round2(mem)})
+		procs = append(procs, pinfo{pid: pid, ppid: ppid, comm: comm, user: procUser(name), args: procArgs(name), etime: etime, cpu: round2(cpu), mem: round2(mem)})
 	}
 	byCpu := append([]pinfo(nil), procs...)
 	sort.Slice(byCpu, func(i, j int) bool { return byCpu[i].cpu > byCpu[j].cpu })
@@ -333,16 +339,127 @@ func topProcs() []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, 10)
 	for _, p := range byCpu {
 		seen[p.pid] = true
-		out = append(out, map[string]interface{}{"pid": p.pid, "comm": p.comm, "cpu": p.cpu, "mem": p.mem})
+		out = append(out, map[string]interface{}{"pid": p.pid, "ppid": p.ppid, "comm": p.comm, "user": p.user, "args": p.args, "etime": p.etime, "cpu": p.cpu, "mem": p.mem})
 	}
 	for _, p := range byMem {
 		if len(out) >= 10 || seen[p.pid] {
 			continue
 		}
 		seen[p.pid] = true
-		out = append(out, map[string]interface{}{"pid": p.pid, "comm": p.comm, "cpu": p.cpu, "mem": p.mem})
+		out = append(out, map[string]interface{}{"pid": p.pid, "ppid": p.ppid, "comm": p.comm, "user": p.user, "args": p.args, "etime": p.etime, "cpu": p.cpu, "mem": p.mem})
 	}
 	return out
+}
+
+// fmtElapsed：秒 → ps 风格运行时长（[[dd-]hh:]mm:ss）。
+func fmtElapsed(sec float64) string {
+	s := int64(sec)
+	d := s / 86400
+	h := (s % 86400) / 3600
+	m := (s % 3600) / 60
+	secPart := s % 60
+	if d > 0 {
+		return fmt.Sprintf("%dd %02d:%02d:%02d", d, h, m, secPart)
+	}
+	if h > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", h, m, secPart)
+	}
+	return fmt.Sprintf("%02d:%02d", m, secPart)
+}
+
+// ---- 进程用户/命令辅助（为 topProcs 补 user/args，替代 SSH ps） ----
+
+var (
+	passwdMu  sync.Mutex
+	passwdMap map[string]string
+)
+
+func userOfUID(uid string) string {
+	passwdMu.Lock()
+	defer passwdMu.Unlock()
+	if passwdMap == nil {
+		passwdMap = map[string]string{}
+		if data, err := os.ReadFile("/etc/passwd"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				parts := strings.Split(line, ":")
+				if len(parts) >= 3 {
+					passwdMap[parts[2]] = parts[0]
+				}
+			}
+		}
+	}
+	if u, ok := passwdMap[uid]; ok {
+		return u
+	}
+	return uid
+}
+
+// procUser：读 /proc/<pid>/status 的 Uid 行（real uid）映射用户名。
+func procUser(pidDir string) string {
+	for _, line := range strings.Split(readFile(filepath.Join(pidDir, "status")), "\n") {
+		if strings.HasPrefix(line, "Uid:") {
+			f := strings.Fields(line)
+			if len(f) >= 2 {
+				return userOfUID(f[1])
+			}
+			break
+		}
+	}
+	return ""
+}
+
+// procArgs：读 /proc/<pid>/cmdline，NUL 替换为空格。
+func procArgs(pidDir string) string {
+	// 必须经 readFile（自动补 /proc 前缀）：pidDir 是相对名，agent CWD 不在 /proc 下
+	data := readFile(filepath.Join(pidDir, "cmdline"))
+	if data == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.ReplaceAll(data, "\x00", " "))
+}
+
+// loadAvg：/proc/loadavg 前三字段 + 逻辑核数（runtime.NumCPU；
+// 注意第 4 字段 "running/total" 的 total 是线程总数，不是核数）。
+func loadAvg() (l1, l5, l15 float64, ncpu int, ok bool) {
+	fields := strings.Fields(readFile("loadavg"))
+	if len(fields) < 3 {
+		return 0, 0, 0, 0, false
+	}
+	a, e1 := strconv.ParseFloat(fields[0], 64)
+	b, e2 := strconv.ParseFloat(fields[1], 64)
+	c, e3 := strconv.ParseFloat(fields[2], 64)
+	if e1 != nil || e2 != nil || e3 != nil {
+		return 0, 0, 0, 0, false
+	}
+	return round2(a), round2(b), round2(c), runtime.NumCPU(), true
+}
+
+// memKB：/proc/meminfo 的 MemTotal 与 used(=Total-Available)，单位 KB。
+func memKB() (total, used float64, ok bool) {
+	total, avail := 0.0, -1.0
+	for _, line := range strings.Split(readFile("meminfo"), "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		kb, err := strconv.ParseFloat(strings.TrimSpace(strings.Fields(parts[1])[0]), 64)
+		if err != nil {
+			continue
+		}
+		switch strings.TrimSpace(parts[0]) {
+		case "MemTotal":
+			total = kb
+		case "MemAvailable":
+			avail = kb
+		}
+	}
+	if total <= 0 || avail < 0 {
+		return 0, 0, false
+	}
+	if used = total - avail; used < 0 {
+		used = 0
+	}
+	return total, used, true
 }
 
 func uptimeSec() (float64, bool) {
@@ -719,9 +836,9 @@ func bandwidthPct(rx, tx float64) (rxPct, txPct float64, ok bool) {
 
 // metricsScrape：抓取 Prometheus 文本指标 + URL 健康探测（连续失败计数）。
 type scrapeState struct {
-	mu       sync.Mutex
-	streaks  map[string]int // url -> 连续失败次数
-	client   *http.Client
+	mu      sync.Mutex
+	streaks map[string]int // url -> 连续失败次数
+	client  *http.Client
 }
 
 func newScrapeState() *scrapeState {
@@ -847,13 +964,20 @@ func (a *Agent) collect(items []string) map[string]interface{} {
 			if v, ok := memPct(); ok {
 				s["mem"] = v
 			}
+			if total, used, ok := memKB(); ok {
+				s["mem_total_mb"] = round2(total / 1024)
+				s["mem_used_mb"] = round2(used / 1024)
+			}
 		case "disk":
 			if v, ok := diskPct(); ok {
 				s["disk"] = v
 			}
 		case "load":
-			if v, ok := load1(); ok {
-				s["load1"] = v
+			if l1, l5, l15, ncpu, ok := loadAvg(); ok {
+				s["load1"], s["load5"], s["load15"] = l1, l5, l15
+				if ncpu > 0 {
+					s["ncpu"] = ncpu
+				}
 			}
 		case "net":
 			if rx, tx, ok := netRates(); ok {
@@ -923,6 +1047,34 @@ func (a *Agent) cachedNetRates() (float64, float64) {
 	return a.lastRx, a.lastTx
 }
 
+// ---------- 服务器详情（低频本地采集，替代 SSH 上机） ----------
+
+// sysinfoCmd：本地一次采集服务器全景（与后端 inspector.parse_sysinfo_raw 配套解析）。
+const sysinfoCmd = `echo @@BASIC@@; hostname 2>/dev/null; uname -r; uname -m; sed -n 's/^PRETTY_NAME="\{0,1\}\(.*\)"\{0,1\}$/\1/p' /etc/os-release 2>/dev/null; date '+%Y-%m-%d %H:%M:%S %z'; readlink /etc/localtime 2>/dev/null | sed 's|.*zoneinfo/||'; uptime -s 2>/dev/null;
+echo @@VIRT@@; systemd-detect-virt 2>/dev/null; grep -c hypervisor /proc/cpuinfo 2>/dev/null; cat /sys/class/dmi/id/product_name 2>/dev/null; cat /sys/class/dmi/id/sys_vendor 2>/dev/null;
+echo @@CPU@@; lscpu 2>/dev/null; grep -m1 'model name' /proc/cpuinfo 2>/dev/null; nproc 2>/dev/null;
+echo @@MEMINFO@@; grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapTotal|SwapFree|SwapCached|Dirty|Writeback|Active|Inactive|Slab):' /proc/meminfo 2>/dev/null; free -m 2>/dev/null | sed -n '2,3p';
+echo @@DISKS@@; df -hP 2>/dev/null;
+echo @@INODES@@; df -iP 2>/dev/null;
+echo @@BLOCKS@@; lsblk -P -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL 2>/dev/null;
+echo @@IFACES@@; ip -brief address 2>/dev/null || ip -o -4 addr show 2>/dev/null;
+echo @@ROUTE@@; ip route 2>/dev/null;
+echo @@TCP@@; ss -s 2>/dev/null | head -n 6;
+echo @@LISTEN@@; ss -tulnpH 2>/dev/null | head -n 40;
+echo @@PROCS@@; ps -eo pid --no-headers 2>/dev/null | wc -l; ps -eo stat --no-headers 2>/dev/null | grep -c '^R'; ps -eo stat --no-headers 2>/dev/null | grep -c '^Z';
+echo @@USERS@@; who 2>/dev/null;
+echo @@AGENT@@; ps -eo args 2>/dev/null | grep -E 'devops-agent' | grep -v grep | head -n 3; /opt/devops-agent/agent --version 2>/dev/null | head -n 1;
+echo @@END@@`
+
+// collectSysinfo：本地 shell 一次采集服务器全景原始文本（失败返回空串）。
+func collectSysinfo() string {
+	out, err := exec.Command("/bin/sh", "-c", sysinfoCmd).Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
 // ---------- 上报 ----------
 
 type Agent struct {
@@ -930,14 +1082,16 @@ type Agent struct {
 	cfg                    AgentCfg
 	policy                 AlertPolicy
 	// buf 平铺存储待补发样本，与平台 samples: list[dict] 结构对齐（勿改回二维批次）
-	buf      []map[string]interface{}
-	bufLock  sync.Mutex
-	client   *http.Client
-	oom      *oomWatcher
-	scrape   *scrapeState
-	netMu    sync.Mutex
-	lastRx   float64
-	lastTx   float64
+	buf            []map[string]interface{}
+	bufLock        sync.Mutex
+	client         *http.Client
+	oom            *oomWatcher
+	scrape         *scrapeState
+	netMu          sync.Mutex
+	lastRx         float64
+	lastTx         float64
+	sysinfoMu      sync.Mutex
+	pendingSysinfo string
 }
 
 func (a *Agent) do(method, path string, body []byte) ([]byte, error) {
@@ -989,9 +1143,16 @@ func (a *Agent) flush(ready []map[string]interface{}) {
 	if len(samples) == 0 {
 		return
 	}
-	payload, err := json.Marshal(map[string]interface{}{
+	a.sysinfoMu.Lock()
+	sys := a.pendingSysinfo
+	a.sysinfoMu.Unlock()
+	payloadMap := map[string]interface{}{
 		"asset_id": a.assetID, "agent_version": agentVersion, "samples": samples,
-	})
+	}
+	if sys != "" {
+		payloadMap["sysinfo"] = sys
+	}
+	payload, err := json.Marshal(payloadMap)
 	if err != nil {
 		log.Printf("[agent] marshal report failed: %v (samples=%d dropped)", err, len(samples))
 		return
@@ -1004,12 +1165,20 @@ func (a *Agent) flush(ready []map[string]interface{}) {
 			a.buf = a.buf[len(a.buf)-a.cfg.BufferMax:]
 		}
 		a.bufLock.Unlock()
+	} else if sys != "" {
+		// 仅成功上报后清空，失败保留待下次补发
+		a.sysinfoMu.Lock()
+		if a.pendingSysinfo == sys {
+			a.pendingSysinfo = ""
+		}
+		a.sysinfoMu.Unlock()
 	}
 }
 
 func (a *Agent) run(stop <-chan struct{}) {
 	a.syncConfig()
 	nextCfg := time.Now().Add(time.Duration(a.cfg.ConfigRefresh) * time.Second)
+	nextSysinfo := time.Now().Add(10 * time.Second)
 	ready := make([]map[string]interface{}, 0, 8)
 	nextCollect, nextReport := time.Time{}, time.Time{}
 	log.Printf("[agent] v%s start -> %s asset=%s", agentVersion, a.server, a.assetID)
@@ -1043,6 +1212,14 @@ func (a *Agent) run(stop <-chan struct{}) {
 		if !now.Before(nextCfg) {
 			a.syncConfig()
 			nextCfg = now.Add(time.Duration(a.cfg.ConfigRefresh) * time.Second)
+		}
+		if !now.Before(nextSysinfo) {
+			if s := collectSysinfo(); s != "" {
+				a.sysinfoMu.Lock()
+				a.pendingSysinfo = s
+				a.sysinfoMu.Unlock()
+			}
+			nextSysinfo = now.Add(120 * time.Second)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

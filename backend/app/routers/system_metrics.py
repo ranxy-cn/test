@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import Integer, func, select, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -27,15 +27,8 @@ router = APIRouter()
 _FIELDS = ("cpu", "mem", "disk", "load1", "net_rx_bps", "net_tx_bps")
 
 
-def _avg(vals: list) -> float | None:
-    """均值：忽略 None；全空返回 None。"""
-    xs = [v for v in vals if v is not None]
-    return round(sum(xs) / len(xs), 2) if xs else None
-
-
-def _peak(vals: list) -> float | None:
-    xs = [v for v in vals if v is not None]
-    return round(max(xs), 2) if xs else None
+def _round(v):
+    return round(v, 2) if v is not None else None
 
 
 def _bucket_seconds(minutes: float) -> int:
@@ -100,38 +93,68 @@ def system_history(
     """落库采样查询（子机=Agent 上报；母机=其本机子机曲线；不带 asset_id=平台本机采样）。
 
     - 原始粒度（≤2h）：bucket_seconds=0，每行原样返回（*_max 与均值相同）
-    - 长窗口：按桶聚合，每桶返回均值与峰值（cpu_max 等），点数 ≤ 窗口秒数/桶宽
+    - 长窗口：SQL 侧按桶聚合（AVG/MAX），避免百万行加载到 Python 内存
     """
     start = utcnow() - timedelta(minutes=minutes)
-    stmt = select(SystemMetricSample).where(SystemMetricSample.ts >= start)
+    bucket = _bucket_seconds(minutes)
+    base_filter = [SystemMetricSample.ts >= start]
     if asset_id:
-        # 母机曲线 = 其本机子机 agent 上报；无本机子机的母机没有真实数据，返回空（不伪造）
         target = _resolve_metric_asset(db, db.get(Asset, asset_id))
         if target is None:
-            return {"count": 0, "bucket_seconds": _bucket_seconds(minutes), "items": []}
-        stmt = stmt.where(SystemMetricSample.asset_id == target.id)
+            return {"count": 0, "bucket_seconds": bucket, "items": []}
+        base_filter.append(SystemMetricSample.asset_id == target.id)
     else:
-        stmt = stmt.where(SystemMetricSample.asset_id.is_(None))  # 平台本机采样
-    rows = db.scalars(stmt.order_by(SystemMetricSample.ts)).all()
-    bucket = _bucket_seconds(minutes)
+        base_filter.append(SystemMetricSample.asset_id.is_(None))
+
     if not bucket:
+        # 原始粒度：直接查行（≤2h ≈ 1440 行），安全上限 2000
+        stmt = (
+            select(SystemMetricSample)
+            .where(*base_filter)
+            .order_by(SystemMetricSample.ts)
+            .limit(2000)
+        )
+        rows = db.scalars(stmt).all()
         items = [
             {**{"ts": int(r.ts.timestamp()) if r.ts else None},
              **{f: getattr(r, f) for f in _FIELDS},
              **{f"{f}_max": getattr(r, f) for f in _FIELDS}}
             for r in rows
         ]
+        return {"count": len(rows), "bucket_seconds": bucket, "items": items}
+
+    # 分桶聚合：在数据库侧 GROUP BY 时间桶，返回 avg/max（60 天 ≈ 1440 行而非百万行）
+    # ts 列统一存 UTC naive（TZDateTime）。MySQL 的 UNIX_TIMESTAMP 按 session 时区解释
+    # naive 值，必须把本次连接固定为 UTC 才能得到与 Python 侧 timestamp() 一致的 epoch。
+    is_mysql = db.bind.dialect.name == "mysql" if db.bind else False
+    if is_mysql:
+        db.execute(text("SET time_zone = '+00:00'"))
+        ts_expr = func.unix_timestamp(SystemMetricSample.ts)
     else:
-        groups: dict[int, list[SystemMetricSample]] = {}
-        for r in rows:
-            groups.setdefault(int(r.ts.timestamp()) // bucket, []).append(r)
-        items = []
-        for k in sorted(groups):
-            g = groups[k]
-            point = {"ts": k * bucket}
-            for f in _FIELDS:
-                vals = [getattr(r, f) for r in g]
-                point[f] = _avg(vals)
-                point[f"{f}_max"] = _peak(vals)
-            items.append(point)
-    return {"count": len(rows), "bucket_seconds": bucket, "items": items}
+        # SQLite：strftime('%s') 对 naive UTC 存储直接返回正确 epoch
+        ts_expr = func.cast(func.strftime("%s", SystemMetricSample.ts), Integer)
+    # 整数桶 ID = FLOOR(epoch / bucket)，保证同桶样本归并到同一 GROUP
+    bucket_col = func.floor(ts_expr / bucket).label("bucket_id")
+
+    cols = [bucket_col]
+    for f in _FIELDS:
+        col = getattr(SystemMetricSample, f)
+        cols.append(func.avg(col).label(f))
+        cols.append(func.max(col).label(f"{f}_max"))
+
+    stmt = (
+        select(*cols)
+        .where(*base_filter)
+        .group_by(bucket_col)
+        .order_by(bucket_col)
+    )
+    rows = db.execute(stmt).all()
+    items = []
+    for r in rows:
+        bid = int(r.bucket_id) if r.bucket_id is not None else 0
+        point = {"ts": bid * bucket}
+        for f in _FIELDS:
+            point[f] = _round(getattr(r, f))
+            point[f"{f}_max"] = _round(getattr(r, f"{f}_max"))
+        items.append(point)
+    return {"count": len(items), "bucket_seconds": bucket, "items": items}

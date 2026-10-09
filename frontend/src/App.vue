@@ -77,20 +77,22 @@
       </div>
     </header>
 
-    <!-- 主内容区：占满除顶栏与 Dock 外的全部空间 -->
-    <main class="main">
-      <router-view v-slot="{ Component }">
-        <transition name="page" mode="out-in">
-          <component :is="Component" />
-        </transition>
-      </router-view>
-    </main>
+    <!-- 主内容区 + 智能对话侧栏：对话打开时作为停靠列挤压内容区（split view） -->
+    <div class="content-row">
+      <main class="main">
+        <router-view v-slot="{ Component }">
+          <transition name="page" mode="out-in">
+            <component :is="Component" />
+          </transition>
+        </router-view>
+      </main>
+
+      <!-- 智能对话：右侧悬浮条 + 停靠侧栏（任意界面可用，按 knowledge:chat 权限显隐） -->
+      <ChatDockFloat />
+    </div>
 
     <!-- 底部 Dock：主要功能模块入口（通知中心与系统管理收进右上角，智能对话改为右侧悬浮条） -->
     <AppDock :items="dockItems" />
-
-    <!-- 智能对话：右侧悬浮条 + 抽屉（任意界面可用，按 knowledge:chat 权限显隐） -->
-    <ChatDockFloat />
 
     <el-dialog v-model="pwdVisible" title="修改密码" width="440px">
       <el-form label-width="90px">
@@ -388,6 +390,14 @@ html.dark .clock { background: rgba(255, 255, 255, 0.08); }
   overflow: hidden;
 }
 .notif-time { font-size: 11px; color: var(--faint); margin-top: 3px; }
+
+/* ===== 主内容区 + 对话侧栏：flex 行布局，对话停靠列挤压内容区 ===== */
+.content-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
 
 /* ===== 主内容区：占满剩余空间，底部为 Dock 预留 ===== */
 .main {

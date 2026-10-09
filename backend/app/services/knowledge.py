@@ -83,6 +83,11 @@ def extract_text(filename: str, payload: bytes) -> str:
     return payload.decode("utf-8", errors="ignore")
 
 
+def _normalize_base_url(url: str) -> str:
+    """规范化网关地址：剥掉误填的 /chat/completions 后缀（调用处会自行拼接完整端点）。"""
+    return re.sub(r"/chat/completions/?$", "", url.rstrip("/"))
+
+
 def _chat_config(db: Session | None = None) -> tuple[str, str, str, int]:
     """智能对话/知识分析的模型配置：全局 AI 服务配置（系统管理→AI 服务配置，AppSetting 加密存储）。
 
@@ -92,7 +97,7 @@ def _chat_config(db: Session | None = None) -> tuple[str, str, str, int]:
     fallback = get_settings()
     cfg: dict[str, Any] = {
         "api_key": fallback.chat_api_key or fallback.openai_api_key or "",
-        "base_url": (fallback.chat_base_url or fallback.openai_base_url or "").rstrip("/"),
+        "base_url": _normalize_base_url(fallback.chat_base_url or fallback.openai_base_url or ""),
         "model": (fallback.chat_model if fallback.chat_api_key else fallback.openai_model) or "gpt-4o-mini",
         "timeout_seconds": fallback.chat_timeout_seconds,
     }
@@ -105,7 +110,7 @@ def _chat_config(db: Session | None = None) -> tuple[str, str, str, int]:
             pass
     return (
         cfg.get("api_key") or "",
-        (cfg.get("base_url") or "").rstrip("/"),
+        _normalize_base_url(cfg.get("base_url") or ""),
         cfg.get("model") or "gpt-4o-mini",
         int(cfg.get("timeout_seconds") or 60),
     )

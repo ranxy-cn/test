@@ -1245,40 +1245,159 @@ def _ssh_collect(fn, password_used: bool) -> dict:
 
 @router.post("/api/v1/assets/{asset_id}/inspect", dependencies=[Depends(require_perm("assets:read"))])
 def asset_inspect(asset_id: str, body: AssetInspectIn, db: Session = Depends(get_db)):
-    """实时巡检：SSH 登录目标机采集 top 进程排行 / 内存 / 磁盘 / 负载。
-
-    免密优先：前端不传凭据时自动使用内置巡检私钥 + 资产登记用户；传密码则密码即用即弃。
-    """
+    """实时巡检：读取子机 Agent 最新帧组装 top 进程排行 / 内存 / 磁盘 / 负载（替代 SSH）。"""
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    ip, port, username = _ssh_target_for_asset(a, body)
 
-    from app.services.inspector import INSPECT_KEY_PATH, inspect_host
+    from app.routers import agent_api as agent_mod
 
-    result = _ssh_collect(
-        lambda: inspect_host(ip, port, username, body.password, key_path=INSPECT_KEY_PATH),
-        password_used=bool(body.password),
-    )
+    result = agent_mod.inspect_snapshot_of(asset_id)
+    if result is None:
+        raise HTTPException(
+            503,
+            "Agent 尚未上报实时数据（请确认该子机已部署 Agent 且在线，稍后重试）",
+        )
     result["asset_id"] = asset_id
     return result
 
 
 @router.post("/api/v1/assets/{asset_id}/sysinfo", dependencies=[Depends(require_perm("assets:read"))])
 def asset_sysinfo(asset_id: str, body: AssetInspectIn, db: Session = Depends(get_db)):
-    """服务器详细信息：SSH 上机一次性采集 系统/硬件/内存/磁盘/网络/进程 全景（只读命令）。"""
+    """服务器详细信息：读取子机 Agent 低频上报的全景缓存（替代 SSH 上机采集）。"""
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(404, "资产不存在")
+
+    from app.routers import agent_api as agent_mod
+
+    info = agent_mod.sysinfo_of(asset_id)
+    if not info:
+        raise HTTPException(
+            503,
+            "Agent 尚未上报服务器详情（请确认该子机已部署 Agent 且在线，稍后重试）",
+        )
+    info["asset_id"] = asset_id
+    return info
+
+
+# ---------------------------------------------------------------------------
+# SSH 终端：资产监控窗内的交互式命令执行（免密巡检私钥优先，密码兜底）
+# ---------------------------------------------------------------------------
+
+EXEC_TIMEOUT = 20.0
+# wrapper 在命令输出尾部追加的 marker，用于回传 cwd / HOME / 退出码（rfind 取最后一处，防命令自身输出干扰）
+_EXEC_MARK_CWD = "@@DVP_CWD@@"
+_EXEC_MARK_HOME = "@@DVP_HOME@@"
+_EXEC_MARK_EC = "@@DVP_EC@@"
+
+
+class AssetExecIn(BaseModel):
+    command: str = Field(min_length=1, max_length=4000)
+    cwd: str = Field(default="", max_length=1024)
+    username: str = ""
+    password: str = Field(default="", max_length=128)
+    port: int = Field(default=22, ge=1, le=65535)
+
+
+@router.post("/api/v1/assets/{asset_id}/exec")
+def asset_exec(
+    asset_id: str,
+    body: AssetExecIn,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(require_perm("assets:read")),
+):
+    """SSH 终端：在目标机上执行一条命令并回显输出。
+
+    与巡检/详情同一套凭据口径（巡检私钥 + 密码兜底）；cd/环境变量跨请求生效由前端回传 cwd 实现。
+    每条命令写审计留痕（操作人/主机/命令/退出码）。
+    """
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
     ip, port, username = _ssh_target_for_asset(a, body)
 
-    from app.services.inspector import INSPECT_KEY_PATH, collect_sysinfo
+    import re
+    import shlex
+    import time as _time
 
-    result = _ssh_collect(
-        lambda: collect_sysinfo(ip, port, username, body.password, key_path=INSPECT_KEY_PATH),
-        password_used=bool(body.password),
+    import paramiko
+
+    from app.services.inspector import INSPECT_KEY_PATH, _load_private_key
+
+    def _run() -> dict:
+        pkey = _load_private_key(INSPECT_KEY_PATH)
+        # 先落目录（失败回 home），{} 聚合命令并合并 stderr，末尾 printf 追加 marker
+        wrapper = (
+            f"cd {shlex.quote(body.cwd)} 2>/dev/null || cd ~ 2>/dev/null\n"
+            f"{{ {body.command}\n}} 2>&1\n"
+            "__devops_ec=$?\n"
+            f"printf '\\n{_EXEC_MARK_CWD}%s\\n{_EXEC_MARK_HOME}%s\\n{_EXEC_MARK_EC}%s\\n' \"$(pwd)\" \"$HOME\" \"$__devops_ec\"\n"
+        )
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        t0 = _time.monotonic()
+        code = -1
+        try:
+            client.connect(
+                ip,
+                port=port,
+                username=username,
+                password=body.password or None,
+                pkey=pkey,
+                timeout=6.0,
+                banner_timeout=6.0,
+                auth_timeout=6.0,
+                allow_agent=False,
+                look_for_keys=False,
+            )
+            _, stdout, _ = client.exec_command(wrapper, timeout=EXEC_TIMEOUT)
+            try:
+                out = stdout.read().decode("utf-8", errors="replace")
+            except TimeoutError:
+                out = f"\n[终端] 命令执行超过 {int(EXEC_TIMEOUT)}s 已强制中断（长任务请用 nohup / screen）\n"
+        finally:
+            client.close()
+        duration_ms = int((_time.monotonic() - t0) * 1000)
+
+        cwd_new, home = body.cwd or "~", ""
+        idx = out.rfind(f"\n{_EXEC_MARK_CWD}")
+        if idx >= 0:
+            body_out, tail = out[:idx], out[idx:]
+            m = re.search(
+                re.escape(_EXEC_MARK_CWD) + r"(.*)\n"
+                + re.escape(_EXEC_MARK_HOME) + r"(.*)\n"
+                + re.escape(_EXEC_MARK_EC) + r"(\d+)",
+                tail,
+            )
+            if m:
+                cwd_new, home, code = m.group(1), m.group(2), int(m.group(3))
+                out = body_out
+        return {
+            "asset_id": asset_id,
+            "ip": ip,
+            "username": username,
+            "output": out,
+            "cwd": cwd_new,
+            "home": home,
+            "exit_code": code,
+            "duration_ms": duration_ms,
+        }
+
+    result = _ssh_collect(_run, password_used=bool(body.password))
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="asset.ssh_exec",
+        actor=current.username,
+        result={
+            "asset_id": asset_id,
+            "host": f"{username}@{ip}",
+            "command": body.command[:500],
+            "exit_code": result["exit_code"],
+        },
     )
-    result["asset_id"] = asset_id
+    db.commit()
     return result
 
 

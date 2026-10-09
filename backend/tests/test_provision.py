@@ -275,7 +275,8 @@ def test_uninstall_via_ssh_success():
     )
     logs: list[str] = []
     dep_mod.uninstall_via_ssh(ssh, logs=logs)
-    assert ssh.chan.commands[1].startswith("pkill -f 'devops-agent/agent'")
+    assert "pkill -f 'devops-agent[/]agent'" in ssh.chan.commands[1]
+    assert "pkill -f '[.]/agent --config'" in ssh.chan.commands[1]
     assert "rm -rf /opt/devops-agent" in ssh.chan.commands[2]
     assert any("已停止 agent 进程并清理 /opt/devops-agent" in ln for ln in logs)
 

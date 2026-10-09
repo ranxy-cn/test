@@ -351,6 +351,65 @@
           </el-card>
         </el-tab-pane>
 
+      <!-- SSH 终端：模拟交互式登录会话，命令经后端免密通道在目标机实时执行并回显 -->
+      <el-tab-pane name="ssh" lazy>
+          <template #label>SSH 终端</template>
+          <el-card shadow="never" class="pane-card">
+        <template #header>
+          <div class="row-between">
+            <span>
+              SSH 终端
+              <el-tag v-if="sshConnected" size="small" type="success" effect="plain">{{ sshSessionLabel }}</el-tag>
+              <el-tag v-else size="small" type="info" effect="plain">未连接</el-tag>
+              <el-tooltip content="模拟 SSH 会话：命令经平台免密巡检通道在目标机实时执行并回显；支持 cd 切目录、↑/↓ 历史回溯、Ctrl+L 清屏；每条命令写审计日志" placement="top">
+                <el-icon><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+            <div class="row-gap">
+              <el-button size="small" @click="sshClear">清屏</el-button>
+              <el-button size="small" :disabled="sshBusy" @click="sshReconnect">重连</el-button>
+            </div>
+          </div>
+        </template>
+
+        <!-- 快捷命令：常用排障命令一键上屏 -->
+        <div class="ssh-chips">
+          <button
+            v-for="c in SSH_QUICK"
+            :key="c.cmd"
+            type="button"
+            class="ssh-chip"
+            :disabled="sshBusy"
+            @click="sshQuick(c.cmd)"
+          >{{ c.label }}</button>
+        </div>
+
+        <div ref="sshTermEl" class="ssh-term" @click="focusSshInput">
+          <div v-for="(b, i) in sshBlocks" :key="i" class="ssh-block" :class="b.cls">{{ b.text }}</div>
+          <div class="ssh-block ssh-cmd-line">
+            <span class="ssh-prompt" v-html="sshPromptHtml"></span><input
+              ref="sshInputEl"
+              v-model="sshInput"
+              class="ssh-inline-input"
+              :disabled="sshBusy"
+              spellcheck="false"
+              autocomplete="off"
+              autocapitalize="off"
+              @keydown.enter="sshSubmit"
+              @keydown.up.prevent="sshHistoryPrev"
+              @keydown.down.prevent="sshHistoryNext"
+              @keydown.ctrl.l.prevent="sshClear"
+              @keydown.ctrl.c.prevent="sshCtrlC"
+            />
+          </div>
+        </div>
+        <div class="ssh-status">
+          <span>{{ sshBusy ? '命令执行中…' : '就绪 · ↑/↓ 历史回溯 · Ctrl+L 清屏 · Ctrl+C 放弃当前行' }}</span>
+          <span v-if="sshLastMs != null" class="ssh-latency">上次耗时 {{ sshLastMs }} ms</span>
+        </div>
+          </el-card>
+        </el-tab-pane>
+
       <!-- 纳管记录 -->
       <el-tab-pane v-if="asset?.extra?.provision" name="prov">
           <template #label>纳管记录</template>
@@ -432,7 +491,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import * as echarts from 'echarts'
-import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchSystemHistory, fetchSystemRealtime, inspectAsset } from '../api'
+import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchSystemHistory, fetchSystemRealtime, inspectAsset, execAssetCommand } from '../api'
 import { cnTrigger } from '../trigger-cn'
 import { fmtTimeCol } from '../time'
 import AnomalyDetailDrawer from './AnomalyDetailDrawer.vue'
@@ -616,10 +675,33 @@ function openAnomalyDetail(row) {
 }
 
 watch(() => props.modelValue, (open) => {
-  if (open && props.assetId) reset()
+  if (open && props.assetId) {
+    reset()
+    ensureFloatPos()
+    window.addEventListener('resize', onWinResize)
+    loadAll()
+    // 等 DOM 布局完成后再校正位置并启动 1 秒轮询
+    nextTick(() => {
+      onWinResize()
+      startLive()
+    })
+  } else if (!open) {
+    teardown()
+  }
 })
 
-onBeforeUnmount(stopAuto)
+onBeforeUnmount(teardown)
+
+// 关闭/卸载时统一清理：停轮询、注销 resize、释放图表实例
+function teardown() {
+  window.removeEventListener('resize', onWinResize)
+  stopAuto()
+  stopLive()
+  if (liveChart) {
+    liveChart.dispose()
+    liveChart = null
+  }
+}
 
 function reset() {
   asset.value = null
@@ -637,6 +719,7 @@ function reset() {
   navTab.value = 'live'
   for (const k of Object.keys(liveBufs)) liveBufs[k] = []
   stopAuto()
+  resetSsh()
 }
 
 function resizeChart() {
@@ -668,6 +751,8 @@ function ensureFloatPos() {
 
 function onDragDown(e) {
   if (e.button !== undefined && e.button !== 0) return
+  // 关闭按钮交给 click 处理：指针捕获会把 click 重定向到标题栏，导致按钮失效
+  if (e.target.closest?.('.float-close')) return
   dragging.value = true
   dragSX = e.clientX
   dragSY = e.clientY
@@ -714,6 +799,11 @@ watch(navTab, (tab, prev) => {
   if (tab === 'sysinfo' && !sysinfo.value && !sysinfoLoading.value && !sysinfoError.value) {
     loadSysinfo()
   }
+  if (tab === 'ssh' && !sshBannerShown) {
+    sshBannerShown = true
+    sshBanner()
+    nextTick(focusSshInput)
+  }
   if (tab === 'live') {
     nextTick(() => liveChart && liveChart.resize())
   }
@@ -737,6 +827,9 @@ async function tickLive() {
     live.value = data || {}
     if (!data?.supported) return
     const t = (data.ts || Math.floor(Date.now() / 1000)) * 1000
+    // 子机实时值来自 agent 最新帧（约 5s 才更新一次），1s 轮询会拿到重复帧；
+    // 时间戳未变化不追加，避免同一时刻出现多条重复曲线/tooltip 行
+    if (liveBufs.cpu.length && liveBufs.cpu[liveBufs.cpu.length - 1][0] === t) return
     pushBuf('cpu', t, data.cpu)
     pushBuf('mem', t, data.mem)
     pushBuf('disk', t, data.disk)
@@ -1078,6 +1171,183 @@ function ensureInspectTimer() {
 }
 
 watch(autoRefresh, (on) => (on ? ensureInspectTimer() : stopAuto()))
+
+// ===== SSH 终端：模拟交互式登录会话（命令经后端免密通道执行，cwd / 历史由前端维护） =====
+const SSH_QUICK = [
+  { label: 'top（单帧）', cmd: 'top -bn1 | head -30' },
+  { label: '磁盘', cmd: 'df -h' },
+  { label: '内存', cmd: 'free -m' },
+  { label: '负载 / 开机时长', cmd: 'uptime' },
+  { label: '进程 TOP15', cmd: 'ps aux --sort=-pcpu | head -16' },
+  { label: '监听端口', cmd: 'ss -tulnp | head -25' },
+  { label: '最近登录', cmd: 'last -n 8 2>/dev/null || who' },
+]
+// 终端内容块：{ text, cls: dim | cmd | out | err }，上限 500 块防内存膨胀
+const sshBlocks = ref([])
+const sshInput = ref('')
+const sshBusy = ref(false)
+const sshConnected = ref(false)
+const sshCwd = ref('')
+const sshHome = ref('')
+const sshUser = ref('')
+const sshIp = ref('')
+const sshLastMs = ref(null)
+const sshHistory = ref([])
+const sshHistIdx = ref(-1)
+const sshTermEl = ref(null)
+const sshInputEl = ref(null)
+let sshBannerShown = false
+
+const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+const sshSessionLabel = computed(() => `${sshUser.value || 'user'}@${sshIp.value || asset.value?.hostname || '?'}`)
+const sshWho = computed(() =>
+  `${sshUser.value || 'user'}@${sshIp.value || asset.value?.extra?.provision?.ip || asset.value?.hostname || 'host'}`,
+)
+// 提示符目录：HOME 前缀缩略为 ~
+const sshDir = computed(() => {
+  let dir = sshCwd.value || '~'
+  if (sshHome.value && dir.startsWith(sshHome.value)) {
+    dir = `~${dir.slice(sshHome.value.length)}` || '~'
+  }
+  return dir
+})
+const sshPromptHtml = computed(
+  () => `<span style="color:#7ee787">${escHtml(sshWho.value)}</span>:<span style="color:#79c0ff">${escHtml(sshDir.value)}</span>$ `,
+)
+const sshPromptText = computed(() => `${sshWho.value}:${sshDir.value}$ `)
+
+function sshPush(text, cls = 'out') {
+  sshBlocks.value.push({ text, cls })
+  if (sshBlocks.value.length > 500) sshBlocks.value.splice(0, sshBlocks.value.length - 500)
+  nextTick(() => {
+    const el = sshTermEl.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+function focusSshInput() {
+  if (!sshBusy.value) sshInputEl.value?.focus()
+}
+
+// 连接横幅：模拟 ssh 登录首屏
+function sshBanner() {
+  const host = asset.value?.hostname || props.assetId
+  const ip = asset.value?.extra?.provision?.ip || asset.value?.extra?.deploy?.ip
+  sshPush(`Trying ${ip || host}...`, 'dim')
+  sshPush(`Connected to ${host}${ip ? `（${ip}）` : ''} · 会话由平台免密巡检通道承载`, 'dim')
+  sshPush(`Last login: ${new Date().toLocaleString('zh-CN', { hour12: false })} from 平台控制台`, 'dim')
+  sshPush('输入命令开始操作，快捷命令见上方标签；每条命令将写入审计日志', 'dim')
+}
+
+async function sshRun(cmd) {
+  if (sshBusy.value || !props.assetId) return
+  sshBusy.value = true
+  try {
+    const { data } = await execAssetCommand(props.assetId, { command: cmd, cwd: sshCwd.value })
+    sshConnected.value = true
+    sshUser.value = data.username || sshUser.value
+    sshIp.value = data.ip || sshIp.value
+    sshCwd.value = data.cwd || sshCwd.value
+    sshHome.value = data.home || sshHome.value
+    sshLastMs.value = data.duration_ms
+    if (data.output) sshPush(data.output.replace(/\n+$/, ''), 'out')
+    if (data.exit_code !== 0) sshPush(`[exit ${data.exit_code}]`, 'err')
+  } catch (err) {
+    sshPush(err.response?.data?.detail || '命令执行失败（SSH 通道不可用）', 'err')
+  } finally {
+    sshBusy.value = false
+    nextTick(focusSshInput)
+  }
+}
+
+// 回显命令行 + 记历史 + 执行（回车与快捷命令共用）
+function sshEchoAndRun(cmd) {
+  sshPush(sshPromptText.value + cmd, 'cmd')
+  if (sshHistory.value[sshHistory.value.length - 1] !== cmd) sshHistory.value.push(cmd)
+  sshHistIdx.value = -1
+  return sshRun(cmd)
+}
+
+async function sshSubmit() {
+  const cmd = sshInput.value
+  const t = cmd.trim()
+  if (!t) {
+    sshPush(sshPromptText.value, 'cmd')
+    focusSshInput()
+    return
+  }
+  sshInput.value = ''
+  if (t === 'clear' || t === 'cls') {
+    sshBlocks.value = []
+    return
+  }
+  if (t === 'exit') {
+    sshPush(sshPromptText.value + cmd, 'cmd')
+    sshConnected.value = false
+    sshPush('与主机的连接已断开。继续输入任意命令将自动重连。', 'dim')
+    return
+  }
+  await sshEchoAndRun(cmd)
+}
+
+function sshQuick(cmd) {
+  if (sshBusy.value) return
+  sshEchoAndRun(cmd)
+}
+
+function sshHistoryPrev() {
+  if (!sshHistory.value.length) return
+  if (sshHistIdx.value === -1) sshHistIdx.value = sshHistory.value.length
+  sshHistIdx.value = Math.max(0, sshHistIdx.value - 1)
+  sshInput.value = sshHistory.value[sshHistIdx.value]
+}
+
+function sshHistoryNext() {
+  if (sshHistIdx.value === -1) return
+  sshHistIdx.value += 1
+  if (sshHistIdx.value >= sshHistory.value.length) {
+    sshHistIdx.value = -1
+    sshInput.value = ''
+  } else {
+    sshInput.value = sshHistory.value[sshHistIdx.value]
+  }
+}
+
+function sshCtrlC() {
+  sshPush(`${sshPromptText.value}${sshInput.value}^C`, 'cmd')
+  sshInput.value = ''
+  focusSshInput()
+}
+
+function sshClear() {
+  sshBlocks.value = []
+  focusSshInput()
+}
+
+// 重连：清屏重放横幅，cwd 复位
+function sshReconnect() {
+  sshBlocks.value = []
+  sshConnected.value = false
+  sshCwd.value = ''
+  sshBanner()
+  focusSshInput()
+}
+
+function resetSsh() {
+  sshBlocks.value = []
+  sshInput.value = ''
+  sshBusy.value = false
+  sshConnected.value = false
+  sshCwd.value = ''
+  sshHome.value = ''
+  sshUser.value = ''
+  sshIp.value = ''
+  sshLastMs.value = null
+  sshHistory.value = []
+  sshHistIdx.value = -1
+  sshBannerShown = false
+}
 </script>
 
 <style scoped>
@@ -1279,6 +1549,87 @@ watch(autoRefresh, (on) => (on ? ensureInspectTimer() : stopAuto()))
 }
 .live-chart {
   height: 320px;
+}
+/* ===== SSH 终端：黑底终端样式（明暗主题下恒定深色，贴近真实终端） ===== */
+.ssh-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.ssh-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 999px;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.ssh-chip:hover:not(:disabled) {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+.ssh-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ssh-term {
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: 10px;
+  padding: 12px 14px;
+  height: 420px;
+  overflow: auto;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  cursor: text;
+}
+.ssh-block {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ssh-dim {
+  color: #8b949e;
+}
+.ssh-cmd {
+  color: #e6edf3;
+  font-weight: 600;
+}
+.ssh-out {
+  color: #c9d1d9;
+}
+.ssh-err {
+  color: #ff7b72;
+}
+.ssh-cmd-line {
+  display: flex;
+  align-items: baseline;
+}
+.ssh-prompt {
+  flex: none;
+}
+.ssh-inline-input {
+  flex: 1;
+  min-width: 40px;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  color: #e6edf3;
+  font: inherit;
+  caret-color: #7ee787;
+}
+.ssh-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 /* ===== 历史全揽弹窗 ===== */
 .ov-toolbar {

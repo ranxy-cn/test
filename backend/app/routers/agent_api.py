@@ -37,6 +37,10 @@ router = APIRouter()
 LATEST: dict[str, dict] = {}
 _LATEST_LOCK = threading.Lock()
 
+# 服务器详情全景缓存：{asset_id: {...}}，由 agent 低频上报 sysinfo 原始文本解析而来
+SYSINFO: dict[str, dict] = {}
+_SYSINFO_LOCK = threading.Lock()
+
 DEFAULT_AGENT_CONFIG = {
     "report_interval": 5,   # 上报间隔（秒）
     "collect_interval": 5,  # 采集间隔（秒）
@@ -61,6 +65,7 @@ _COLLECT_ITEMS = (
 _EXT_NUM_KEYS = (
     "swap", "inode", "await_ms", "tcp_tw", "tcp_total", "tcp_conn_pct",
     "loss_pct", "latency_ms", "bw_rx_pct", "bw_tx_pct", "oom_events",
+    "load5", "load15", "ncpu", "mem_total_mb", "mem_used_mb",
 )
 _EXT_LIST_KEYS = ("procs_missing", "ports_down", "oom_detail")
 # JSON 列表（dict 元素）：进程归因 [{pid, comm, cpu, mem}]
@@ -68,17 +73,21 @@ _EXT_JSON_KEYS = ("procs",)
 
 
 def _clean_procs(v) -> list:
-    """收敛进程归因列表：[{pid:int, comm:str, cpu:float, mem:float}]，最多 10 条。"""
+    """收敛进程归因列表：[{pid,ppid,comm,cpu,mem,user,args,etime}]，最多 12 条。"""
     out: list = []
-    for p in (v or [])[:10]:
+    for p in (v or [])[:24]:
         if not isinstance(p, dict):
             continue
         try:
             out.append({
                 "pid": int(p.get("pid") or 0),
+                "ppid": int(p.get("ppid") or 0),
                 "comm": str(p.get("comm") or "")[:64],
                 "cpu": round(float(p.get("cpu") or 0), 2),
                 "mem": round(float(p.get("mem") or 0), 2),
+                "user": str(p.get("user") or "")[:32],
+                "args": str(p.get("args") or "")[:256],
+                "etime": str(p.get("etime") or "")[:32],
             })
         except (TypeError, ValueError):
             continue
@@ -156,11 +165,12 @@ def _get_asset_by_token(db: Session, asset_id: str, token: str) -> Asset:
 
 
 class ReportIn(BaseModel):
-    """单帧或多帧（断网补发）上报。"""
+    """单帧或多帧（断网补发）上报。sysinfo 为服务器详情原始文本（低频附带）。"""
 
     asset_id: str
     agent_version: str = ""
     samples: list[dict] = Field(default_factory=list)
+    sysinfo: str = ""
 
 
 @router.post("/api/v1/agent/report")
@@ -192,6 +202,17 @@ def agent_report(
         rows.append(row)
         with _LATEST_LOCK:
             LATEST[asset.id] = {**s, "ts": ts or now.timestamp()}
+    if body.sysinfo:
+        # 低频附带的服务器详情原始文本：解析为全景 JSON 缓存（替代 SSH 上机采集）
+        try:
+            from app.services.inspector import parse_sysinfo_raw
+
+            last_ip = (body.samples[-1] or {}).get("ip", "") if body.samples else ""
+            info = parse_sysinfo_raw(body.sysinfo, ip=last_ip, username="agent")
+            with _SYSINFO_LOCK:
+                SYSINFO[asset.id] = info
+        except Exception:  # noqa: BLE001 解析失败不影响采样落库
+            pass
     if rows:
         db.add_all(rows)
     asset.extra = {
@@ -449,4 +470,44 @@ def settings_snapshot() -> dict:
     return {
         "system_sample_seconds": s.system_sample_seconds,
         "retention_days": s.system_sample_retention_days,
+    }
+
+
+def sysinfo_of(asset_id: str) -> dict | None:
+    """读取 agent 低频上报的服务器详情全景缓存（替代 SSH 上机采集）。"""
+    with _SYSINFO_LOCK:
+        info = SYSINFO.get(asset_id)
+    return dict(info) if info else None
+
+
+def inspect_snapshot_of(asset_id: str) -> dict | None:
+    """从 agent 最新帧组装巡检快照（替代 SSH inspect_host）。无数据返回 None。"""
+    with _LATEST_LOCK:
+        latest = dict(LATEST.get(asset_id) or {})
+    if not latest:
+        return None
+    procs = _clean_procs(latest.get("procs") or [])
+    top_cpu = sorted([p for p in procs if p], key=lambda p: p["cpu"], reverse=True)[:15]
+    top_mem = sorted([p for p in procs if p], key=lambda p: p["mem"], reverse=True)[:15]
+    total_mb = latest.get("mem_total_mb")
+    mem = {}
+    if total_mb:
+        mem = {
+            "total_mb": int(total_mb),
+            "used_mb": int(latest.get("mem_used_mb") or 0),
+            "pct": latest.get("mem"),
+        }
+    return {
+        "ip": latest.get("ip", ""),
+        "load": {
+            "load1": latest.get("load1"),
+            "load5": latest.get("load5"),
+            "load15": latest.get("load15"),
+            "cores": latest.get("ncpu"),
+        },
+        "uptime_seconds": latest.get("uptime_seconds"),
+        "mem": mem,
+        "disk": {"pct": latest.get("disk")},
+        "top_cpu": top_cpu,
+        "top_mem": top_mem,
     }
