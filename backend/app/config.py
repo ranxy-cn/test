@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     # 初始管理员密码（首次 seed 时使用），生产必须通过环境变量覆盖
     admin_initial_password: str = "Admin@123456"
     # 是否种入演示资产/维护窗口（订单系统等示例数据）；
-    # 生产环境设 SEED_DEMO_ASSETS=0 只保留真实登记的资产
-    seed_demo_assets: bool = True
+    # 仅开发/测试环境开启（tests/conftest.py 强制注入），生产默认关闭，
+    # 如需演示可显式设 SEED_DEMO_ASSETS=1 且仅在资产表为空时生效
+    seed_demo_assets: bool = False
 
     @field_validator("seed_demo_assets", mode="before")
     @classmethod

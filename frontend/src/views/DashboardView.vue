@@ -13,7 +13,7 @@ import BigScreen from '../components/BigScreen.vue'
 .dashboard-page {
   margin: -54px -22px -100px;
   overflow: auto;
-  background: #020b1e;
+  background: var(--bg);
 }
 
 @media (max-width: 1024px) {

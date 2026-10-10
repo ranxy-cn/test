@@ -1,1208 +1,717 @@
 <template>
-  <div
-    class="screen-page"
-    :class="{ 'is-standalone': standalone, 'is-fullscreen': isFullscreen, 'is-alarm': alertLevel !== 'normal', 'is-flash': alertFlash }"
-  >
+  <div class="screen-page" :class="{ 'is-standalone': standalone }">
     <div class="screen-stage">
-      <!-- ===== 顶部标题栏 ===== -->
-      <header class="screen-header">
-        <div class="header-wing left"><i /><i /><i /></div>
-        <div class="header-core">
-          <span class="title-mark" />
-          <h1 class="header-title">智慧运维综合态势大屏</h1>
-          <span class="title-mark right" />
-        </div>
-        <div class="header-wing right"><i /><i /><i /></div>
-        <div class="header-meta">
-          <span class="live-dot" />实时监测 <b>{{ clock }}</b>
-        </div>
-        <button class="screen-control" type="button" @click="toggleFullscreen">
-          {{ isFullscreen ? '退出全屏' : '全屏展示' }}
-        </button>
-      </header>
-
-      <!-- ===== 全局告警带（仅在异常时出现） ===== -->
-      <div v-if="alertLevel !== 'normal'" class="alert-banner" :class="alertLevel">
-        <span class="alert-badge">{{ alertLevel === 'critical' ? '严重' : '告警' }}</span>
-        <div class="alert-track"><span class="alert-text">{{ alertText }}</span></div>
-        <span class="alert-extra">离线 {{ offlineCount }} 台 · 告警 {{ kpis.active_anomalies ?? 0 }} 条</span>
+      <!-- ===== 全屏 3D 资产拓扑背景层（主角，中央不遮挡） ===== -->
+      <div class="topo-backdrop">
+        <AssetTopology3D :mothers="topology" :dark="isDark" bare :highlight-key="highlightKey" :scores="scoreMap" />
       </div>
 
-      <!-- ===== 顶部 KPI 条带：与主体同一视觉带，避免中间断层 ===== -->
-      <section class="kpi-band">
-        <div
-          v-for="card in kpiCards"
-          :key="card.label"
-          class="kpi-card"
-          :class="[card.tone, { 'is-alarm': card.alarm && Number(card.value) > 0 }]"
-          :title="card.hint"
-        >
-          <span class="kpi-label">{{ card.label }}</span>
-          <div class="kpi-value">
-            <b>{{ card.shown }}</b><small>{{ card.unit }}</small>
-          </div>
-          <span class="kpi-foot">{{ card.foot }}</span>
+      <!-- ===== HUD 悬浮层：中央 pointer-events 穿透，数据面板环布四周 ===== -->
+      <div class="hud">
+        <div v-if="standalone" class="corner-tools">
+          <button class="ghost-btn" type="button" :title="isDark ? '切换白天模式' : '切换夜间模式'" @click="toggleTheme">
+            {{ isDark ? '☀ 白天' : '🌙 夜间' }}
+          </button>
         </div>
-      </section>
 
-      <!-- ===== 三栏主体 ===== -->
-      <main class="screen-body">
-        <!-- 左栏 -->
-        <section class="screen-column">
-          <ScreenPanel title="资产健康分布" subtitle="ASSET HEALTH">
-            <div class="donut-wrap">
-              <div ref="healthDonutRef" class="donut-chart" />
-              <div class="donut-center">
-                <b>{{ reachPercent }}<small>%</small></b>
-                <span class="dc-label">综合健康度</span>
-                <span class="dc-sub">纳管 {{ kpis.asset_total ?? 0 }} 台</span>
-              </div>
-              <ul class="donut-legend">
-                <li :title="`在线资产 ${kpis.asset_reachable ?? 0} 台`"><i class="dot green" />在线资产<b>{{ kpis.asset_reachable ?? 0 }}</b></li>
-                <li :title="`异常/离线资产 ${offlineCount} 台`"><i class="dot amber" />异常资产<b>{{ offlineCount }}</b></li>
-                <li :title="`综合健康度 = 在线资产 / 纳管资产`"><i class="dot cyan" />健康度<b>{{ reachPercent }}%</b></li>
-              </ul>
-            </div>
-          </ScreenPanel>
-
-          <ScreenPanel title="近 7 日告警趋势" subtitle="ALERT TREND · 7D">
-            <div ref="trendChartRef" class="trend-chart" />
-          </ScreenPanel>
-
-          <ScreenPanel title="运维关键指标" subtitle="OPS METRICS">
-            <div class="metric-cards">
-              <div v-for="card in metricCards" :key="card.label" class="metric-card" :class="card.tone" :title="card.hint">
-                <span class="metric-icon">{{ card.icon }}</span>
-                <div class="metric-main">
-                  <b>{{ card.value }}<small>{{ card.unit }}</small></b>
-                  <span>{{ card.label }}</span>
-                </div>
-              </div>
-            </div>
-          </ScreenPanel>
-        </section>
-
-        <!-- 中栏 -->
-        <section class="screen-column center-column">
-          <div class="center-stage">
-            <div class="stage-glow" />
-            <div class="core-node">
-              <span class="core-avatar">AI</span>
-              <strong>数字员工</strong>
-              <small>DIGITAL EMPLOYEE</small>
-            </div>
-            <div class="stage-gauges">
-              <div class="gauge">
-                <div class="ring" :style="ringStyle(kpis.availability ?? 100, '#3fd2ff')">
-                  <div class="ring-core"><b>{{ kpis.availability ?? 100 }}%</b></div>
-                </div>
-                <span>综合可达率</span>
-              </div>
-              <div class="stage-brief">
-                <span class="brief-line"><i class="dot green" />在线 {{ kpis.asset_reachable ?? 0 }} 台</span>
-                <span class="brief-line"><i class="dot amber" />离线 {{ offlineCount }} 台</span>
-                <span class="brief-line"><i class="dot red" />高等级告警 {{ severityRows[0]?.count ?? 0 }} 条</span>
-              </div>
-              <div class="gauge">
-                <div class="ring" :style="ringStyle(closeRate, '#2ee6a0')">
-                  <div class="ring-core"><b>{{ closeRate }}%</b></div>
-                </div>
-                <span>工单闭环率</span>
-              </div>
-            </div>
+        <!-- 顶部 KPI 甲板：一枚超薄玻璃胶囊 -->
+        <header class="kpi-dock">
+          <span class="dock-brand"><i class="live-dot" />小维 · 值守中</span>
+          <em class="dock-sep" />
+          <div class="dock-item" title="MTTR = 已恢复工单从立案到恢复的平均时长（分钟）">
+            <small>平均恢复 MTTR</small>
+            <b>{{ mttrText }}<i>min</i></b>
           </div>
+          <em class="dock-sep" />
+          <div class="dock-item" title="自动化闭环率 = 无需人工审批即自动恢复的工单 / 全部已恢复工单">
+            <small>自动化闭环率</small>
+            <b>{{ rateText }}<i>%</i></b>
+          </div>
+          <em class="dock-sep" />
+          <div class="dock-item" title="当前未进入终态（未恢复/未升级）的工单数">
+            <small>进行中工单</small>
+            <b>{{ automation.open ?? 0 }}</b>
+          </div>
+          <em class="dock-sep" />
+          <div class="dock-item" title="近 7 日异常告警总数">
+            <small>近 7 日告警</small>
+            <b>{{ alerts.total_7d ?? 0 }}</b>
+          </div>
+        </header>
 
-          <ScreenPanel title="资产状态清单" subtitle="ASSET STATUS">
-            <ul class="asset-list">
-              <li v-for="item in rankedAssets" :key="item.hostname" :title="item.tip">
-                <i class="dot" :class="item.tone" />
-                <span class="al-name">{{ item.short }}</span>
-                <span class="al-meta">{{ item.app || item.group || '—' }}</span>
-                <span class="al-score" :class="item.tone">{{ item.score }}</span>
-              </li>
-            </ul>
-          </ScreenPanel>
-
-          <ScreenPanel title="服务器实时监控" subtitle="REALTIME METRICS">
-            <div class="realtime-head">
-              <span class="rt-host" :title="featuredAsset?.hostname || '未接入监控'">
-                <i :class="featuredOnline ? 'ok' : 'off'" />
-                {{ featuredAsset ? hostLabel(featuredAsset.hostname) : '暂无可监控资产' }}
-              </span>
-              <span class="rt-count">{{ netdata?.online_count ?? 0 }}/{{ netdata?.configured_count ?? 0 }} 台在线</span>
-              <div class="rt-tabs">
-                <button
-                  v-for="item in metricTabs"
-                  :key="item.key"
-                  type="button"
-                  :class="{ active: activeMetric === item.key }"
-                  @click="switchMetric(item.key)"
-                >
-                  {{ item.name }}
-                </button>
+        <main class="hud-body">
+          <!-- 左栏：效能叙事 -->
+          <aside class="hud-col">
+            <section class="glass-panel">
+              <header class="p-head">恢复效能</header>
+              <div class="hero">
+                <b>{{ mttrText }}<small>min</small></b>
+                <span>平均恢复时长 MTTR</span>
               </div>
-            </div>
-            <div v-if="hasRealtime" ref="realtimeChartRef" class="realtime-chart" />
-            <div v-else class="rt-offline">
-              <span class="rt-offline-icon">⏻</span>
-              <b>暂无实时监控数据</b>
-              <small :title="realtimeReason">{{ realtimeReason }}</small>
-            </div>
-            <div class="realtime-foot">
-              <span>CPU <b>{{ hasRealtime ? formatPercent(featuredAsset.metrics?.cpu) : '—' }}</b></span>
-              <span>内存 <b>{{ hasRealtime ? formatPercent(featuredAsset.metrics?.memory) : '—' }}</b></span>
-              <span>磁盘 <b>{{ hasRealtime ? formatPercent(featuredAsset.metrics?.disk) : '—' }}</b></span>
-            </div>
-          </ScreenPanel>
-        </section>
-
-        <!-- 右栏 -->
-        <section class="screen-column">
-          <ScreenPanel title="资产健康排行" subtitle="HEALTH RANKING">
-            <div ref="rankChartRef" class="rank-chart" />
-            <p class="panel-note">健康分 = 可达性 40 + 数据库 20 + 告警影响 20 + 监控接入 20（悬浮查看明细）</p>
-          </ScreenPanel>
-
-          <ScreenPanel title="告警等级分布" subtitle="SEVERITY LEVELS">
-            <div class="sev-summary">
-              <b>{{ severityTotal }}</b>
-              <span>条活动告警</span>
-            </div>
-            <div class="sev-list">
-              <div v-for="row in severityRows" :key="row.label" class="sev-row" :class="row.tone" :title="`${row.label}等级 ${row.count} 条，占比 ${row.pct}%`">
-                <span class="sev-name"><i class="dot" />{{ row.label }}</span>
-                <b class="sev-count">{{ row.count }}</b>
-                <span class="sev-pct">{{ row.pct }}%</span>
-                <div class="sev-bar"><i :style="{ width: `${row.pct}%` }" /></div>
+              <div class="stat-rows">
+                <div class="stat-row"><span>平均响应 MTTA</span><b>{{ mtta.avg_minutes ?? '—' }} min</b></div>
+                <div class="stat-row"><span>P50 恢复时长</span><b>{{ p50Text }} min</b></div>
+                <div class="stat-row"><span>累计闭环工单</span><b>{{ mttr.recovered_count ?? 0 }} 单</b></div>
+                <div class="stat-row"><span>折算节省人工</span><b class="tone-ok">{{ mttr.saved_hours ?? 0 }} h</b></div>
               </div>
-            </div>
-          </ScreenPanel>
+            </section>
 
-          <ScreenPanel title="运维能力情况" subtitle="CAPABILITIES">
-            <div class="capability-grid">
-              <div v-for="chip in capabilityChips" :key="chip.label" class="capability-chip" :class="chip.tone" :title="chip.hint">
-                <span>{{ chip.label }}</span>
-                <b>{{ chip.value }}</b>
-              </div>
-              <div class="ai-badge">
-                <span class="ai-pulse">AI</span>
-                <div>
-                  <b>DevOpsAgent 在线守护</b>
-                  <small>基于企业规则持续分析与闭环</small>
+            <section class="glass-panel">
+              <header class="p-head">自动化闭环</header>
+              <div class="auto-wrap">
+                <div class="ring-wrap">
+                  <svg viewBox="0 0 84 84" class="ring">
+                    <circle cx="42" cy="42" r="36" class="ring-track" />
+                    <circle
+                      cx="42" cy="42" r="36" class="ring-bar"
+                      :style="{ strokeDasharray: RING_C, strokeDashoffset: RING_C * (1 - ringRate / 100) }"
+                    />
+                  </svg>
+                  <div class="ring-center">
+                    <b>{{ rateText }}<small>%</small></b>
+                  </div>
+                </div>
+                <div class="stat-rows auto-rows">
+                  <div class="stat-row"><span><i class="dot ok" />全自动恢复</span><b>{{ automation.auto_recovered ?? 0 }} 单</b></div>
+                  <div class="stat-row"><span><i class="dot warn" />审批后恢复</span><b>{{ automation.approved_recovered ?? 0 }} 单</b></div>
+                  <div class="stat-row"><span><i class="dot danger" />升级人工</span><b>{{ automation.escalated ?? 0 }} 单</b></div>
+                  <div class="stat-row"><span>AI 建议采纳率</span><b>{{ aiStats.adoption_rate ?? '—' }}<template v-if="aiStats.adoption_rate != null">%</template></b></div>
+                  <div class="stat-row"><span>审批均等待</span><b>{{ approval.avg_wait_minutes ?? '—' }} min</b></div>
+                  <div v-if="approval.expired" class="stat-row"><span><i class="dot danger" />审批超时作废</span><b>{{ approval.expired }} 单</b></div>
                 </div>
               </div>
-            </div>
-          </ScreenPanel>
-        </section>
-      </main>
+            </section>
 
-      <footer class="screen-footer">
-        <span>DEVOPS AGENT · 智能运维数字员工</span>
-        <span class="foot-legend">
-          <i class="dot green" />正常
-          <i class="dot cyan" />监控中
-          <i class="dot amber" />异常
-          <i class="dot red" />高等级告警
-        </span>
-        <span>数据更新时间：{{ updatedAt }} · 自动刷新 30 秒</span>
-      </footer>
+            <section class="glass-panel">
+              <header class="p-head">工单流转</header>
+              <div class="fun-rows">
+                <div v-for="row in funnelRows" :key="row.label" class="fun-row" :title="`${row.label} ${row.count} 单`">
+                  <span class="fun-name">{{ row.label }}</span>
+                  <div class="fun-track"><i :class="row.tone" :style="{ width: `${row.pct}%` }" /></div>
+                  <b class="fun-count">{{ row.count }}</b>
+                </div>
+              </div>
+              <div v-if="dwellChips.length" class="dwell-grid">
+                <div
+                  v-for="chip in dwellChips" :key="chip.label" class="dwell-chip"
+                  :title="`${chip.label}环节平均滞留 ${chip.hours} 小时（含在途）`"
+                >
+                  <small>{{ chip.label }}</small><b>{{ chip.hours }}<i>h</i></b>
+                </div>
+              </div>
+            </section>
+
+            <section class="glass-panel">
+              <header class="p-head">预案执行力</header>
+              <div class="fun-rows">
+                <div
+                  v-for="row in playbookRows" :key="row.id" class="fun-row pb-row"
+                  :title="`${row.name} · 共 ${row.total} 单 · 成功率 ${row.success_rate ?? '—'}%${row.cooldown ? ` · 冷却命中 ${row.cooldown}` : ''}`"
+                >
+                  <span class="fun-name pb-name">{{ row.name }}</span>
+                  <div class="fun-track"><i :class="row.tone" :style="{ width: `${Math.max(row.pct, 6)}%` }" /></div>
+                  <b class="fun-count">{{ row.total }}</b>
+                </div>
+                <div v-if="!playbookRows.length" class="empty-hint">暂无预案执行记录</div>
+              </div>
+              <div class="stat-rows">
+                <div class="stat-row"><span><i class="dot warn" />冷却命中</span><b>{{ playbooks.cooldown_total ?? 0 }} 次</b></div>
+                <div class="stat-row"><span>验证一次通过率</span><b>{{ playbooks.verify_first_pass_rate ?? '—' }}<template v-if="playbooks.verify_first_pass_rate != null">%</template></b></div>
+              </div>
+            </section>
+          </aside>
+
+          <!-- 中央：完整让给 3D -->
+          <div class="hud-center" aria-hidden="true" />
+
+          <!-- 右栏：告警叙事 -->
+          <aside class="hud-col">
+            <section class="glass-panel">
+              <header class="p-head">告警热点资产 · 近 7 日</header>
+              <div class="fun-rows" @mouseleave="highlightKey = ''">
+                <div
+                  v-for="row in topRows"
+                  :key="row.hostname"
+                  class="fun-row link"
+                  :class="{ active: highlightKey === row.key }"
+                  :title="`${row.hostname} · 近 7 日 ${row.count} 条告警`"
+                  @mouseenter="highlightKey = row.key"
+                >
+                  <span class="fun-name">{{ row.name }}</span>
+                  <div class="fun-track"><i class="alertbar" :style="{ width: `${row.pct}%` }" /></div>
+                  <b class="fun-count">{{ row.count }}</b>
+                </div>
+                <div v-if="!topRows.length" class="empty-hint">近 7 日风平浪静</div>
+              </div>
+            </section>
+
+            <section class="glass-panel">
+              <header class="p-head">告警热力 · 近 7 日</header>
+              <div class="heat-grid">
+                <template v-for="(row, di) in heatRows" :key="di">
+                  <span class="heat-dow">{{ DOW[di] }}</span>
+                  <i
+                    v-for="(v, hi) in row"
+                    :key="hi"
+                    class="heat-cell"
+                    :title="`周${DOW[di]} ${String(hi).padStart(2, '0')}:00 · ${v} 条`"
+                    :style="{ background: heatColor(v) }"
+                  />
+                </template>
+              </div>
+              <div class="heat-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+              <div class="heat-foot">
+                <span>本周 {{ alerts.total_7d ?? 0 }} 条 · 恢复闭环 {{ alerts.recover_rate ?? 0 }}%</span>
+                <span class="heat-legend"><i class="lg lo" />弱<i class="lg hi" />强</span>
+              </div>
+            </section>
+
+            <section class="glass-panel">
+              <header class="p-head">资产健康与容量</header>
+              <div class="fun-rows" @mouseleave="highlightKey = ''">
+                <div
+                  v-for="row in worstRows" :key="row.key" class="fun-row link"
+                  :class="{ active: highlightKey === row.key }"
+                  :title="`${row.hostname} · 健康分 ${row.score}${row.reasons.length ? ' · ' + row.reasons.join('；') : ''}`"
+                  @mouseenter="highlightKey = row.key"
+                >
+                  <span class="fun-name">{{ row.name }}</span>
+                  <div class="fun-track"><i :class="row.tone" :style="{ width: `${row.pct}%` }" /></div>
+                  <b class="fun-count" :class="`score-${row.tone}`">{{ row.score }}</b>
+                </div>
+                <div v-if="!worstRows.length" class="empty-hint">暂无资产数据</div>
+              </div>
+              <template v-if="capacityRows.length">
+                <div class="sub-head">磁盘写满预测（→95%）</div>
+                <div class="stat-rows tight">
+                  <div v-for="row in capacityRows" :key="row.asset_id" class="stat-row" :title="`${row.hostname} 当前磁盘使用率 ${row.disk_now}%`">
+                    <span class="reason">{{ row.name }}</span>
+                    <b :class="row.tone === 'danger' ? 'tone-danger' : 'tone-warn'">约 {{ row.days_to_full }} 天</b>
+                  </div>
+                </div>
+              </template>
+              <div v-if="capacity.aging_count" class="stat-rows tight">
+                <div class="stat-row" :title="`超 180 天未重启：${(capacity.aging_hosts || []).join('、')}`">
+                  <span><i class="dot warn" />超 180 天未重启</span><b>{{ capacity.aging_count }} 台</b>
+                </div>
+              </div>
+            </section>
+
+            <section class="glass-panel">
+              <header class="p-head">策略灯与红灯归因</header>
+              <div class="light-bar">
+                <i class="seg ok" :style="{ flexGrow: policy.green || 0.001 }" />
+                <i class="seg warn" :style="{ flexGrow: policy.yellow || 0.001 }" />
+                <i class="seg danger" :style="{ flexGrow: policy.red || 0.001 }" />
+              </div>
+              <div class="stat-rows">
+                <div class="stat-row"><span><i class="dot ok" />绿灯 · 自动执行</span><b>{{ policy.green ?? 0 }} 单</b></div>
+                <div class="stat-row"><span><i class="dot warn" />黄灯 · 需人工审批</span><b>{{ policy.yellow ?? 0 }} 单</b></div>
+                <div class="stat-row"><span><i class="dot danger" />红灯 · 升级人工</span><b>{{ policy.red ?? 0 }} 单</b></div>
+              </div>
+              <template v-if="redReasons.length">
+                <div class="sub-head">红灯归因 Top{{ redReasons.length }}</div>
+                <div class="stat-rows tight">
+                  <div v-for="row in redReasons" :key="row.reason" class="stat-row" :title="row.reason">
+                    <span class="reason">{{ row.reason }}</span><b>{{ row.count }}</b>
+                  </div>
+                </div>
+              </template>
+              <template v-if="blindSpots.length">
+                <div class="sub-head">建议新增预案（知识盲区）</div>
+                <div class="stat-rows tight">
+                  <div v-for="row in blindSpots" :key="row.trigger" class="stat-row" :title="row.trigger">
+                    <span class="reason">{{ row.trigger }}</span><b>{{ row.count }}</b>
+                  </div>
+                </div>
+              </template>
+            </section>
+          </aside>
+        </main>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-// 注意：生产构建的 Vue 是 runtime-only（不含模板编译器），
-// 字符串 template 在线上会渲染为空，这里必须用 render 函数
-import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import * as echarts from 'echarts'
-import { ElMessage } from 'element-plus'
-import { fetchDashboardNetdata, fetchDashboardOverview, fetchKnowledgeDocuments } from '../api'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import AssetTopology3D from './AssetTopology3D.vue'
+import { fetchDashboardStats, fetchDashboardTopology } from '../api'
 
 // standalone=true 用于独立大屏路由（/screen，脱离应用外壳全屏展示）；
-// 默认 false 用于 /dashboard（嵌在应用外壳主内容区内，负边距撑满可视区）
-const props = defineProps({
+// 默认 false 用于 /dashboard（嵌在应用外壳主内容区内）
+defineProps({
   standalone: { type: Boolean, default: false },
 })
 
-const overview = ref({ kpis: {}, trend: [], assets: [], anomalies: [], severity: null })
-const netdata = ref({ online_count: 0, configured_count: 0, items: [], featured: null })
-const knowledgeCount = ref(0)
-const clock = ref('')
-const updatedAt = ref('—')
-const isFullscreen = ref(false)
-const activeMetric = ref('cpu')
-const alertFlash = ref(false)
+const topology = ref([])
+const stats = ref(null)
+const highlightKey = ref('') // 面板行 hover → 3D 节点描边联动
 
-const healthDonutRef = ref(null)
-const trendChartRef = ref(null)
-const rankChartRef = ref(null)
-const realtimeChartRef = ref(null)
-
-let healthDonutChart
-let trendChart
-let rankChart
-let realtimeChart
+/* ===== 日夜主题：跟随全局 html.dark ===== */
+const isDark = ref(document.documentElement.classList.contains('dark'))
+let themeObserver
 let refreshTimer
-let clockTimer
-let flashTimer
 
-/* ===== 配色：异常=琥珀（不刺眼），高等级告警=红色（最醒目） ===== */
-const PALETTE = {
-  ok: '#2ee6a0',
-  cyan: '#3fd2ff',
-  amber: '#ffb020',
-  red: '#ff4d5e',
-  violet: '#b58cff',
+function toggleTheme() {
+  document.documentElement.classList.add('theme-anim')
+  isDark.value = document.documentElement.classList.toggle('dark')
+  localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
+  setTimeout(() => document.documentElement.classList.remove('theme-anim'), 350)
 }
-const textColor = '#a8ccec'
-const gridColor = 'rgba(90, 156, 220, .22)'
 
-/* ===== 派生数据 ===== */
-const kpis = computed(() => overview.value.kpis || {})
-const assets = computed(() => overview.value.assets || [])
-const anomalies = computed(() => overview.value.anomalies || [])
-const netdataItems = computed(() => netdata.value.items || [])
-const offlineCount = computed(() => Math.max((kpis.value.asset_total ?? 0) - (kpis.value.asset_reachable ?? 0), 0))
-const reachPercent = computed(() => Number(kpis.value.availability ?? 100).toFixed(1))
-const closeRate = computed(() => {
-  const open = Number(kpis.value.open_tickets ?? 0)
-  const recovered = Number(kpis.value.recovered_tickets ?? 0)
-  const total = open + recovered
-  return total ? Math.round((recovered / total) * 100) : 100
-})
-const featuredAsset = computed(() => netdata.value.featured || null)
-const featuredOnline = computed(() => !!featuredAsset.value?.online)
-const hasRealtime = computed(() => featuredOnline.value && (featuredAsset.value?.series?.[activeMetric.value] || []).length > 0)
-const realtimeReason = computed(() => {
-  if (!featuredAsset.value) return '资产未登记 IP / 未接入 Netdata Agent'
-  return featuredAsset.value.error || `监控未接入：${hostLabel(featuredAsset.value.hostname)}`
+async function load() {
+  const [statsResult, topologyResult] = await Promise.allSettled([
+    fetchDashboardStats(),
+    fetchDashboardTopology(),
+  ])
+  if (statsResult.status === 'fulfilled') stats.value = statsResult.value.data
+  if (topologyResult.status === 'fulfilled') topology.value = topologyResult.value.data.mothers || []
+}
+
+onMounted(() => {
+  themeObserver = new MutationObserver(() => {
+    isDark.value = document.documentElement.classList.contains('dark')
+  })
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  load()
+  refreshTimer = setInterval(load, 30000)
 })
 
-const metricTabs = [
-  { key: 'cpu', name: 'CPU', color: '#3fd2ff' },
-  { key: 'memory', name: '内存', color: '#2ee6a0' },
-  { key: 'disk', name: '磁盘', color: '#ffb020' },
-]
+onBeforeUnmount(() => {
+  themeObserver?.disconnect()
+  clearInterval(refreshTimer)
+})
 
-/* ===== 告警等级：优先用后端全量统计，缺失时按列表兜底 ===== */
-const severityRows = computed(() => {
-  const raw = overview.value.severity
-  let high
-  let medium
-  let low
-  if (raw) {
-    high = Number(raw.high || 0)
-    medium = Number(raw.medium || 0)
-    low = Number(raw.low || 0)
-  } else {
-    const hit = (keywords) =>
-      anomalies.value.filter((item) => {
-        const text = String(item.severity || '').toLowerCase()
-        return keywords.some((word) => text.includes(word))
-      }).length
-    high = hit(['high', 'critical', '严重', '高'])
-    medium = hit(['medium', 'warning', 'warn', '警告', '中'])
-    low = Math.max(anomalies.value.length - high - medium, 0)
+/* ===== 派生数据（全部安全兜底，未加载时显示 —） ===== */
+const mttr = computed(() => stats.value?.mttr || {})
+const automation = computed(() => stats.value?.automation || {})
+const alerts = computed(() => stats.value?.alerts || {})
+const policy = computed(() => stats.value?.policy || {})
+const redReasons = computed(() => policy.value.red_reasons || [])
+const mtta = computed(() => stats.value?.mtta || {})
+const dwellData = computed(() => stats.value?.dwell || {})
+const approval = computed(() => stats.value?.approval || {})
+const playbooks = computed(() => stats.value?.playbooks || {})
+const aiStats = computed(() => stats.value?.ai || {})
+const capacity = computed(() => stats.value?.capacity || {})
+const scoreStats = computed(() => stats.value?.scores || {})
+const mttrText = computed(() => (mttr.value.recovered_count ? mttr.value.avg_minutes : '—'))
+const p50Text = computed(() => (mttr.value.recovered_count ? mttr.value.p50_minutes : '—'))
+const rateText = computed(() => (mttr.value.recovered_count ? automation.value.rate : '—'))
+const blindSpots = computed(() => aiStats.value.blind_spots || [])
+
+/* 健康分 → 3D 节点着色映射（asset_id 同时映射 m-/c- 前缀，母子节点共用得分） */
+const scoreMap = computed(() => {
+  const out = {}
+  for (const [id, value] of Object.entries(scoreStats.value.map || {})) {
+    out[`m-${id}`] = value
+    out[`c-${id}`] = value
   }
-  const total = high + medium + low
-  const pct = (value) => (total ? Math.round((value / total) * 100) : 0)
-  return [
-    { label: '高', count: high, pct: pct(high), tone: 'red' },
-    { label: '中', count: medium, pct: pct(medium), tone: 'amber' },
-    { label: '低', count: low, pct: pct(low), tone: 'cyan' },
+  return out
+})
+const worstRows = computed(() =>
+  (scoreStats.value.worst || []).map((row) => ({
+    ...row,
+    key: `${row.kind === 'mother' ? 'm' : 'c'}-${row.asset_id}`,
+    name: shortLabel(row.hostname, 12),
+    tone: row.score < 40 ? 'danger' : 'warn',
+    pct: row.score,
+  })),
+)
+const capacityRows = computed(() =>
+  (capacity.value.predictions || []).map((row) => ({
+    ...row,
+    name: shortLabel(row.hostname, 12),
+    tone: row.days_to_full < 14 ? 'danger' : 'warn',
+  })),
+)
+const playbookRows = computed(() =>
+  (playbooks.value.items || []).map((row) => ({
+    ...row,
+    name: shortLabel(row.name, 10),
+    pct: row.success_rate ?? 0,
+    tone: row.success_rate == null ? 'brand' : row.success_rate >= 80 ? 'ok' : 'danger',
+  })),
+)
+const dwellChips = computed(() =>
+  [
+    { label: '分析', hours: dwellData.value.analysis },
+    { label: '审批', hours: dwellData.value.approval },
+    { label: '执行', hours: dwellData.value.executing },
+    { label: '验证', hours: dwellData.value.verifying },
+  ].filter((chip) => chip.hours != null),
+)
+
+/* 自动化闭环率环形（SVG stroke-dashoffset） */
+const RING_C = 2 * Math.PI * 36
+const ringRate = computed(() => Number(automation.value.rate) || 0)
+
+/* 工单流转漏斗：8 态归并为 7 行，条宽按最大值归一 */
+const funnelRows = computed(() => {
+  const f = stats.value?.funnel || {}
+  const defs = [
+    ['分析中', f.pending_analysis, 'brand'],
+    ['待审批', f.pending_approval, 'warn'],
+    ['待执行', f.pending_execution, 'brand'],
+    ['执行中', f.executing, 'brand'],
+    ['验证中', f.verifying, 'brand'],
+    ['已恢复', f.recovered, 'ok'],
+    ['升级人工', f.escalated, 'danger'],
   ]
-})
-const severityTotal = computed(() => severityRows.value.reduce((sum, row) => sum + row.count, 0))
-
-/* ===== 全局告警态 ===== */
-const alertLevel = computed(() => {
-  const alarms = Number(kpis.value.active_anomalies ?? 0)
-  const offline = offlineCount.value
-  if (alarms >= 5 || offline >= 3 || severityRows.value[0].count >= 3) return 'critical'
-  if (alarms > 0 || offline > 0) return 'warning'
-  return 'normal'
-})
-const alertText = computed(() => {
-  const parts = []
-  if (Number(kpis.value.active_anomalies ?? 0)) parts.push(`活动告警 ${kpis.value.active_anomalies} 条（高等级 ${severityRows.value[0].count} 条）`)
-  if (offlineCount.value) parts.push(`资产离线 ${offlineCount.value} 台`)
-  if (!parts.length) return ''
-  return `${parts.join(' · ')} · 综合健康度 ${reachPercent.value}% · 建议优先处理高等级告警与离线资产`
+  const max = Math.max(...defs.map(([, count]) => count || 0), 1)
+  return defs.map(([label, count, tone]) => ({
+    label,
+    count: count || 0,
+    tone,
+    pct: count ? Math.max((count / max) * 100, 6) : 0,
+  }))
 })
 
-/* ===== 资产健康分（可解释，避免所有柱子一样长） ===== */
-const rankedAssets = computed(() => {
-  const alarmByHost = new Map()
-  for (const item of anomalies.value) {
-    const host = String(item.hostname || '')
-    alarmByHost.set(host, (alarmByHost.get(host) || 0) + 1)
+/* 告警热点：hostname → 3D 节点 key 映射（m-{id}/c-{id}），供联动高亮 */
+const hostKeyMap = computed(() => {
+  const map = new Map()
+  for (const m of topology.value) {
+    map.set(m.hostname, `m-${m.id}`)
+    for (const c of m.children || []) map.set(c.hostname, `c-${c.id}`)
   }
-  const monitorByHost = new Map(netdataItems.value.map((item) => [String(item.hostname), item]))
-  return assets.value
-    .map((asset) => {
-      const hostname = String(asset.hostname || '未知')
-      const alarms = alarmByHost.get(hostname) || 0
-      const monitor = monitorByHost.get(hostname)
-      const reachableScore = asset.reachable ? 40 : 0
-      const dbScore = asset.db_ok ? 20 : 0
-      const alarmScore = Math.max(0, 20 - alarms * 8)
-      const monitorScore = monitor?.online ? 20 : monitor?.configured ? 10 : 0
-      const score = reachableScore + dbScore + alarmScore + monitorScore
-      const tone = score >= 80 ? 'green' : score >= 60 ? 'cyan' : score >= 40 ? 'amber' : 'red'
-      return {
-        hostname,
-        short: shortLabel(hostname, 12),
-        app: asset.app && asset.app !== '暂无' ? asset.app : '',
-        group: asset.group || '',
-        score,
-        tone,
-        tip: `${hostname}\n健康分 ${score}：可达性 ${reachableScore}/40 · 数据库 ${dbScore}/20 · 告警影响 ${alarmScore}/20（${alarms} 条）· 监控接入 ${monitorScore}/20`,
-      }
-    })
-    .sort((a, b) => b.score - a.score)
+  return map
+})
+const topRows = computed(() => {
+  const rows = alerts.value.top_assets || []
+  const max = rows[0]?.count || 1
+  return rows.map((row) => ({
+    ...row,
+    pct: Math.max((row.count / max) * 100, 8),
+    key: hostKeyMap.value.get(row.hostname) || '',
+    name: shortLabel(row.hostname, 13),
+  }))
 })
 
-/* ===== KPI 条带（数字滚动） ===== */
-const animated = reactive({ total: 0, health: 0, alarms: 0, tickets: 0 })
-function tween(key, target) {
-  const from = Number(animated[key] || 0)
-  const to = Number(target || 0)
-  if (from === to) {
-    animated[key] = to
-    return
-  }
-  const duration = 700
-  const start = performance.now()
-  const step = (now) => {
-    const progress = Math.min(1, (now - start) / duration)
-    const eased = 1 - Math.pow(1 - progress, 3)
-    animated[key] = key === 'health' ? Number((from + (to - from) * eased).toFixed(1)) : Math.round(from + (to - from) * eased)
-    if (progress < 1) requestAnimationFrame(step)
-  }
-  requestAnimationFrame(step)
+/* 热力图：7×24（行=周一~周日），颜色强度按全局最大值归一 */
+const DOW = ['一', '二', '三', '四', '五', '六', '日']
+const heatRows = computed(() => alerts.value.heatmap || Array.from({ length: 7 }, () => Array(24).fill(0)))
+function heatColor(value) {
+  if (!value) return 'color-mix(in srgb, var(--ink) 6%, transparent)'
+  const max = Math.max(1, ...heatRows.value.flat())
+  const pct = 14 + (value / max) * 86
+  return `color-mix(in srgb, var(--brand) ${Math.round(pct)}%, transparent)`
 }
-const kpiCards = computed(() => [
-  {
-    label: '纳管资产',
-    value: kpis.value.asset_total ?? 0,
-    shown: animated.total,
-    unit: '台',
-    tone: 'cyan',
-    foot: `在线 ${kpis.value.asset_reachable ?? 0} · 离线 ${offlineCount.value}`,
-    hint: '纳管资产总数 = 母机 + 已登记子机',
-  },
-  {
-    label: '综合健康度',
-    value: Number(kpis.value.availability ?? 100),
-    shown: animated.health,
-    unit: '%',
-    tone: Number(kpis.value.availability ?? 100) >= 90 ? 'green' : Number(kpis.value.availability ?? 100) >= 60 ? 'amber' : 'red',
-    foot: `在线占比 ${kpis.value.asset_reachable ?? 0}/${kpis.value.asset_total ?? 0}`,
-    hint: '综合健康度 = 在线资产 / 纳管资产',
-    alarm: true,
-  },
-  {
-    label: '活动告警',
-    value: kpis.value.active_anomalies ?? 0,
-    shown: animated.alarms,
-    unit: '条',
-    tone: 'red',
-    foot: `高等级 ${severityRows.value[0].count} · 中 ${severityRows.value[1].count} · 低 ${severityRows.value[2].count}`,
-    hint: '状态为 abnormal 的异常事件数',
-    alarm: true,
-  },
-  {
-    label: '进行中任务',
-    value: kpis.value.open_tickets ?? 0,
-    shown: animated.tickets,
-    unit: '单',
-    tone: 'violet',
-    foot: `已闭环 ${kpis.value.recovered_tickets ?? 0} 单 · 闭环率 ${closeRate.value}%`,
-    hint: '未恢复、未跳过的任务单数量',
-  },
-])
 
-const metricCards = computed(() => [
-  { icon: '▣', label: '纳管资产', value: kpis.value.asset_total ?? 0, unit: '台', tone: 'cyan', hint: '纳管资产总数' },
-  { icon: '◉', label: '基础设施可达', value: kpis.value.asset_reachable ?? 0, unit: '台', tone: 'green', hint: '最近一次巡检可达的资产数' },
-  { icon: '⚠', label: '活动告警', value: kpis.value.active_anomalies ?? 0, unit: '条', tone: 'amber', hint: '当前未恢复的异常事件' },
-  { icon: '✓', label: '已恢复任务单', value: kpis.value.recovered_tickets ?? 0, unit: '单', tone: 'violet', hint: '已闭环的任务单' },
-])
-
-const capabilityChips = computed(() => [
-  { label: '工单闭环率', value: `${closeRate.value}%`, tone: 'green', hint: '已恢复任务单 / (已恢复 + 进行中)' },
-  { label: '已恢复任务', value: kpis.value.recovered_tickets ?? 0, tone: 'cyan', hint: '累计已闭环任务单数量' },
-  { label: '知识规则', value: knowledgeCount.value || 0, tone: 'violet', hint: '知识库中的规则/文档数量' },
-  { label: '活动告警', value: kpis.value.active_anomalies ?? 0, tone: 'red', hint: '当前未恢复的异常事件数' },
-  { label: '进行中任务', value: kpis.value.open_tickets ?? 0, tone: 'amber', hint: '待处理的任务单数量' },
-  { label: '监控接入', value: `${netdata.value.online_count ?? 0}/${netdata.value.configured_count ?? 0}`, tone: 'cyan', hint: '已接入 Netdata 并在线的资产 / 已登记监控的资产' },
-])
-
-/* ===== 工具 ===== */
-// 资产表里存在 "IP:SSH端口" 这类录入（如 124.221.251.186:22），展示时剥掉端口，悬浮看全称
-function hostLabel(value) {
-  const text = String(value || '未接入')
-  const matched = text.match(/^(\d{1,3}(?:\.\d{1,3}){3}):(\d+)$/)
-  return matched ? matched[1] : text
-}
 function shortLabel(value, max = 12) {
   const text = String(value || '未知')
   return text.length > max ? `${text.slice(0, max)}…` : text
 }
-function formatPercent(value) {
-  return value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`
-}
-function ringStyle(percent, color) {
-  const value = Math.max(0, Math.min(100, Number(percent) || 0))
-  return { background: `conic-gradient(${color} ${value}%, rgba(20, 60, 110, .55) 0)` }
-}
-
-/* ===== 图表 ===== */
-function renderHealthDonut() {
-  if (!healthDonutRef.value) return
-  healthDonutChart?.dispose()
-  healthDonutChart = echarts.init(healthDonutRef.value)
-  healthDonutChart.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}：{c} 台（{d}%）' },
-    series: [{
-      type: 'pie',
-      radius: ['64%', '88%'],
-      center: ['50%', '50%'],
-      avoidLabelOverlap: true,
-      label: { show: false },
-      itemStyle: { borderColor: '#041028', borderWidth: 3 },
-      data: [
-        { value: kpis.value.asset_reachable ?? 0, name: '在线', itemStyle: { color: PALETTE.ok } },
-        { value: offlineCount.value, name: '异常', itemStyle: { color: PALETTE.amber } },
-      ],
-    }],
-  })
-}
-
-function renderTrend() {
-  if (!trendChartRef.value) return
-  trendChart?.dispose()
-  trendChart = echarts.init(trendChartRef.value)
-  const rows = trend7d.value
-  trendChart.setOption({
-    grid: { left: 38, right: 16, top: 22, bottom: 28 },
-    tooltip: { trigger: 'axis', formatter: (params) => `${params[0].axisValue}　新增告警 ${params[0].data} 条` },
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: rows.map((row) => row.date.slice(5)),
-      axisLabel: { color: textColor, fontSize: 12 },
-      axisLine: { lineStyle: { color: gridColor } },
-    },
-    yAxis: {
-      type: 'value',
-      minInterval: 1,
-      splitLine: { lineStyle: { color: gridColor } },
-      axisLabel: { color: textColor, fontSize: 12 },
-    },
-    series: [{
-      type: 'line',
-      smooth: true,
-      symbolSize: 7,
-      data: rows.map((row) => row.count),
-      lineStyle: { width: 2.5, color: PALETTE.red },
-      itemStyle: { color: PALETTE.red, borderColor: '#ffd9dd', borderWidth: 1.5 },
-      areaStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(255, 77, 94, .32)' },
-          { offset: 1, color: 'rgba(255, 77, 94, 0)' },
-        ]),
-      },
-    }],
-  })
-}
-
-function renderRank() {
-  if (!rankChartRef.value) return
-  rankChart?.dispose()
-  rankChart = echarts.init(rankChartRef.value)
-  const rows = rankedAssets.value.slice(0, 8).reverse()
-  const colorOf = (tone) => (tone === 'green' ? PALETTE.ok : tone === 'cyan' ? PALETTE.cyan : tone === 'amber' ? PALETTE.amber : PALETTE.red)
-  rankChart.setOption({
-    grid: { left: 96, right: 44, top: 10, bottom: 10 },
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'none' },
-      formatter: (params) => {
-        const item = rows[params[0].dataIndex]
-        return item ? item.tip.replace('\n', '<br/>') : ''
-      },
-    },
-    xAxis: { type: 'value', max: 100, show: false },
-    yAxis: {
-      type: 'category',
-      data: rows.map((row) => row.short),
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: textColor, fontSize: 12 },
-    },
-    series: [{
-      type: 'bar',
-      barWidth: 11,
-      data: rows.map((row) => ({ value: row.score, itemStyle: { color: new echarts.graphic.LinearGradient(1, 0, 0, 0, [{ offset: 0, color: colorOf(row.tone) }, { offset: 1, color: 'rgba(27, 95, 208, .55)' }]) } })),
-      itemStyle: { borderRadius: 6 },
-      showBackground: true,
-      backgroundStyle: { color: 'rgba(38, 92, 160, .16)', borderRadius: 6 },
-      label: { show: true, position: 'right', color: '#e6f6ff', fontSize: 12, fontWeight: 600 },
-    }],
-  })
-}
-
-function renderRealtime() {
-  if (!realtimeChartRef.value || !hasRealtime.value) return
-  realtimeChart?.dispose()
-  realtimeChart = echarts.init(realtimeChartRef.value)
-  const tab = metricTabs.find((item) => item.key === activeMetric.value) || metricTabs[0]
-  const series = featuredAsset.value.series?.[tab.key] || []
-  realtimeChart.setOption({
-    grid: { left: 40, right: 14, top: 18, bottom: 24 },
-    tooltip: { trigger: 'axis', valueFormatter: (value) => `${Number(value).toFixed(1)}%` },
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: series.map((point) => new Date(Number(point.t) * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })),
-      axisLabel: { color: textColor, fontSize: 11 },
-      axisLine: { lineStyle: { color: gridColor } },
-    },
-    yAxis: {
-      type: 'value',
-      min: 0,
-      max: 100,
-      splitLine: { lineStyle: { color: gridColor } },
-      axisLabel: { color: textColor, fontSize: 11, formatter: '{value}%' },
-    },
-    series: [{
-      type: 'line',
-      smooth: true,
-      showSymbol: false,
-      data: series.map((point) => point.v),
-      lineStyle: { width: 2.4, color: tab.color },
-      itemStyle: { color: tab.color },
-      areaStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: `${tab.color}55` },
-          { offset: 1, color: `${tab.color}00` },
-        ]),
-      },
-    }],
-  })
-}
-
-function renderCharts() {
-  renderHealthDonut()
-  renderTrend()
-  renderRank()
-  renderRealtime()
-}
-
-function switchMetric(key) {
-  activeMetric.value = key
-  nextTick(renderRealtime)
-}
-
-/* ===== 趋势：前端兜底补齐 7 天（后端已补零，这里防止旧接口未更新） ===== */
-const trend7d = computed(() => {
-  const map = new Map((overview.value.trend || []).map((row) => [String(row.date).slice(0, 10), Number(row.count) || 0]))
-  const out = []
-  const today = new Date()
-  for (let offset = 6; offset >= 0; offset -= 1) {
-    const day = new Date(today)
-    day.setDate(today.getDate() - offset)
-    const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`
-    out.push({ date: key, count: map.get(key) || 0 })
-  }
-  return out
-})
-
-/* ===== 数据加载 ===== */
-async function load() {
-  const [overviewResult, netdataResult, docsResult] = await Promise.allSettled([
-    fetchDashboardOverview(),
-    fetchDashboardNetdata(),
-    fetchKnowledgeDocuments(),
-  ])
-  if (overviewResult.status === 'fulfilled') overview.value = overviewResult.value.data
-  if (netdataResult.status === 'fulfilled') netdata.value = netdataResult.value.data
-  if (docsResult.status === 'fulfilled') knowledgeCount.value = docsResult.value.data.total || 0
-  if (overviewResult.status === 'rejected') {
-    ElMessage.error(overviewResult.reason?.response?.data?.detail || '大屏数据加载失败')
-  }
-  updatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-  await nextTick()
-  renderCharts()
-}
-
-function syncKpiAnimation() {
-  tween('total', kpis.value.asset_total ?? 0)
-  tween('health', Number(kpis.value.availability ?? 100))
-  tween('alarms', kpis.value.active_anomalies ?? 0)
-  tween('tickets', kpis.value.open_tickets ?? 0)
-}
-
-let prevAlarmCount = 0
-watch(
-  () => Number(kpis.value.active_anomalies ?? 0),
-  (value) => {
-    syncKpiAnimation()
-    // 新增告警：全局告警带闪烁提示 8 秒
-    if (value > prevAlarmCount && prevAlarmCount >= 0) {
-      alertFlash.value = true
-      clearTimeout(flashTimer)
-      flashTimer = setTimeout(() => { alertFlash.value = false }, 8000)
-    }
-    prevAlarmCount = value
-  },
-)
-
-function updateClock() {
-  clock.value = new Date().toLocaleString('zh-CN', { hour12: false })
-}
-
-async function toggleFullscreen() {
-  try {
-    if (!document.fullscreenElement) await document.documentElement.requestFullscreen()
-    else await document.exitFullscreen()
-    isFullscreen.value = !!document.fullscreenElement
-  } catch {
-    ElMessage.info('当前浏览器不支持全屏')
-  }
-}
-
-function resizeAll() {
-  healthDonutChart?.resize()
-  trendChart?.resize()
-  rankChart?.resize()
-  realtimeChart?.resize()
-}
-
-onMounted(() => {
-  updateClock()
-  clockTimer = setInterval(updateClock, 1000)
-  load()
-  refreshTimer = setInterval(load, 30000)
-  window.addEventListener('resize', resizeAll)
-})
-
-onBeforeUnmount(() => {
-  clearInterval(refreshTimer)
-  clearInterval(clockTimer)
-  clearTimeout(flashTimer)
-  healthDonutChart?.dispose()
-  trendChart?.dispose()
-  rankChart?.dispose()
-  realtimeChart?.dispose()
-  window.removeEventListener('resize', resizeAll)
-})
-
-const ScreenPanel = {
-  props: { title: String, subtitle: String },
-  setup(panelProps, { slots }) {
-    return () =>
-      h('section', { class: 'screen-panel' }, [
-        h('div', { class: 'panel-title' }, [h('span', panelProps.title), h('small', panelProps.subtitle)]),
-        h('div', { class: 'panel-body' }, slots.default?.()),
-      ])
-  },
-}
 </script>
 
 <style scoped>
-/* ===== 整体舞台 ===== */
+/* ===== 舞台：3D 全屏铺底，页面唯一滚动容器 ===== */
 .screen-page {
   position: relative;
+  height: 100vh;
   overflow: auto;
-  color: #d8efff;
-  font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
-  background:
-    radial-gradient(circle at 50% 34%, rgba(16, 96, 190, .3), transparent 46%),
-    linear-gradient(150deg, #020918, #04163a 46%, #020b1e);
+  background: var(--bg);
 }
-/* 独立大屏路由：脱离应用外壳，铺满视口 */
 .screen-page.is-standalone { position: fixed; inset: 0; }
+.screen-stage { position: relative; min-height: 100%; min-width: 1180px; }
 
-.screen-stage {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: 100%;
-  min-height: calc(100vh - 120px);
-  min-width: 1120px;
-  padding: 14px 22px 10px;
-  background-image:
-    linear-gradient(rgba(48, 128, 220, .05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(48, 128, 220, .05) 1px, transparent 1px);
-  background-size: 34px 34px;
-}
-.is-standalone .screen-stage { min-height: 100%; }
-/* 嵌入模式：负边距抵消外壳内边距后，顶部需给固定顶栏留出空间，避免标题被裁 */
-.screen-page:not(.is-standalone) .screen-stage { padding-top: 64px; }
+.topo-backdrop { position: fixed; inset: 0; z-index: 0; }
+.topo-backdrop :deep(.topo-scene) { border-radius: 0; }
 
-/* 全局告警态：整屏边缘呼吸提示 */
-.screen-page.is-alarm .screen-stage {
-  box-shadow: inset 0 0 0 2px rgba(255, 77, 94, .55);
-  animation: edge-breathe 2.8s ease-in-out infinite;
-}
-@keyframes edge-breathe {
-  50% { box-shadow: inset 0 0 70px rgba(255, 77, 94, .3), inset 0 0 0 2px rgba(255, 77, 94, .18); }
-}
-
-/* ===== 顶部标题 ===== */
-.screen-header {
+/* ===== HUD 悬浮层 ===== */
+.hud {
   position: relative;
+  z-index: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 74px;
-  flex-shrink: 0;
-}
-.header-core {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 10px 64px;
-  background: linear-gradient(180deg, rgba(18, 108, 204, .88), rgba(5, 44, 102, .72));
-  clip-path: polygon(6% 0, 94% 0, 100% 100%, 0 100%);
-  box-shadow: 0 0 26px rgba(24, 128, 228, .4);
-}
-.header-title {
-  margin: 0;
-  color: #eaf7ff;
-  font-size: clamp(24px, 2.2vw, 36px);
-  font-weight: 700;
-  letter-spacing: .16em;
-  text-shadow: 0 0 18px rgba(63, 210, 255, .8);
-  white-space: nowrap;
-}
-.title-mark { width: 34px; height: 3px; background: linear-gradient(90deg, transparent, #4fe3ff); box-shadow: 0 0 10px #4fe3ff; }
-.title-mark.right { background: linear-gradient(90deg, #4fe3ff, transparent); }
-.header-wing { position: absolute; top: 24px; display: flex; gap: 8px; width: 30%; height: 26px; }
-.header-wing.left { left: 1%; justify-content: flex-end; }
-.header-wing.right { right: 1%; justify-content: flex-start; }
-.header-wing i { flex: 1; height: 3px; background: linear-gradient(90deg, rgba(63, 210, 255, .9), transparent); }
-.header-wing.right i { background: linear-gradient(90deg, transparent, rgba(63, 210, 255, .9)); }
-.header-wing i:nth-child(2) { height: 2px; opacity: .65; }
-.header-wing i:nth-child(3) { height: 1px; opacity: .35; }
-.header-meta { position: absolute; right: 24px; top: 26px; z-index: 2; display: flex; align-items: center; gap: 7px; color: #8fc0e8; font-size: 14px; }
-.header-meta b { margin-left: 4px; color: #d9f1ff; font-size: 16px; font-variant-numeric: tabular-nums; }
-.live-dot { width: 8px; height: 8px; border-radius: 50%; background: #38e8a3; box-shadow: 0 0 10px #38e8a3; animation: pulse 2s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: .45; } }
-.screen-control {
-  position: absolute;
-  right: 24px;
-  bottom: 4px;
-  padding: 5px 14px;
-  border: 1px solid #2b6cb0;
-  border-radius: 3px;
-  color: #b4ddff;
-  font-size: 13px;
-  background: rgba(6, 44, 92, .8);
-  cursor: pointer;
-  transition: all .2s;
-}
-.screen-control:hover { border-color: #3fd2ff; color: #eaf7ff; box-shadow: 0 0 12px rgba(63, 210, 255, .4); }
-
-/* ===== 全局告警带 ===== */
-.alert-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 40px;
-  flex-shrink: 0;
-  padding: 0 12px;
-  border: 1px solid rgba(255, 77, 94, .65);
-  background: linear-gradient(90deg, rgba(120, 12, 28, .85), rgba(60, 10, 22, .6));
-}
-.alert-banner.warning { border-color: rgba(255, 176, 32, .6); background: linear-gradient(90deg, rgba(104, 62, 6, .8), rgba(48, 32, 6, .55)); }
-.alert-badge {
-  flex-shrink: 0;
-  padding: 3px 10px;
-  border-radius: 2px;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: .1em;
-  background: #ff4d5e;
-  box-shadow: 0 0 14px rgba(255, 77, 94, .7);
-}
-.alert-banner.warning .alert-badge { background: #ffb020; box-shadow: 0 0 14px rgba(255, 176, 32, .6); }
-.alert-track { flex: 1; overflow: hidden; }
-.alert-text {
-  display: inline-block;
-  padding-left: 100%;
-  color: #ffe3e7;
-  font-size: 15px;
-  letter-spacing: .04em;
-  white-space: nowrap;
-  animation: marquee 26s linear infinite;
-}
-.alert-banner.warning .alert-text { color: #ffe8c4; }
-@keyframes marquee { to { transform: translateX(-100%); } }
-.alert-extra { flex-shrink: 0; color: #ffd9dd; font-size: 14px; font-variant-numeric: tabular-nums; }
-.screen-page.is-flash .alert-banner { animation: alert-blink 1s steps(2, jump-none) 8; }
-@keyframes alert-blink { 50% { background: rgba(255, 77, 94, .35); } }
-
-/* ===== KPI 条带 ===== */
-.kpi-band { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; flex-shrink: 0; }
-.kpi-card {
-  display: flex;
+  min-height: 100vh;
   flex-direction: column;
-  justify-content: center;
-  gap: 2px;
-  min-height: 92px;
-  padding: 10px 16px;
-  border: 1px solid rgba(56, 138, 224, .55);
-  border-left: 3px solid var(--tone, #3fd2ff);
-  background: linear-gradient(140deg, rgba(14, 76, 148, .62), rgba(4, 28, 66, .78));
-}
-.kpi-card.cyan { --tone: #3fd2ff; }
-.kpi-card.green { --tone: #2ee6a0; }
-.kpi-card.amber { --tone: #ffb020; }
-.kpi-card.red { --tone: #ff4d5e; }
-.kpi-card.violet { --tone: #b58cff; }
-.kpi-label { color: #a8ccec; font-size: 15px; letter-spacing: .04em; }
-.kpi-value { display: flex; align-items: baseline; gap: 4px; }
-.kpi-value b { color: #fff; font-size: 40px; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; text-shadow: 0 0 18px rgba(120, 200, 255, .35); }
-.kpi-value small { color: #9dc3e6; font-size: 15px; }
-.kpi-card.cyan .kpi-value b { color: #bff0ff; }
-.kpi-card.green .kpi-value b { color: #b6ffe4; }
-.kpi-card.amber .kpi-value b { color: #ffdfa8; }
-.kpi-card.red .kpi-value b { color: #ffc3ca; }
-.kpi-card.violet .kpi-value b { color: #e2d4ff; }
-.kpi-foot { color: #8fb6d7; font-size: 12px; }
-/* 告警类 KPI：数字脉冲，强化警觉 */
-.kpi-card.is-alarm { border-color: rgba(255, 77, 94, .7); box-shadow: 0 0 18px rgba(255, 77, 94, .28); }
-.kpi-card.is-alarm .kpi-value b { animation: alarm-pulse 1.8s ease-in-out infinite; }
-@keyframes alarm-pulse { 50% { opacity: .55; text-shadow: 0 0 26px rgba(255, 77, 94, .8); } }
-
-/* ===== 三栏布局 ===== */
-.screen-body {
-  display: grid;
-  flex: 1;
-  grid-template-columns: minmax(300px, 1fr) minmax(430px, 1.35fr) minmax(300px, 1fr);
-  gap: 14px;
-  align-content: start;
-}
-.screen-column { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-
-/* ===== 科技风面板 ===== */
-.screen-panel {
-  position: relative;
-  min-height: 150px;
-  border: 1px solid rgba(56, 138, 224, .55);
-  background: linear-gradient(155deg, rgba(10, 52, 108, .72), rgba(3, 24, 58, .8));
-  box-shadow: inset 0 0 26px rgba(16, 110, 205, .1), 0 0 16px rgba(0, 68, 150, .18);
-}
-.screen-panel::before,
-.screen-panel::after { position: absolute; width: 30px; height: 14px; content: ''; border-color: #3fd2ff; border-style: solid; }
-.screen-panel::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
-.screen-panel::after { right: -1px; bottom: -1px; border-width: 0 2px 2px 0; }
-.panel-title {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  height: 38px;
-  padding: 10px 14px 0;
-  font-size: 17px;
-  font-weight: 700;
-  color: #eaf7ff;
-  background: linear-gradient(90deg, rgba(20, 108, 204, .8), transparent);
-}
-/* 英文副标题弱化，避免中英混排拥挤 */
-.panel-title small { color: #7fa6cc; font-size: 10px; font-weight: 400; letter-spacing: .1em; opacity: .6; }
-.panel-body { padding: 8px 14px 12px; }
-.panel-note { margin: 4px 0 0; color: #7fa6cc; font-size: 11px; line-height: 1.5; }
-
-/* ===== 环形图 ===== */
-.donut-wrap { display: flex; align-items: center; gap: 8px; }
-.donut-chart { position: relative; width: 152px; height: 152px; flex-shrink: 0; }
-.donut-center {
-  position: absolute;
-  top: 50%;
-  left: 76px;
-  display: flex;
-  width: 96px;
-  flex-direction: column;
-  align-items: center;
-  transform: translate(-50%, -50%);
+  padding: 14px 20px 18px;
   pointer-events: none;
 }
-.donut-center b { color: #fff; font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; text-shadow: 0 0 16px rgba(63, 210, 255, .5); }
-.donut-center b small { margin-left: 1px; font-size: 15px; color: #9dc3e6; }
-.dc-label { margin-top: 4px; color: #a8ccec; font-size: 12px; }
-.dc-sub { color: #7fa6cc; font-size: 11px; }
-.donut-legend { display: flex; flex: 1; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
-.donut-legend li { display: flex; align-items: center; gap: 8px; color: #b6d6f0; font-size: 14px; }
-.donut-legend b { margin-left: auto; color: #fff; font-size: 19px; font-variant-numeric: tabular-nums; }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.dot.green { background: #2ee6a0; box-shadow: 0 0 7px rgba(46, 230, 160, .85); }
-.dot.cyan { background: #3fd2ff; box-shadow: 0 0 7px rgba(63, 210, 255, .85); }
-.dot.amber { background: #ffb020; box-shadow: 0 0 7px rgba(255, 176, 32, .85); }
-.dot.red { background: #ff4d5e; box-shadow: 0 0 8px rgba(255, 77, 94, .9); }
-.dot.violet { background: #b58cff; box-shadow: 0 0 7px rgba(181, 140, 255, .85); }
+.screen-page:not(.is-standalone) .hud { padding-top: 60px; }
 
-/* ===== 趋势 / 排行 ===== */
-.trend-chart { width: 100%; height: 176px; }
-.rank-chart { width: 100%; height: 208px; }
-
-/* ===== 指标卡 ===== */
-.metric-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; }
-.metric-card {
+/* 顶部 KPI 甲板：居中超薄玻璃胶囊 */
+.kpi-dock {
   display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 22px;
+  margin-bottom: 14px;
+  padding: 9px 26px;
+  border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  box-shadow: var(--shadow-sm);
+  pointer-events: auto;
+  animation: dock-in var(--dur-slow) var(--ease-out) both;
+}
+@keyframes dock-in {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dock-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok-vivid);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok-vivid) 22%, transparent);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: 0.45; } }
+.dock-sep { width: 1px; height: 26px; background: color-mix(in srgb, var(--ink) 10%, transparent); }
+.dock-item { display: flex; flex-direction: column; gap: 1px; white-space: nowrap; }
+.dock-item small { color: var(--muted); font-size: 10.5px; letter-spacing: 0.04em; }
+.dock-item b { color: var(--ink); font-size: 21px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.dock-item b i { margin-left: 3px; color: var(--faint); font-size: 10px; font-style: normal; font-weight: 400; }
+
+/* standalone 独立路由右上角迷你控件 */
+.corner-tools {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  pointer-events: auto;
+}
+.ghost-btn {
+  padding: 6px 14px;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.ghost-btn:hover { border-color: var(--brand); color: var(--brand); }
+
+/* ===== 主体三区：面板环布，中央留白 ===== */
+.hud-body { display: flex; flex: 1; gap: 16px; }
+.hud-col {
+  display: flex;
+  width: 318px;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+.hud-center { flex: 1; min-width: 0; }
+
+/* ===== 玻璃面板：一层容器，内部去框化（无内嵌卡片） ===== */
+.glass-panel {
+  padding: 13px 18px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface) 58%, transparent);
+  backdrop-filter: blur(20px) saturate(1.25);
+  -webkit-backdrop-filter: blur(20px) saturate(1.25);
+  box-shadow: var(--shadow-sm);
+  pointer-events: auto;
+  animation: rise-in var(--dur-slow) var(--ease-out) both;
+}
+.hud-col .glass-panel:nth-child(2) { animation-delay: 0.08s; }
+.hud-col .glass-panel:nth-child(3) { animation-delay: 0.16s; }
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.p-head {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.sub-head {
+  margin: 8px 0 0;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+/* 数字三件套行：大数字 + 小标签 + 状态点，发丝线分隔 */
+.stat-rows { display: flex; flex-direction: column; }
+.stat-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7.5px 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.stat-row:last-child { border-bottom: 0; }
+.stat-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stat-row b { color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stat-rows.tight .stat-row { padding: 5.5px 0; }
+.stat-rows.tight .stat-row span { color: var(--muted); font-size: 11.5px; }
+.reason { overflow: hidden; text-overflow: ellipsis; }
+.tone-ok { color: var(--ok) !important; }
+.tone-warn { color: var(--warn) !important; }
+.tone-danger { color: var(--danger) !important; }
+.score-warn { color: var(--warn); }
+.score-danger { color: var(--danger); }
+
+/* 环节滞留：2×4 迷你数字块 */
+.dwell-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 2px;
+  padding: 8px 0 8px;
+  border-top: 1px dashed color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.dwell-chip { display: flex; flex-direction: column; gap: 1px; text-align: center; }
+.dwell-chip small { color: var(--faint); font-size: 9.5px; }
+.dwell-chip b { color: var(--ink); font-size: 14px; font-variant-numeric: tabular-nums; }
+.dwell-chip b i { margin-left: 1px; color: var(--faint); font-size: 9px; font-style: normal; font-weight: 400; }
+
+/* 预案执行力行：名称列稍宽 */
+.fun-row.pb-row { grid-template-columns: 82px 1fr 34px; }
+.pb-name { text-align: left; }
+
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot.ok { background: var(--ok-vivid); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok-vivid) 18%, transparent); }
+.dot.warn { background: var(--warn-vivid); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn-vivid) 18%, transparent); }
+.dot.danger { background: var(--danger-vivid); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger-vivid) 18%, transparent); }
+
+/* 恢复效能 hero 数字 */
+.hero { display: flex; flex-direction: column; padding: 6px 0 4px; }
+.hero b { color: var(--ink); font-size: 34px; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.hero b small { margin-left: 4px; color: var(--faint); font-size: 12px; font-weight: 400; }
+.hero span { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+
+/* 自动化闭环：环形 + 行 */
+.auto-wrap { display: flex; align-items: center; gap: 16px; padding: 6px 0; }
+.ring-wrap { position: relative; width: 88px; flex-shrink: 0; }
+.ring { display: block; width: 88px; height: 88px; transform: rotate(-90deg); }
+.ring-track { fill: none; stroke: color-mix(in srgb, var(--ink) 8%, transparent); stroke-width: 7; }
+.ring-bar {
+  fill: none;
+  stroke: var(--brand);
+  stroke-linecap: round;
+  stroke-width: 7;
+  transition: stroke-dashoffset 0.9s var(--ease-out);
+}
+.ring-center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+.ring-center b { color: var(--ink); font-size: 19px; font-variant-numeric: tabular-nums; }
+.ring-center b small { margin-left: 1px; color: var(--faint); font-size: 10px; font-weight: 400; }
+.auto-rows { flex: 1; min-width: 0; }
+
+/* 漏斗 / 帕累托：开放行 + 胶囊条 */
+.fun-rows { display: flex; flex-direction: column; padding-bottom: 4px; }
+.fun-row {
+  display: grid;
+  grid-template-columns: 62px 1fr 34px;
   align-items: center;
   gap: 10px;
-  min-height: 66px;
-  padding: 8px 12px;
-  border: 1px solid rgba(56, 138, 224, .45);
-  background: linear-gradient(140deg, rgba(14, 76, 148, .6), rgba(4, 28, 66, .7));
+  padding: 6px 6px;
+  border-radius: 9px;
+  transition: background-color var(--dur-fast) ease;
 }
-.metric-icon {
-  display: grid;
-  flex-shrink: 0;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid currentColor;
-  border-radius: 6px;
-  font-size: 16px;
-}
-.metric-card.cyan .metric-icon { color: #3fd2ff; }
-.metric-card.green .metric-icon { color: #2ee6a0; }
-.metric-card.amber .metric-icon { color: #ffb020; }
-.metric-card.violet .metric-icon { color: #b58cff; }
-.metric-main b { display: block; color: #fff; font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.metric-main small { margin-left: 3px; color: #9dc3e6; font-size: 13px; font-weight: 400; }
-.metric-main span { display: block; margin-top: 2px; color: #a8ccec; font-size: 13px; }
-
-/* ===== 中栏：简化后的数字员工核心 ===== */
-.center-stage {
-  position: relative;
-  height: 224px;
+.fun-row.link { cursor: default; }
+.fun-row.link:hover, .fun-row.link.active { background: color-mix(in srgb, var(--brand) 8%, transparent); }
+.fun-row.link.active .fun-name { color: var(--brand); font-weight: 600; }
+.fun-name {
   overflow: hidden;
-  border: 1px solid rgba(56, 138, 224, .5);
-  background: radial-gradient(circle at 50% 45%, rgba(14, 92, 180, .42), rgba(3, 20, 52, .88) 70%);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.stage-glow {
-  position: absolute;
-  top: 46%;
-  left: 50%;
-  width: 360px;
-  height: 120px;
-  border-radius: 50%;
-  background: radial-gradient(ellipse, rgba(35, 170, 255, .28), transparent 68%);
-  transform: translate(-50%, -50%);
-  filter: blur(8px);
+.fun-track {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  overflow: hidden;
 }
-.core-node {
-  position: absolute;
-  top: 30%;
-  left: 50%;
-  z-index: 3;
-  display: flex;
-  width: 118px;
-  height: 118px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  border: 2px solid #3fd2ff;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(16, 120, 210, .9), rgba(5, 40, 92, .92));
-  box-shadow: 0 0 34px rgba(63, 210, 255, .5);
-  transform: translate(-50%, -50%);
+.fun-track i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--brand) 55%, transparent), var(--brand));
+  transition: width 0.7s var(--ease-out);
 }
-.core-avatar {
+.fun-track i.warn { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 55%, transparent), var(--warn)); }
+.fun-track i.ok { background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 55%, transparent), var(--ok)); }
+.fun-track i.danger { background: linear-gradient(90deg, color-mix(in srgb, var(--danger) 55%, transparent), var(--danger)); }
+.fun-track i.alertbar { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 55%, transparent), var(--warn)); }
+.fun-count { color: var(--ink); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.empty-hint { padding: 12px 0 14px; color: var(--faint); font-size: 11.5px; text-align: center; }
+
+/* 热力图：7×24 低饱和色块矩阵 */
+.heat-grid {
   display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 19px;
-  font-weight: 700;
-  background: linear-gradient(135deg, #2ea8ff, #1b5fd0);
-  box-shadow: 0 0 16px rgba(63, 210, 255, .7);
+  grid-template-columns: 12px repeat(24, 1fr);
+  gap: 3px;
+  padding: 6px 0 2px;
 }
-.core-node strong { margin-top: 6px; color: #fff; font-size: 15px; }
-.core-node small { margin-top: 2px; color: #9ed2f5; font-size: 9px; letter-spacing: .12em; }
-.stage-gauges {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 16px;
+.heat-dow { color: var(--faint); font-size: 9.5px; line-height: 1; text-align: center; }
+.heat-cell { height: 10px; border-radius: 2.5px; transition: background-color var(--dur-fast) ease; }
+.heat-axis {
   display: flex;
-  align-items: center;
-  justify-content: space-around;
-  gap: 12px;
-  padding: 0 18px;
+  justify-content: space-between;
+  padding: 3px 0 0 15px;
+  color: var(--faint);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
 }
-.gauge { display: flex; flex-direction: column; align-items: center; gap: 6px; color: #a8ccec; font-size: 13px; }
-.ring { display: grid; width: 84px; height: 84px; place-items: center; border-radius: 50%; box-shadow: 0 0 20px rgba(63, 210, 255, .25); }
-.ring-core {
-  display: grid;
-  width: 62px;
-  height: 62px;
-  place-items: center;
-  border-radius: 50%;
-  background: #062244;
-}
-.ring-core b { color: #fff; font-size: 18px; font-variant-numeric: tabular-nums; }
-.stage-brief { display: flex; flex-direction: column; gap: 6px; }
-.brief-line { display: flex; align-items: center; gap: 7px; color: #b6d6f0; font-size: 13px; }
-
-/* ===== 资产状态清单 ===== */
-.asset-list { max-height: 186px; margin: 0; padding: 0; overflow: auto; list-style: none; }
-.asset-list li {
+.heat-foot {
   display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 4px;
-  border-bottom: 1px solid rgba(56, 138, 224, .16);
-  font-size: 13px;
-}
-.asset-list li:last-child { border-bottom: 0; }
-.al-name { flex: 1; overflow: hidden; color: #dcf2ff; text-overflow: ellipsis; white-space: nowrap; }
-.al-meta { width: 82px; overflow: hidden; color: #7fa6cc; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.al-score { width: 40px; text-align: right; color: #fff; font-size: 17px; font-variant-numeric: tabular-nums; }
-.al-score.green { color: #7dffcd; }
-.al-score.cyan { color: #9fe6ff; }
-.al-score.amber { color: #ffd58a; }
-.al-score.red { color: #ffa8b1; }
-
-/* ===== 实时监控 ===== */
-.realtime-head { display: flex; align-items: center; gap: 10px; }
-.rt-host { display: flex; align-items: center; gap: 6px; max-width: 180px; overflow: hidden; color: #d9f1ff; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.rt-host i { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.rt-host i.ok { background: #2ee6a0; box-shadow: 0 0 8px rgba(46, 230, 160, .85); }
-.rt-host i.off { background: #ff4d5e; box-shadow: 0 0 8px rgba(255, 77, 94, .85); }
-.rt-count { color: #a8ccec; font-size: 12px; }
-.rt-tabs { display: flex; gap: 6px; margin-left: auto; }
-.rt-tabs button {
-  min-width: 50px;
-  padding: 4px 11px;
-  border: 1px solid rgba(63, 150, 230, .5);
-  color: #a8ccec;
-  font-size: 12px;
-  background: rgba(8, 46, 96, .7);
-  cursor: pointer;
-}
-.rt-tabs button.active { border-color: #3fd2ff; color: #04101f; font-weight: 600; background: linear-gradient(90deg, #2ea8ff, #3fd2ff); }
-.realtime-chart { width: 100%; height: 142px; margin-top: 4px; }
-.rt-offline {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-height: 142px;
-  margin-top: 4px;
-  border: 1px dashed rgba(120, 160, 200, .35);
-  background: repeating-linear-gradient(45deg, rgba(255, 255, 255, .02) 0 8px, transparent 8px 16px);
-}
-.rt-offline-icon { color: #6c9cc8; font-size: 22px; }
-.rt-offline b { color: #c3def5; font-size: 15px; }
-.rt-offline small { max-width: 92%; overflow: hidden; color: #7fa6cc; font-size: 12px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
-.realtime-foot { display: flex; justify-content: space-around; padding: 5px 0 0; color: #a8ccec; font-size: 13px; }
-.realtime-foot span { padding: 0 8px; border-right: 1px solid rgba(90, 156, 220, .2); }
-.realtime-foot span:last-child { border-right: 0; }
-.realtime-foot b { color: #fff; font-size: 15px; font-variant-numeric: tabular-nums; }
-
-/* ===== 告警等级分布 ===== */
-.sev-summary { display: flex; align-items: baseline; gap: 8px; padding: 2px 0 8px; }
-.sev-summary b { color: #fff; font-size: 30px; font-variant-numeric: tabular-nums; }
-.sev-summary span { color: #a8ccec; font-size: 13px; }
-.sev-list { display: flex; flex-direction: column; gap: 10px; }
-.sev-row { display: grid; grid-template-columns: 62px 52px 52px 1fr; align-items: center; gap: 8px; }
-.sev-name { display: flex; align-items: center; gap: 7px; color: #c3def5; font-size: 14px; }
-.sev-count { color: #fff; font-size: 22px; text-align: right; font-variant-numeric: tabular-nums; }
-.sev-pct { color: #a8ccec; font-size: 13px; text-align: right; }
-.sev-bar { height: 10px; border-radius: 5px; background: rgba(38, 92, 160, .22); overflow: hidden; }
-.sev-bar i { display: block; height: 100%; border-radius: 5px; transition: width .6s ease; }
-.sev-row.red .sev-bar i { background: linear-gradient(90deg, #ff4d5e, #ff8a94); box-shadow: 0 0 10px rgba(255, 77, 94, .6); }
-.sev-row.amber .sev-bar i { background: linear-gradient(90deg, #ffb020, #ffd27a); }
-.sev-row.cyan .sev-bar i { background: linear-gradient(90deg, #1b5fd0, #3fd2ff); }
-.sev-row.red .sev-count { color: #ffb3ba; }
-.sev-row.red .sev-name .dot { background: #ff4d5e; box-shadow: 0 0 8px rgba(255, 77, 94, .9); animation: pulse 1.6s ease-in-out infinite; }
-.sev-row.amber .sev-name .dot { background: #ffb020; box-shadow: 0 0 7px rgba(255, 176, 32, .85); }
-.sev-row.cyan .sev-name .dot { background: #3fd2ff; box-shadow: 0 0 7px rgba(63, 210, 255, .85); }
-
-/* ===== 能力矩阵 ===== */
-.capability-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
-.capability-chip {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-height: 62px;
-  justify-content: center;
-  padding: 6px 11px;
-  border: 1px solid rgba(56, 138, 224, .45);
-  background: rgba(8, 42, 90, .7);
-}
-.capability-chip span { color: #a8ccec; font-size: 13px; }
-.capability-chip b { color: #fff; font-size: 24px; line-height: 1.15; font-variant-numeric: tabular-nums; }
-.capability-chip.green { border-color: rgba(46, 230, 160, .6); background: linear-gradient(140deg, rgba(8, 62, 48, .8), rgba(4, 32, 30, .75)); }
-.capability-chip.green b { color: #6dffcb; }
-.capability-chip.cyan { border-color: rgba(63, 210, 255, .55); background: linear-gradient(140deg, rgba(8, 52, 100, .8), rgba(4, 26, 58, .75)); }
-.capability-chip.cyan b { color: #8fe3ff; }
-.capability-chip.violet { border-color: rgba(181, 140, 255, .55); background: linear-gradient(140deg, rgba(44, 28, 88, .8), rgba(20, 14, 46, .75)); }
-.capability-chip.violet b { color: #d6c2ff; }
-.capability-chip.amber { border-color: rgba(255, 176, 32, .55); background: linear-gradient(140deg, rgba(78, 48, 8, .8), rgba(38, 24, 6, .75)); }
-.capability-chip.amber b { color: #ffd58a; }
-.capability-chip.red { border-color: rgba(255, 77, 94, .6); background: linear-gradient(140deg, rgba(84, 16, 28, .85), rgba(40, 8, 16, .8)); }
-.capability-chip.red b { color: #ffa8b1; }
-.ai-badge {
-  grid-column: span 3;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  min-height: 58px;
-  padding: 7px 13px;
-  border: 1px solid rgba(63, 190, 255, .5);
-  background: linear-gradient(120deg, rgba(14, 76, 148, .7), rgba(4, 28, 66, .75));
-}
-.ai-pulse {
-  display: grid;
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
-  background: linear-gradient(135deg, #2ea8ff, #7a4bd8);
-  box-shadow: 0 0 14px rgba(63, 210, 255, .55);
-  animation: pulse 2.4s ease-in-out infinite;
-}
-.ai-badge b { display: block; color: #eaf7ff; font-size: 15px; }
-.ai-badge small { color: #a8ccec; font-size: 12px; }
-
-/* ===== 底栏 ===== */
-.screen-footer {
-  display: flex;
-  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  height: 36px;
-  padding: 0 6px;
-  border-top: 1px solid rgba(56, 138, 224, .45);
-  color: #8fb6d7;
-  font-size: 12px;
-  letter-spacing: .06em;
+  padding: 7px 0 6px;
+  border-top: 1px dashed color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted);
+  font-size: 11px;
 }
-.foot-legend { display: flex; align-items: center; gap: 12px; }
-.foot-legend .dot { margin-right: 4px; }
+.heat-legend { display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font-size: 10px; }
+.heat-legend .lg { display: inline-block; width: 16px; height: 6px; border-radius: 3px; }
+.heat-legend .lg.lo { background: color-mix(in srgb, var(--brand) 14%, transparent); }
+.heat-legend .lg.hi { background: var(--brand); }
 
-/* ===== 响应式 ===== */
-@media (max-width: 1250px) {
-  .screen-stage { min-width: 1120px; transform-origin: top left; }
-  .is-standalone .screen-stage { min-width: 0; }
+/* 策略灯：三段式胶囊条 */
+.light-bar {
+  display: flex;
+  gap: 3px;
+  height: 8px;
+  margin: 8px 0 4px;
+}
+.light-bar .seg { flex-basis: 0; border-radius: 4px; }
+.light-bar .seg.ok { background: var(--ok-vivid); }
+.light-bar .seg.warn { background: var(--warn-vivid); }
+.light-bar .seg.danger { background: var(--danger-vivid); }
+
+@media (prefers-reduced-motion: reduce) {
+  .kpi-dock, .glass-panel { animation: none; }
+  .live-dot { animation: none; }
 }
 </style>

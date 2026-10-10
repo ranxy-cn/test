@@ -1591,6 +1591,17 @@ def provision_asset(
             extra={"provision": {"status": "running", "ip": body.ip, "port": body.port, "username": body.username}},
         )
     else:
+        # 母机数据隔离：已归属其他母机的子机不允许被新纳管操作静默抢走，
+        # 否则原母机名下数据（agent 上报/指标/事件）会整体串到新母机视角
+        prev_mother = (asset.mother_id or "").strip()
+        if prev_mother and prev_mother != mother_id:
+            old = db.get(Asset, prev_mother)
+            old_name = old.hostname if old else prev_mother
+            raise HTTPException(
+                409,
+                f"该机器（{body.ip}:{body.port}）已归属母机「{old_name}」，"
+                "为避免子机数据串扰，请先在原母机下移除后再重新纳管",
+            )
         asset.role = body.role
         asset.env = body.env
         asset.mother_id = mother_id

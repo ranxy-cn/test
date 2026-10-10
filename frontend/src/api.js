@@ -146,8 +146,14 @@ export const stopMemStress = () => http.post('/tools/mem-stress/stop')
 export const fetchStressTargets = () => http.get('/tools/stress-targets')
 export const fetchRemoteStress = () => http.get('/tools/remote-stress')
 export const stopRemoteStress = (assetId) => http.post('/tools/stress/stop', { asset_id: assetId })
-export const fetchDashboardOverview = () => http.get('/dashboard/overview')
+export const fetchDashboardOverview = (params) => http.get('/dashboard/overview', { params: params || {} })
 export const fetchDashboardNetdata = (params) => http.get('/dashboard/netdata', { params: params || { limit: 12, minutes: 5 } })
+// 大屏效能统计：MTTR / 自动化闭环 / 漏斗 / 告警帕累托 / 热力图 / 策略灯归因（后端 10 分钟缓存）
+export const fetchDashboardStats = (params) => http.get('/dashboard/stats', { params: params || {} })
+// 大屏资产关联拓扑：母机 → 子机（按业务分组），后端带 10 分钟缓存
+export const fetchDashboardTopology = () => http.get('/dashboard/topology')
+// 大屏 3D 点击服务器 → Agent 上报的全景详情缓存（同资产监控「服务器详情」口径）
+export const fetchDashboardAssetSysinfo = (assetId) => http.get(`/dashboard/assets/${assetId}/sysinfo`, { timeout: 15000 })
 export const fetchKnowledgeDocuments = () => http.get('/knowledge/documents')
 export const searchKnowledge = (q, limit = 6) => http.get('/knowledge/search', { params: { q, limit } })
 export const uploadKnowledgeDocument = (file) => {
