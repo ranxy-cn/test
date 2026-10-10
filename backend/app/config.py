@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     # 初始管理员密码（首次 seed 时使用），生产必须通过环境变量覆盖
     admin_initial_password: str = "Admin@123456"
     # 是否种入演示资产/维护窗口（订单系统等示例数据）；
-    # 生产环境设 SEED_DEMO_ASSETS=0 只保留真实登记的资产
-    seed_demo_assets: bool = True
+    # 仅开发/测试环境开启（tests/conftest.py 强制注入），生产默认关闭，
+    # 如需演示可显式设 SEED_DEMO_ASSETS=1 且仅在资产表为空时生效
+    seed_demo_assets: bool = False
 
     @field_validator("seed_demo_assets", mode="before")
     @classmethod
@@ -91,6 +92,13 @@ class Settings(BaseSettings):
     chat_model: str = "glm-4.7-channel-cg"
     chat_timeout_seconds: float = 60.0
     knowledge_max_upload_bytes: int = 20 * 1024 * 1024
+
+    # Netdata 只读采集：默认从资产登记的 IP 访问 Agent 的 19999 端口。
+    # 单资产可在 extra.netdata 中覆盖 url/port/enabled。
+    netdata_enabled: bool = True
+    netdata_port: int = 19999
+    netdata_timeout_seconds: float = 2.5
+    netdata_max_assets: int = 12
 
     policy_version: str = "policy-v1.0.0"
     mock_model_version: str = "mock-diagnoser-v1"

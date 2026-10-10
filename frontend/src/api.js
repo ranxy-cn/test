@@ -76,6 +76,8 @@ export const fetchMotherOverview = () => http.get('/assets/mother')
 export const fetchMothers = () => http.get('/assets/mothers')
 export const fetchMotherGroups = (id) => http.get(`/assets/mothers/${id}/groups`)
 export const fetchMotherOverviewById = (id) => http.get(`/assets/mothers/${id}/overview`)
+// 母机名下全部子机实时指标批量端点（分组卡片 1 秒轮询；与监控详情实时面板同源）
+export const fetchChildrenRealtime = (id) => http.get(`/assets/mothers/${id}/children/realtime`)
 export const createMother = (payload) => http.post('/assets/mothers', payload)
 export const renameGroup = (motherId, name, newName) =>
   http.post(`/assets/mothers/${motherId}/groups/rename`, { name, new_name: newName })
@@ -99,7 +101,6 @@ export const provisionAsset = (payload) => http.post('/assets/provision', payloa
 export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
 // 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的自研 agent 再删台账
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })
-export const probeAssets = () => http.post('/assets/probe', {}, { timeout: 60000 })
 export const fetchAssetMetrics = (id, minutes = 60) => http.get(`/assets/${id}/metrics`, { params: { minutes } })
 // 本机系统资源实时监控（类 macOS 活动监视器）：1 秒轮询实时值 / 后台采样落库历史
 // assetId：子机=该子机 Agent 上报；母机=其本机子机曲线；留空=平台本机
@@ -108,7 +109,7 @@ export const fetchSystemRealtime = (assetId = '') =>
 export const fetchSystemHistory = (minutes = 60, assetId = '') =>
   http.get('/system/metrics/history', { params: assetId ? { minutes, asset_id: assetId } : { minutes } })
 // SSH 连通性测试（新增母机/子机前的「测试连接」按钮）
-export const testSsh = (payload) => http.post('/assets/ssh-test', payload, { timeout: 30000 })
+export const testSsh = (payload) => http.post('/assets/ssh-test', payload, { timeout: 45000 })
 // 子机 Agent：全局默认配置 + 资产级覆盖 + SSH 部署（py/go）
 export const fetchAgentConfigDefaults = () => http.get('/agent-config/defaults')
 export const updateAgentConfigDefaults = (patch) => http.put('/agent-config/defaults', patch)
@@ -119,6 +120,8 @@ export const deployAgent = (id, payload) => http.post(`/assets/${id}/agent/deplo
 export const fetchAgentDeployStatus = (id) => http.get(`/assets/${id}/agent/deploy`)
 export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, payload, { timeout: 20000 })
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
+// SSH 终端：在资产上实时执行一条命令并回显（免密巡检通道，命令/输出即内容）
+export const execAssetCommand = (id, payload) => http.post(`/assets/${id}/exec`, payload, { timeout: 30000 })
 export const runAction = (payload) => http.post('/actions/run', payload)
 export const fetchPlaybooks = () => http.get('/playbooks')
 export const postWebhook = (payload, secret = 'dev-webhook-secret') =>
@@ -143,7 +146,14 @@ export const stopMemStress = () => http.post('/tools/mem-stress/stop')
 export const fetchStressTargets = () => http.get('/tools/stress-targets')
 export const fetchRemoteStress = () => http.get('/tools/remote-stress')
 export const stopRemoteStress = (assetId) => http.post('/tools/stress/stop', { asset_id: assetId })
-export const fetchDashboardOverview = () => http.get('/dashboard/overview')
+export const fetchDashboardOverview = (params) => http.get('/dashboard/overview', { params: params || {} })
+export const fetchDashboardNetdata = (params) => http.get('/dashboard/netdata', { params: params || { limit: 12, minutes: 5 } })
+// 大屏效能统计：MTTR / 自动化闭环 / 漏斗 / 告警帕累托 / 热力图 / 策略灯归因（后端 10 分钟缓存）
+export const fetchDashboardStats = (params) => http.get('/dashboard/stats', { params: params || {} })
+// 大屏资产关联拓扑：母机 → 子机（按业务分组），后端带 10 分钟缓存
+export const fetchDashboardTopology = () => http.get('/dashboard/topology')
+// 大屏 3D 点击服务器 → Agent 上报的全景详情缓存（同资产监控「服务器详情」口径）
+export const fetchDashboardAssetSysinfo = (assetId) => http.get(`/dashboard/assets/${assetId}/sysinfo`, { timeout: 15000 })
 export const fetchKnowledgeDocuments = () => http.get('/knowledge/documents')
 export const searchKnowledge = (q, limit = 6) => http.get('/knowledge/search', { params: { q, limit } })
 export const uploadKnowledgeDocument = (file) => {
@@ -156,3 +166,21 @@ export const uploadKnowledgeDocument = (file) => {
 }
 export const deleteKnowledgeDocument = (id) => http.delete(`/knowledge/documents/${id}`)
 export const sendKnowledgeChat = (message, history = []) => http.post('/knowledge/chat', { message, history }, { timeout: 90000 })
+
+// ===== AI 日志分析 =====
+export const getAiSettings = () => http.get('/ai/settings')
+export const saveAiSettings = (payload) => http.put('/ai/settings', payload)
+export const testAiConnection = (payload = {}) => http.post('/ai/settings/test', payload, { timeout: 120000 })
+export const listAiAnalyses = (params) => http.get('/ai/analyses', { params: params || {} })
+export const getAiAnalysis = (id) => http.get(`/ai/analyses/${id}`)
+export const feedbackAiAnalysis = (id, payload) => http.post(`/ai/analyses/${id}/feedback`, payload)
+export const triggerAiAnalysis = (anomalyId) => http.post(`/ai/anomalies/${anomalyId}/analyze`)
+
+// ===== 告警恢复任务 / 恢复脚本 =====
+export const listRecoveryTasks = (params) => http.get('/recovery/tasks', { params: params || {} })
+export const executeRecoveryTask = (id) => http.post(`/recovery/tasks/${id}/execute`, null, { timeout: 180000 })
+export const cancelRecoveryTask = (id) => http.post(`/recovery/tasks/${id}/cancel`)
+export const listRecoveryScripts = () => http.get('/recovery/scripts')
+export const createRecoveryScript = (payload) => http.post('/recovery/scripts', payload)
+export const updateRecoveryScript = (id, payload) => http.put(`/recovery/scripts/${id}`, payload)
+export const deleteRecoveryScript = (id) => http.delete(`/recovery/scripts/${id}`)

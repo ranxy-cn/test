@@ -93,7 +93,7 @@ def test_create_mother_alert_policy(auth_token, client, db):
     assert r.status_code == 200
     row = db.get(Asset, "mother-10-1-1-1")
     assert row.extra["alert_policy"]["cpu_threshold"] == 90
-    assert row.extra["alert_policy"]["cpu_window_minutes"] == 5
+    assert row.extra["alert_policy"]["cpu_window_seconds"] == 300  # v1 分钟字段自动转秒
     assert row.extra["alert_policy"]["mem_threshold"] == alert_policy.DEFAULT_POLICY["mem_threshold"]
 
     r2 = client.post(
@@ -148,7 +148,14 @@ def test_mother_overview_children_and_agent_metrics(auth_token, client, db, monk
     assert r.status_code == 200
     children = {c["id"]: c for c in r.json()["children"]}
     assert "node-legacy" in children  # 存量未归属子机归默认母机（另含 seed 演示资产）
-    assert children["node-legacy"]["metrics"] == {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load": 0.42}
+    assert children["node-legacy"]["metrics"] == {
+        "cpu": 23.46,
+        "mem": 38.8,
+        "disk": 45.1,
+        "load": 0.42,
+        "net_rx_bps": None,
+        "net_tx_bps": None,
+    }
     assert all(not i.startswith("mother-") for i in children)  # 母机自身不在子机列表
 
     # 未上报的子机 metrics=None（前端显示 "-"）；其他母机的子机不出现
@@ -170,8 +177,8 @@ def test_mother_overview_children_and_agent_metrics(auth_token, client, db, monk
     assert r4.status_code == 404
 
 
-def test_uninstall_mother_cascades_children(auth_token, client, db):
-    """删除母机：纯台账级联（名下子机一并删），其他母机的子机保留。"""
+def test_uninstall_mother_blocks_with_children(auth_token, client, db):
+    """删除母机：名下有子机 → 400 拒绝；删净子机后才允许删除，他母机不受影响。"""
     db.add(_mk("mother-10-0-0-9", kind="mother", ip="10.0.0.9"))
     db.add(_mk("node-c1", mother_id="mother-10-0-0-9"))
     db.add(_mk("node-c2", mother_id="mother-10-0-0-9"))
@@ -180,13 +187,23 @@ def test_uninstall_mother_cascades_children(auth_token, client, db):
     db.commit()
 
     r = client.post("/api/v1/assets/mothers/mother-10-0-0-9/uninstall", headers=_h(auth_token))
-    assert r.status_code == 200
-    assert r.json()["deleted"] == "mother-10-0-0-9"
-    assert sorted(r.json()["cascade_children"]) == ["node-c1", "node-c2"]
+    assert r.status_code == 400
+    assert "2 台子机" in r.json()["detail"]
+    db.expire_all()
+    assert db.get(Asset, "mother-10-0-0-9") is not None
+    assert db.get(Asset, "node-c1") is not None
 
+    # 删净子机后母机可删
+    for cid in ("node-c1", "node-c2"):
+        assert (
+            client.post(f"/api/v1/assets/{cid}/remove", headers=_h(auth_token), json={"uninstall": False}).status_code
+            == 200
+        )
+    r2 = client.post("/api/v1/assets/mothers/mother-10-0-0-9/uninstall", headers=_h(auth_token))
+    assert r2.status_code == 200
+    assert r2.json()["deleted"] == "mother-10-0-0-9"
     db.expire_all()
     assert db.get(Asset, "mother-10-0-0-9") is None
-    assert db.get(Asset, "node-c1") is None and db.get(Asset, "node-c2") is None
     assert db.get(Asset, "node-other") is not None  # 他母机子机不受影响
 
     audit = db.query(AuditLog).filter(AuditLog.event_type == "mother_uninstall").all()
@@ -194,7 +211,7 @@ def test_uninstall_mother_cascades_children(auth_token, client, db):
 
 
 def test_uninstall_mother_404_and_ref_guard(auth_token, client, db):
-    """不存在/非母机 → 404；母机或子机被工单引用 → 409 拒绝级联删除。"""
+    """不存在/非母机 → 404；无子机母机被工单引用 → 409 拒绝删除。"""
     r = client.post("/api/v1/assets/mothers/no-such/uninstall", headers=_h(auth_token))
     assert r.status_code == 404
 
@@ -204,13 +221,12 @@ def test_uninstall_mother_404_and_ref_guard(auth_token, client, db):
     assert r2.status_code == 404
 
     db.add(_mk("mother-10-0-0-9", kind="mother", ip="10.0.0.9"))
-    db.add(_mk("node-c1", mother_id="mother-10-0-0-9"))
     db.commit()
     db.add(
         Ticket(
             number="T-1",
             idempotency_key="k-1",
-            asset_id="node-c1",  # 子机被工单引用 → 母机级联删除必须拒绝
+            asset_id="mother-10-0-0-9",  # 母机自身被工单引用 → 拒绝
             tenant_id="t1",
             title="演示工单",
             event_id="e-1",
@@ -225,7 +241,7 @@ def test_uninstall_mother_404_and_ref_guard(auth_token, client, db):
 
 
 def test_children_agent_summary_mapping(monkeypatch):
-    """_children_agent_summary：LATEST 命中 → 4 项指标；未命中 → 不在结果里。"""
+    """_children_agent_summary：LATEST 命中 → 指标全量（含网络，缺省 None）；未命中 → 不在结果里。"""
     import app.routers.agent_api as agent_api
     from app.api import _children_agent_summary
 
@@ -239,7 +255,18 @@ def test_children_agent_summary_mapping(monkeypatch):
     )
     rows = [{"id": "node-1"}, {"id": "node-2"}]
     out = _children_agent_summary(rows)
-    assert out == {"node-1": {"cpu": 23.46, "mem": 38.8, "disk": 45.1, "load": 0.42}}
+    assert out == {
+        "node-1": {
+            "cpu": 23.46,
+            "mem": 38.8,
+            "disk": 45.1,
+            "load": 0.42,
+            "net_rx_bps": None,
+            "net_tx_bps": None,
+        }
+    }
 
     out2 = _children_agent_summary([{"id": "node-load"}, {"id": "node-x"}])
-    assert out2 == {"node-load": {"cpu": 1.0, "mem": 2.0, "disk": 3.0, "load": 5.5}}
+    assert out2 == {
+        "node-load": {"cpu": 1.0, "mem": 2.0, "disk": 3.0, "load": 5.5, "net_rx_bps": None, "net_tx_bps": None}
+    }

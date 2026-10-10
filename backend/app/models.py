@@ -382,6 +382,8 @@ class AnomalyEvent(Base):
     message: Mapped[str] = mapped_column(String(256), default="")
     # abnormal 异常 / recovered 恢复
     status: Mapped[str] = mapped_column(String(16), default="abnormal", index=True)
+    # AI 日志分析状态：none 未触发 / pending 已入队 / running 分析中 / done 完成 / failed 失败 / skipped 未启用
+    ai_status: Mapped[str] = mapped_column(String(16), default="none", server_default="none", comment="AI 日志分析状态")
     asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     diagnostics: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="异常时刻进程快照（TOP 进程/负载/内存/监听/会话）")
@@ -451,6 +453,9 @@ class SystemMetricSample(Base):
     # 网络速率（字节/秒）
     net_rx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
     net_tx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 扩展指标（agent v1.1+）：swap/inode/await_ms/tcp_tw/tcp_conn_pct/loss_pct/
+    # latency_ms/bw_rx_pct/bw_tx_pct/oom_events/procs_missing/ports_down/metrics
+    ext: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(16), default="real")
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
 
@@ -534,4 +539,105 @@ class KnowledgeDocument(Base):
     status: Mapped[str] = mapped_column(String(32), default="indexed")
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+
+
+class AiAnalysis(Base):
+    """AI 日志分析结果：与异常告警（anomaly_events）双向关联，仅文字性诊断与建议。"""
+
+    __tablename__ = "ai_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[int] = mapped_column(Integer, ForeignKey("anomaly_events.id"), index=True)
+    # pending 排队 / running 分析中 / done 完成 / blocked 响应含指令被屏蔽 / failed 失败 / skipped 未启用
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    # 分析优先级：0（P0 最高）~ 9（P3 最低），来自告警级别映射
+    priority: Mapped[int] = mapped_column(Integer, default=5)
+    severity: Mapped[str] = mapped_column(String(16), default="", comment="AI 判定严重程度：critical/high/medium/low/info")
+    summary: Mapped[str] = mapped_column(Text, default="", comment="一句话结论")
+    diagnosis: Mapped[str] = mapped_column(Text, default="", comment="问题诊断")
+    causes: Mapped[list] = mapped_column(JSON, default=list, comment="可能原因列表")
+    # 解决方案列表：[{title, detail, tag, severity}]
+    solutions: Mapped[list] = mapped_column(JSON, default=list)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, comment="置信度 0~1")
+    model: Mapped[str] = mapped_column(String(128), default="", comment="产生该结果的模型（mock 前缀表示演示模式）")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, comment="AI 请求耗时（毫秒）")
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False, comment="响应是否命中操作指令过滤")
+    error: Mapped[str] = mapped_column(String(1024), default="", comment="失败原因")
+    raw_response: Mapped[str] = mapped_column(Text().with_variant(MEDIUMTEXT(), "mysql"), default="", comment="模型原始响应（审计留痕）")
+    context_digest: Mapped[str] = mapped_column(String(64), default="", comment="送审日志上下文摘要指纹（sha256 前 16 位）")
+    # 人工处理记录
+    handled_by: Mapped[str] = mapped_column(String(64), default="", comment="处理人")
+    handled_note: Mapped[str] = mapped_column(Text, default="", comment="人工处理备注")
+    handled_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)
+
+
+class AiAuditLog(Base):
+    """AI 操作审计：记录每次配置变更/连接测试/分析触发/结果/人工处理。"""
+
+    __tablename__ = "ai_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    analysis_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # config_update / connection_test / trigger / success / failed / blocked / skipped / feedback
+    action: Mapped[str] = mapped_column(String(32), index=True)
+    operator: Mapped[str] = mapped_column(String(64), default="system", comment="触发者（用户名或 system）")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict, comment="动作详情（请求摘要/错误/变更字段等，不含密钥明文）")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)
+
+
+class RecoveryScript(Base):
+    """自定义恢复脚本：告警规则命中后可自动/人工执行的服务器恢复脚本。
+
+    rule_key 匹配告警 payload.rule_id（空串=匹配所有规则）；risk_level 决定
+    执行方式：low 低风险告警触发后自动执行，high 高风险生成任务等人工执行。
+    """
+
+    __tablename__ = "recovery_scripts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), comment="脚本名称")
+    description: Mapped[str] = mapped_column(String(256), default="", comment="用途说明")
+    rule_key: Mapped[str] = mapped_column(String(64), default="", index=True, comment="匹配的告警规则 key（空=全部规则）")
+    # low 低风险（可自动执行）/ high 高风险（需人工确认执行）
+    risk_level: Mapped[str] = mapped_column(String(8), default="low", comment="风险等级：low/high")
+    command: Mapped[str] = mapped_column(Text, comment="Shell 恢复命令（目标机 root 执行）")
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=60, comment="执行超时（秒）")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, comment="是否启用")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+
+
+class RecoveryTask(Base):
+    """告警恢复任务：告警触发时自动生成，告警恢复自动关闭（done，前端默认隐藏）。
+
+    状态机与工单 Ticket 独立：open 待处理 / executing 执行中 / done 完成 / cancelled 取消。
+    priority 由告警 P 级映射基础分（P0=90/P1=70/P2=50/P3=30），告警持续未恢复时叠加升级。
+    """
+
+    __tablename__ = "recovery_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_id: Mapped[int] = mapped_column(Integer, ForeignKey("anomaly_events.id"), index=True)
+    event_id: Mapped[str] = mapped_column(String(128), index=True, comment="告警 event_id（幂等键）")
+    asset_id: Mapped[str] = mapped_column(String(64), default="", comment="资产 ID（空=未关联资产）")
+    rule_key: Mapped[str] = mapped_column(String(64), default="", comment="告警规则 key")
+    severity: Mapped[str] = mapped_column(String(32), default="", comment="告警级别（P0~P3）")
+    priority: Mapped[int] = mapped_column(Integer, default=50, index=True, comment="优先级分 0~99，越大越紧急")
+    # open 待处理 / executing 执行中 / done 完成 / cancelled 已取消
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    script_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("recovery_scripts.id"), nullable=True, comment="命中的恢复脚本（空=纯人工任务）")
+    script_name: Mapped[str] = mapped_column(String(64), default="", comment="脚本名快照")
+    executed_by: Mapped[str] = mapped_column(String(64), default="", comment="执行人（system=自动执行）")
+    execute_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True, comment="最近一次脚本执行结果")
+    execute_output: Mapped[str] = mapped_column(Text, default="", comment="脚本输出留痕")
+    resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True, comment="关闭时间")
+    resolve_reason: Mapped[str] = mapped_column(String(128), default="", comment="关闭原因")
+    created_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)

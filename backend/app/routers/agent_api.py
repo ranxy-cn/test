@@ -28,6 +28,7 @@ from app.database import get_db
 from app.models import AppSetting, Asset, SystemMetricSample, utcnow
 from app.routers.deps import CurrentUser, require_perm
 from app.services.audit import add_audit
+from app.services.alert_policy import effective_policy
 from sqlalchemy import select
 
 router = APIRouter()
@@ -36,22 +37,89 @@ router = APIRouter()
 LATEST: dict[str, dict] = {}
 _LATEST_LOCK = threading.Lock()
 
+# 服务器详情全景缓存：{asset_id: {...}}，由 agent 低频上报 sysinfo 原始文本解析而来
+SYSINFO: dict[str, dict] = {}
+_SYSINFO_LOCK = threading.Lock()
+
 DEFAULT_AGENT_CONFIG = {
     "report_interval": 5,   # 上报间隔（秒）
     "collect_interval": 5,  # 采集间隔（秒）
-    "collect_items": ["cpu", "mem", "disk", "load", "net"],
+    "collect_items": ["cpu", "mem", "disk", "load", "net", "procs"],
     "buffer_max": 600,      # 断网本地缓存上限（条）
-    "config_refresh": 300,  # 配置拉取间隔（秒）
+    "config_refresh": 30,   # 配置拉取间隔（秒）：策略/配置变更最迟约 30 秒同步到子机
     "offline_after": 30,    # 超过该秒数无上报视为离线
 }
-
 
 # 系统级全局默认配置的 kv 键（app_settings 表）；无记录时用代码内置默认
 GLOBAL_CFG_KEY = "agent_config_default"
 
 # 数值配置项（秒/条），管理端写入时收敛到 [1, 86400]
 _INT_KEYS = ("report_interval", "collect_interval", "buffer_max", "config_refresh", "offline_after")
-_COLLECT_ITEMS = ("cpu", "mem", "disk", "load", "net")
+# 采集项白名单：基础 5 项 + 进程归因 + v1.1 扩展项（由告警策略开关驱动是否采集）
+_COLLECT_ITEMS = (
+    "cpu", "mem", "disk", "load", "net", "procs",
+    "swap", "inode", "disk_io", "tcp", "oom", "process", "port", "net_probe", "bandwidth", "metrics",
+)
+
+# 帧内 ext 扩展字段白名单（进 SystemMetricSample.ext，供告警引擎判定）
+_EXT_NUM_KEYS = (
+    "swap", "inode", "await_ms", "tcp_tw", "tcp_total", "tcp_conn_pct",
+    "loss_pct", "latency_ms", "bw_rx_pct", "bw_tx_pct", "oom_events",
+    "load5", "load15", "ncpu", "mem_total_mb", "mem_used_mb",
+)
+_EXT_LIST_KEYS = ("procs_missing", "ports_down", "oom_detail")
+# JSON 列表（dict 元素）：进程归因 [{pid, comm, cpu, mem}]
+_EXT_JSON_KEYS = ("procs",)
+
+
+def _clean_procs(v) -> list:
+    """收敛进程归因列表：[{pid,ppid,comm,cpu,mem,user,args,etime}]，最多 12 条。"""
+    out: list = []
+    for p in (v or [])[:24]:
+        if not isinstance(p, dict):
+            continue
+        try:
+            out.append({
+                "pid": int(p.get("pid") or 0),
+                "ppid": int(p.get("ppid") or 0),
+                "comm": str(p.get("comm") or "")[:64],
+                "cpu": round(float(p.get("cpu") or 0), 2),
+                "mem": round(float(p.get("mem") or 0), 2),
+                "user": str(p.get("user") or "")[:32],
+                "args": str(p.get("args") or "")[:256],
+                "etime": str(p.get("etime") or "")[:32],
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _ext_of(sample: dict) -> dict | None:
+    """从上报帧提取扩展指标（白名单收敛，防注入任意数据）。"""
+    ext: dict = {}
+    for k in _EXT_NUM_KEYS:
+        v = sample.get(k)
+        if isinstance(v, (int, float)):
+            ext[k] = round(float(v), 3)
+    for k in _EXT_LIST_KEYS:
+        v = sample.get(k)
+        if isinstance(v, list):
+            ext[k] = [str(x)[:128] for x in v[:32]]
+    for k in _EXT_JSON_KEYS:
+        v = sample.get(k)
+        if isinstance(v, list):
+            cleaned = _clean_procs(v)
+            if cleaned:
+                ext[k] = cleaned
+    m = sample.get("metrics")
+    if isinstance(m, dict):
+        clean: dict = {}
+        for name, val in list(m.items())[:128]:
+            if isinstance(val, (int, float)):
+                clean[str(name)[:128]] = round(float(val), 4)
+        if clean:
+            ext["metrics"] = clean
+    return ext or None
 
 
 def _global_cfg(db: Session | None) -> dict:
@@ -82,7 +150,7 @@ def _sanitize_cfg(patch: dict) -> dict:
             except (TypeError, ValueError):
                 continue
         elif k == "collect_items":
-            v = sorted({x for x in (v or []) if x in _COLLECT_ITEMS}, key=_COLLECT_ITEMS.index) or list(_COLLECT_ITEMS)
+            v = sorted({x for x in (v or []) if x in _COLLECT_ITEMS}, key=_COLLECT_ITEMS.index) or list(DEFAULT_AGENT_CONFIG["collect_items"])
         out[k] = v
     return out
 
@@ -97,11 +165,12 @@ def _get_asset_by_token(db: Session, asset_id: str, token: str) -> Asset:
 
 
 class ReportIn(BaseModel):
-    """单帧或多帧（断网补发）上报。"""
+    """单帧或多帧（断网补发）上报。sysinfo 为服务器详情原始文本（低频附带）。"""
 
     asset_id: str
     agent_version: str = ""
     samples: list[dict] = Field(default_factory=list)
+    sysinfo: str = ""
 
 
 @router.post("/api/v1/agent/report")
@@ -127,11 +196,23 @@ def agent_report(
             load1=_f(s.get("load1")),
             net_rx_bps=_f(s.get("net_rx_bps")),
             net_tx_bps=_f(s.get("net_tx_bps")),
+            ext=_ext_of(s),
             source="agent",
         )
         rows.append(row)
         with _LATEST_LOCK:
             LATEST[asset.id] = {**s, "ts": ts or now.timestamp()}
+    if body.sysinfo:
+        # 低频附带的服务器详情原始文本：解析为全景 JSON 缓存（替代 SSH 上机采集）
+        try:
+            from app.services.inspector import parse_sysinfo_raw
+
+            last_ip = (body.samples[-1] or {}).get("ip", "") if body.samples else ""
+            info = parse_sysinfo_raw(body.sysinfo, ip=last_ip, username="agent")
+            with _SYSINFO_LOCK:
+                SYSINFO[asset.id] = info
+        except Exception:  # noqa: BLE001 解析失败不影响采样落库
+            pass
     if rows:
         db.add_all(rows)
     asset.extra = {
@@ -159,9 +240,11 @@ def agent_config(
     db: Session = Depends(get_db),
     x_agent_token: str = Header(default=""),
 ):
+    """子机拉取采集/推送配置 + 生效告警策略（配置变更无需重启 agent 即生效）。"""
     _get_asset_by_token(db, asset_id, x_agent_token)
     asset = db.get(Asset, asset_id)
-    return {"config": agent_cfg_of(asset, db)}
+    policy, _source = effective_policy(db, asset)
+    return {"config": agent_cfg_of(asset, db), "alert_policy": policy}
 
 
 def agent_status_of(asset: Asset, db: Session | None = None) -> dict:
@@ -387,4 +470,44 @@ def settings_snapshot() -> dict:
     return {
         "system_sample_seconds": s.system_sample_seconds,
         "retention_days": s.system_sample_retention_days,
+    }
+
+
+def sysinfo_of(asset_id: str) -> dict | None:
+    """读取 agent 低频上报的服务器详情全景缓存（替代 SSH 上机采集）。"""
+    with _SYSINFO_LOCK:
+        info = SYSINFO.get(asset_id)
+    return dict(info) if info else None
+
+
+def inspect_snapshot_of(asset_id: str) -> dict | None:
+    """从 agent 最新帧组装巡检快照（替代 SSH inspect_host）。无数据返回 None。"""
+    with _LATEST_LOCK:
+        latest = dict(LATEST.get(asset_id) or {})
+    if not latest:
+        return None
+    procs = _clean_procs(latest.get("procs") or [])
+    top_cpu = sorted([p for p in procs if p], key=lambda p: p["cpu"], reverse=True)[:15]
+    top_mem = sorted([p for p in procs if p], key=lambda p: p["mem"], reverse=True)[:15]
+    total_mb = latest.get("mem_total_mb")
+    mem = {}
+    if total_mb:
+        mem = {
+            "total_mb": int(total_mb),
+            "used_mb": int(latest.get("mem_used_mb") or 0),
+            "pct": latest.get("mem"),
+        }
+    return {
+        "ip": latest.get("ip", ""),
+        "load": {
+            "load1": latest.get("load1"),
+            "load5": latest.get("load5"),
+            "load15": latest.get("load15"),
+            "cores": latest.get("ncpu"),
+        },
+        "uptime_seconds": latest.get("uptime_seconds"),
+        "mem": mem,
+        "disk": {"pct": latest.get("disk")},
+        "top_cpu": top_cpu,
+        "top_mem": top_mem,
     }

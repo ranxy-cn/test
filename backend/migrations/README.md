@@ -11,6 +11,7 @@
 | 0002 | [0002_sync_column_comments.py](versions/0002_sync_column_comments.py) | [ddl/0002_sync_column_comments.sql](ddl/0002_sync_column_comments.sql) | 2026-09-20 | 全量表/字段注释回填（COMMENT），无结构变化 |
 | 0003 | [0003_dynamic_menus.py](versions/0003_dynamic_menus.py) | [ddl/0003_dynamic_menus.sql](ddl/0003_dynamic_menus.sql) | 2026-09-20 | 动态菜单权限：新增 menus / role_menus 表，权限点 +2（roles:manage、menus:manage），菜单树种子与内置角色授权 |
 | 0004 | [0004_dict_entries.py](versions/0004_dict_entries.py) | [ddl/0004_dict_entries.sql](ddl/0004_dict_entries.sql) | 2026-09-20 | 业务字典：新增 dict_entries 表（告警标题/资产/预案 → 中文枚举映射）+ 种子 18 项 |
+| 0013 | [0013_ai_log_analysis.py](versions/0013_ai_log_analysis.py) | [ddl/0013_ai_log_analysis.sql](ddl/0013_ai_log_analysis.sql) | 2026-10-08 | AI 日志分析：新增 ai_analyses（分析结果）与 ai_audit_logs（AI 审计）表，anomaly_events 加 ai_status 联动状态列 |
 
 ## DDL 文档维护约定（强约束）
 

@@ -1,5 +1,70 @@
 <template>
   <div>
+    <!-- 告警恢复任务：告警触发自动生成，恢复自动关闭（默认只看未结） -->
+    <el-card shadow="never" class="recovery-block">
+      <div class="recovery-head">
+        <div class="recovery-title">
+          <span class="t">告警恢复任务</span>
+          <span class="d">异常告警触发时自动生成；告警恢复后任务自动关闭并从列表消失</span>
+        </div>
+        <el-radio-group v-model="recStatus" size="small" @change="loadRecovery">
+          <el-radio-button value="open">待处理</el-radio-button>
+          <el-radio-button value="executing">执行中</el-radio-button>
+          <el-radio-button value="done">已完成</el-radio-button>
+          <el-radio-button value="cancelled">已取消</el-radio-button>
+          <el-radio-button value="all">全部</el-radio-button>
+        </el-radio-group>
+      </div>
+      <el-table :data="recTasks" size="small" border empty-text="当前没有恢复任务">
+        <el-table-column label="优先级" width="90" sortable>
+          <template #default="{ row }">
+            <el-tag size="small" :type="prioType(row.priority)" effect="dark">{{ row.priority }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="级别" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" :type="SEV_TAGS[row.severity] || 'info'">{{ SEV_LABELS[row.severity] || row.severity || '—' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="告警规则" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ cnRule(row.rule_key) || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="asset_id" label="资产" min-width="130" show-overflow-tooltip />
+        <el-table-column label="恢复脚本" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.script_name">{{ row.script_name }}</span>
+            <span v-else class="muted">纯人工</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="REC_TAGS[row.status] || 'info'">{{ REC_LABELS[row.status] || row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="执行" width="110">
+          <template #default="{ row }">
+            <span v-if="row.execute_ok === true" class="ok">成功 · {{ row.executed_by }}</span>
+            <span v-else-if="row.execute_ok === false" class="fail">失败 · {{ row.executed_by }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="165" :formatter="fmtTimeCol('created_at')" />
+        <el-table-column v-if="canOperate" label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.script_id && ['open', 'executing'].includes(row.status)"
+              link type="primary" size="small" @click="execTask(row)"
+            >执行脚本</el-button>
+            <el-button v-if="['open', 'executing'].includes(row.status)" link type="danger" size="small" @click="cancelTask(row)">取消</el-button>
+            <el-button
+              v-if="row.execute_output"
+              link type="info" size="small" @click="showOutput(row)"
+            >输出</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <!-- 资产台账联动：母机 → 分组 按钮切换筛选 -->
     <div class="filter-block">
       <span class="filter-label">母机</span>
@@ -34,11 +99,6 @@
       <el-button type="primary" plain @click="search">查询</el-button>
       <el-button @click="resetFilters">重置</el-button>
       <span class="spacer"></span>
-      <el-tooltip :disabled="stressEnabled" content="仅服务器开启 STRESS_TOOLS_ENABLED 后可用">
-        <span>
-          <el-button v-perm="'tools:operate'" type="warning" plain :disabled="!stressEnabled" @click="openStress">CPU 压测</el-button>
-        </span>
-      </el-tooltip>
       <el-button @click="load">刷新</el-button>
     </div>
 
@@ -95,52 +155,99 @@
         @size-change="search"
       />
     </div>
-
-    <el-dialog v-model="stressVisible" title="真实 CPU 压测（让自研 Agent 采到真数据）" width="580px">
-      <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-        title="压测会把服务器全部 CPU 核打满，确认当前无人依赖服务器性能" />
-      <el-descriptions :column="1" border size="small" style="margin-bottom: 12px">
-        <el-descriptions-item label="原理">在 API 容器内按核数拉起死循环进程，自研 Agent 采集到真实 CPU 利用率</el-descriptions-item>
-        <el-descriptions-item label="告警">CPU 持续高于阈值 5 分钟 → 平台越限判定自动立案</el-descriptions-item>
-        <el-descriptions-item label="预计">压测启动后约 6~9 分钟出现新任务单，并自动走绿灯修复</el-descriptions-item>
-      </el-descriptions>
-      <el-form label-width="90px">
-        <el-form-item label="压测时长">
-          <el-select v-model="stressDuration" style="width: 100%" :disabled="stressRunning">
-            <el-option label="5 分钟（可能不足以覆盖 5 分钟均值窗口）" :value="300" />
-            <el-option label="7 分钟（推荐）" :value="420" />
-            <el-option label="10 分钟" :value="600" />
-            <el-option label="15 分钟" :value="900" />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <div v-if="stressRunning">
-        <el-tag type="danger">压测进行中 · {{ stressCores }} 核满载 · 剩余 {{ stressRemaining }} 秒</el-tag>
-      </div>
-      <template #footer>
-        <el-button v-if="stressRunning" v-perm="'tools:operate'" type="danger" @click="doStopStress">停止压测</el-button>
-        <el-button v-else v-perm="'tools:operate'" type="warning" :loading="stressStarting" @click="doStartStress">启动压测</el-button>
-        <el-button @click="stressVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   fetchTickets,
-  fetchStatus,
-  fetchStressStatus,
   fetchDict,
   fetchMothers,
   fetchMotherGroups,
-  startCpuStress,
-  stopCpuStress,
+  listRecoveryTasks,
+  executeRecoveryTask,
+  cancelRecoveryTask,
 } from '../api'
 import { fmtTimeCol } from '../time'
+import { auth } from '../auth'
+
+// ===== 告警恢复任务 =====
+const SEV_LABELS = { P0: 'P0 严重', P1: 'P1 重要', P2: 'P2 一般', P3: 'P3 提示' }
+const SEV_TAGS = { P0: 'danger', P1: 'warning', P2: 'warning', P3: 'info' }
+const REC_LABELS = { open: '待处理', executing: '执行中', done: '已完成', cancelled: '已取消' }
+const REC_TAGS = { open: 'danger', executing: 'primary', done: 'success', cancelled: 'info' }
+const RULE_CN = {
+  cpu: 'CPU 使用率', mem: '内存使用率', load1: '1分钟负载', swap: 'Swap 使用率',
+  inode: 'Inode 使用率', await_ms: '磁盘 IO 延迟', loss_pct: '网络丢包率', latency_ms: '网络延迟',
+  bw_rx_pct: '入口带宽使用率', bw_tx_pct: '出口带宽使用率', tcp_tw: 'TIME_WAIT 连接数',
+  tcp_conn_pct: 'TCP 连接数/上限', oom: 'OOM kill 事件', process: '关键进程消失', port: '关键端口探活失败',
+}
+const cnRule = (k) => RULE_CN[k] || k
+const canOperate = auth.has('recovery:execute')
+
+const recTasks = ref([])
+const recStatus = ref('open')
+
+const prioType = (p) => (p >= 80 ? 'danger' : p >= 60 ? 'warning' : 'info')
+
+function loadRecovery(silent = false) {
+  const params = { status: recStatus.value, page: 1, page_size: 50 }
+  return listRecoveryTasks(params)
+    .then(({ data }) => {
+      recTasks.value = data.items || []
+    })
+    .catch(() => {
+      if (!silent) recTasks.value = []
+    })
+}
+
+async function execTask(row) {
+  try {
+    await ElMessageBox.confirm(
+      `将在资产「${row.asset_id}」上以 root 执行恢复脚本「${row.script_name}」，确认执行？`,
+      '执行确认',
+      { type: 'warning', confirmButtonText: '确认执行', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const { data } = await executeRecoveryTask(row.id)
+    if (data.ok) ElMessage.success('脚本执行成功')
+    else ElMessage.error('脚本执行失败，详情见输出')
+    loadRecovery(true)
+    if (data.output) showOutput({ ...row, execute_output: data.output, execute_ok: data.ok })
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '执行失败')
+    loadRecovery(true)
+  }
+}
+
+async function cancelTask(row) {
+  try {
+    await ElMessageBox.confirm(`确认取消该恢复任务？（告警恢复后不会再自动关闭）`, '取消确认', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await cancelRecoveryTask(row.id)
+    ElMessage.success('已取消')
+    loadRecovery(true)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.detail || '取消失败')
+  }
+}
+
+function showOutput(row) {
+  ElMessageBox.alert(
+    `<pre style="margin:0;max-height:360px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;">${String(row.execute_output || '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</pre>`,
+    `执行输出 · ${row.script_name || '任务 #' + row.id}`,
+    { dangerouslyUseHTMLString: true, confirmButtonText: '关闭' },
+  )
+}
 
 const STATUS_OPTIONS = {
   pending_analysis: '待分析',
@@ -243,8 +350,9 @@ const statusType = (s) => ({
 
 const lightLabel = (l) => ({ green: '绿灯', yellow: '黄灯', red: '红灯' }[l] || l)
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  // silent：4 秒自动刷新不展示 loading 遮罩（避免遮罩盖住页面底部 Dock）
+  if (!silent) loading.value = true
   try {
     const params = { page: page.value, page_size: pageSize.value }
     if (motherId.value) params.mother_id = motherId.value
@@ -255,7 +363,7 @@ async function load() {
     items.value = data.items
     total.value = data.total ?? data.items.length
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -263,78 +371,54 @@ function go(row) {
   router.push(`/tickets/${row.id}`)
 }
 
-// ===== CPU 压测状态 =====
-const stressVisible = ref(false)
-const stressEnabled = ref(false)
-const stressRunning = ref(false)
-const stressRemaining = ref(0)
-const stressCores = ref(0)
-const stressDuration = ref(420)
-const stressStarting = ref(false)
-let stressTimer
-
-async function loadStressState() {
-  try {
-    const { data } = await fetchStressStatus()
-    stressEnabled.value = !!data.enabled
-    stressRunning.value = !!data.running
-    stressRemaining.value = data.seconds_remaining || 0
-    stressCores.value = data.cores || 0
-  } catch {
-    stressEnabled.value = false
-  }
-}
-
-function openStress() {
-  stressVisible.value = true
-  loadStressState()
-  clearInterval(stressTimer)
-  stressTimer = setInterval(loadStressState, 5000)
-}
-
-async function doStartStress() {
-  stressStarting.value = true
-  try {
-    const { data } = await startCpuStress(stressDuration.value)
-    stressRunning.value = !!data.running
-    stressRemaining.value = data.seconds_remaining || 0
-    stressCores.value = data.cores || 0
-    stressVisible.value = false
-    clearInterval(stressTimer)
-    ElMessage.success(`压测已启动（${stressCores.value} 核满载 ${stressDuration.value} 秒），约 6~9 分钟后关注任务单列表`)
-  } catch (e) {
-    ElMessage.error(e?.response?.data?.detail || '启动失败')
-  } finally {
-    stressStarting.value = false
-  }
-}
-
-async function doStopStress() {
-  try {
-    await stopCpuStress()
-    ElMessage.success('压测已停止')
-  } finally {
-    loadStressState()
-  }
-}
-
 onMounted(() => {
   load()
+  loadRecovery()
   loadDict()
   loadMothers()
-  loadStressState()
-  fetchStatus().then(({ data }) => {
-    stressEnabled.value = !!data.integrations?.stress_tools_enabled
-  }).catch(() => {})
-  timer = setInterval(load, 4000)
+  timer = setInterval(() => {
+    load(true)
+    loadRecovery(true)
+  }, 4000)
 })
 onUnmounted(() => {
   clearInterval(timer)
-  clearInterval(stressTimer)
 })
 </script>
 
 <style scoped>
+.recovery-block {
+  margin-bottom: 16px;
+}
+.recovery-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.recovery-title .t {
+  font-size: 15px;
+  font-weight: 600;
+  margin-right: 10px;
+}
+.recovery-title .d {
+  font-size: 12px;
+  color: var(--muted);
+}
+.muted {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.ok {
+  color: var(--el-color-success);
+  font-size: 12px;
+}
+.fail {
+  color: var(--el-color-danger);
+  font-size: 12px;
+}
 .filter-block {
   margin-bottom: 12px;
   display: flex;

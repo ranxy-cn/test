@@ -5,7 +5,6 @@ import TicketDetailView from './views/TicketDetailView.vue'
 import EmployeeView from './views/EmployeeView.vue'
 import ReportView from './views/ReportView.vue'
 import AssetsView from './views/AssetsView.vue'
-import AgentConfigView from './views/AgentConfigView.vue'
 import StatusView from './views/StatusView.vue'
 import NotificationsView from './views/NotificationsView.vue'
 import BackupsView from './views/BackupsView.vue'
@@ -17,6 +16,9 @@ import DashboardView from './views/DashboardView.vue'
 import KnowledgeView from './views/KnowledgeView.vue'
 import ChatView from './views/ChatView.vue'
 import StandaloneScreenView from './views/StandaloneScreenView.vue'
+import AiConfigView from './views/AiConfigView.vue'
+import AiAnalysesView from './views/AiAnalysesView.vue'
+import RecoveryScriptsView from './views/RecoveryScriptsView.vue'
 import { auth } from './auth'
 import { setUnauthorizedHandler } from './api'
 import { ElMessage } from 'element-plus'
@@ -29,12 +31,13 @@ const router = createRouter({
     { path: '/dashboard', component: DashboardView, meta: { perm: 'dashboard:read' } },
     { path: '/screen', component: StandaloneScreenView, meta: { standalone: true, perm: 'dashboard:read' } },
     { path: '/anomalies', component: AnomaliesView, meta: { perm: 'anomalies:read' } },
+    { path: '/ai-analyses', component: AiAnalysesView, meta: { perm: 'ai:view' } },
+    { path: '/ai-config', component: AiConfigView, meta: { perm: 'ai:config' } },
     { path: '/tickets', component: TicketsView, meta: { perm: 'tickets:read' } },
     { path: '/tickets/:id', component: TicketDetailView, props: true, meta: { perm: 'tickets:read' } },
     { path: '/employee', component: EmployeeView, meta: { perm: 'catalog:read' } },
     { path: '/report', component: ReportView, meta: { perm: 'reports:read' } },
     { path: '/assets', component: AssetsView, meta: { perm: 'assets:read' } },
-    { path: '/agent-config', component: AgentConfigView, meta: { perm: 'assets:read' } },
     { path: '/status', component: StatusView, meta: { perm: 'status:read' } },
     { path: '/knowledge', component: KnowledgeView, meta: { perm: 'knowledge:read' } },
     { path: '/chat', component: ChatView, meta: { perm: 'knowledge:chat' } },
@@ -43,7 +46,8 @@ const router = createRouter({
     { path: '/users', component: UsersView, meta: { perm: 'users:manage' } },
     { path: '/roles', component: RolesView, meta: { perm: 'roles:manage' } },
     { path: '/menus', component: MenusView, meta: { perm: 'menus:manage' } },
-    { path: '/:pathMatch(.*)*', redirect: '/anomalies' },
+    { path: '/recovery-scripts', component: RecoveryScriptsView, meta: { perm: 'recovery:manage' } },
+    { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
   ],
 })
 
@@ -57,7 +61,7 @@ setUnauthorizedHandler(() => {
 
 router.beforeEach(async (to) => {
   if (to.meta.public) {
-    if (auth.isLoggedIn()) return { path: '/anomalies' }
+    if (auth.isLoggedIn()) return { path: '/dashboard' }
     return true
   }
   if (!auth.isLoggedIn()) {

@@ -176,10 +176,10 @@ def test_history_api_bucket_aggregation(auth_token, client, db):
     db.add(SystemMetricSample(ts=datetime.fromtimestamp(h0 + 60, tz=timezone.utc), cpu=10.0, mem=50.0, source="real"))
     db.add(SystemMetricSample(ts=datetime.fromtimestamp(h0 + 120, tz=timezone.utc), cpu=30.0, mem=70.0, source="real"))
     db.commit()
-    # 3 天窗口 → 1 小时桶
+    # 3 天窗口 → 1 小时桶（count 为聚合后点数）
     body = client.get("/api/v1/system/metrics/history", params={"minutes": 4320}).json()
     assert body["bucket_seconds"] == 3600
-    assert body["count"] == 2
+    assert body["count"] == 1
     it = body["items"][-1]
     assert it["cpu"] == 20.0 and it["cpu_max"] == 30.0
     assert it["mem"] == 60.0 and it["mem_max"] == 70.0

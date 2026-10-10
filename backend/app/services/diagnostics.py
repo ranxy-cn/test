@@ -1,7 +1,8 @@
 """异常时刻进程快照服务。
 
-告警产生（webhook 收到异常，或详情页手动点「重新采集」）→ 后台线程 SSH 到目标机
-→ 单次连接执行聚合命令，采集当时的进程全景：
+告警产生（webhook 收到异常，或详情页手动点「重新采集」）→ 后台线程采集当时的进程全景：
+优先读取子机 Agent 上报缓存（最新帧 procs + 低频 sysinfo 全景，替代 SSH 上机），
+Agent 无数据时回退 SSH。包含：
 CPU / 内存 TOP 进程（PID、父进程、用户、占比、运行时长、完整命令行）、
 进程总数 / 运行 / 僵尸、D 状态（IO 等待）进程、系统负载与运行时长、
 内存与 Swap、磁盘、监听端口、登录会话
@@ -10,6 +11,7 @@ CPU / 内存 TOP 进程（PID、父进程、用户、占比、运行时长、完
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -27,6 +29,8 @@ from app.services.inspector import (
     _parse_listen,
     _split_sections,
 )
+
+log = logging.getLogger("devops.diagnostics")
 
 # 单次 SSH 采集总超时（秒）
 CMD_TIMEOUT = 20
@@ -183,6 +187,51 @@ def _ssh_snapshot(ip: str, port: int, username: str, password: str, key_path: st
     }
 
 
+def _agent_snapshot(asset_id: str) -> dict[str, Any] | None:
+    """从 Agent 缓存组装诊断快照（替代 SSH 上机）。无任何 agent 数据返回 None。
+
+    top 进程来自最新帧 procs（pid/ppid/user/args/etime/cpu/mem），其余全景
+    （内存明细/磁盘/监听端口/登录会话/进程统计）来自低频 sysinfo 缓存。
+    """
+    from app.routers import agent_api
+
+    with agent_api._LATEST_LOCK:
+        latest = dict(agent_api.LATEST.get(asset_id) or {})
+    info = agent_api.sysinfo_of(asset_id)
+    if not latest and not info:
+        return None
+
+    procs = agent_api._clean_procs(latest.get("procs") or [])
+    top_cpu = sorted(procs, key=lambda p: p["cpu"], reverse=True)[:15]
+    top_mem = sorted(procs, key=lambda p: p["mem"], reverse=True)[:15]
+    memory = (info or {}).get("memory") or {}
+    if not memory.get("mem") and latest.get("mem_total_mb"):
+        memory = {"mem": {
+            "total_mb": int(latest["mem_total_mb"]),
+            "used_mb": int(latest.get("mem_used_mb") or 0),
+            "pct": latest.get("mem"),
+        }}
+    return {
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "source": "agent",
+        "system": {
+            "ncpu": latest.get("ncpu") or ((info or {}).get("cpu") or {}).get("cores_logical"),
+            "load1": latest.get("load1"),
+            "load5": latest.get("load5"),
+            "load15": latest.get("load15"),
+            "uptime_text": "",
+        },
+        "memory": memory,
+        "disks": (info or {}).get("disks") or [],
+        "processes": (info or {}).get("processes") or {},
+        "top_cpu": top_cpu,
+        "top_mem": top_mem,
+        "d_state": [],
+        "listening": ((info or {}).get("network") or {}).get("listening") or [],
+        "users": (info or {}).get("users") or [],
+    }
+
+
 def collect_for_anomaly(anomaly_id: int) -> None:
     """后台采集入口（自建 Session，独立于请求事务）。幂等：running 时跳过。"""
     db = SessionLocal()
@@ -191,9 +240,10 @@ def collect_for_anomaly(anomaly_id: int) -> None:
         if anomaly is None or anomaly.diag_status == "running":
             return
         target = _resolve_target(db, anomaly)
-        if target is None:
+        asset_id = anomaly.asset_id or ""
+        if target is None and not asset_id:
             anomaly.diag_status = "failed"
-            anomaly.diag_error = "无法确定 SSH 目标：资产未录入 SSH 信息（extra.provision）"
+            anomaly.diag_error = "无法确定采集目标：资产未关联且未录入 SSH 信息"
             db.commit()
             return
 
@@ -201,13 +251,26 @@ def collect_for_anomaly(anomaly_id: int) -> None:
         anomaly.diag_error = ""
         db.commit()
 
-        snapshot = _ssh_snapshot(
-            target["ip"],
-            target["port"],
-            target["username"],
-            target["password"],
-            key_path=INSPECT_KEY_PATH,
-        )
+        # 优先 Agent 缓存（不占 SSH）；未部署 agent 或缓存为空时回退 SSH
+        snapshot = _agent_snapshot(asset_id) if asset_id else None
+        if snapshot is not None:
+            target = target or {"ip": "", "username": "agent", "asset": asset_id}
+        else:
+            if target is None:
+                anomaly = db.get(AnomalyEvent, anomaly_id)
+                if anomaly is None:
+                    return
+                anomaly.diag_status = "failed"
+                anomaly.diag_error = "Agent 无数据且无法确定 SSH 目标：资产未录入 SSH 信息（extra.provision）"
+                db.commit()
+                return
+            snapshot = _ssh_snapshot(
+                target["ip"],
+                target["port"],
+                target["username"],
+                target["password"],
+                key_path=INSPECT_KEY_PATH,
+            )
 
         anomaly = db.get(AnomalyEvent, anomaly_id)
         if anomaly is None:
@@ -220,6 +283,7 @@ def collect_for_anomaly(anomaly_id: int) -> None:
         anomaly.diag_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as exc:
+        log.exception("诊断快照采集失败 anomaly_id=%s", anomaly_id)
         try:
             db.rollback()
             anomaly = db.get(AnomalyEvent, anomaly_id)
@@ -228,6 +292,6 @@ def collect_for_anomaly(anomaly_id: int) -> None:
                 anomaly.diag_error = str(exc)[:500]
                 db.commit()
         except Exception:
-            pass
+            log.exception("诊断失败状态回写异常 anomaly_id=%s", anomaly_id)
     finally:
         db.close()

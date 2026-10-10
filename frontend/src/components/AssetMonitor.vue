@@ -1,32 +1,27 @@
 <template>
-  <el-dialog
-    :model-value="modelValue"
-    fullscreen
-    :title="title"
-    destroy-on-close
-    @update:model-value="$emit('update:modelValue', $event)"
-    @opened="onOpened"
-    @closed="onClosed"
-  >
+  <Teleport to="body">
+    <!-- 悬浮监控窗：标题栏可拖动；z-index 90 低于顶栏(95)/Dock(2002)，全局导航始终可见可点 -->
+    <div v-if="modelValue" class="float-win" :style="floatStyle">
+      <div
+        class="float-head"
+        :class="{ dragging }"
+        @pointerdown="onDragDown"
+        @pointermove="onDragMove"
+        @pointerup="onDragUp"
+        @pointercancel="onDragUp"
+      >
+        <span class="float-head-title" :title="title"><el-icon :size="14"><Monitor /></el-icon>{{ title }}</span>
+        <button class="float-close" type="button" aria-label="关闭" @click="$emit('update:modelValue', false)">
+          <el-icon :size="15"><Close /></el-icon>
+        </button>
+      </div>
+      <div class="float-body">
     <div v-if="asset" class="monitor">
-      <!-- 健康总览 -->
-      <el-row :gutter="12">
-        <el-col v-for="card in healthCards" :key="card.label" :xs="12" :sm="6">
-          <el-card shadow="never" class="metric-card">
-            <div class="metric-label">
-              {{ card.label }}
-              <el-tooltip :content="card.tip" placement="top"><el-icon><QuestionFilled /></el-icon></el-tooltip>
-            </div>
-            <div class="metric-value" :class="card.cls">
-              {{ card.value }}<span class="metric-unit">{{ card.unit }}</span>
-            </div>
-            <el-progress :percentage="card.pct" :color="card.color" :show-text="false" :stroke-width="6" />
-          </el-card>
-        </el-col>
-      </el-row>
-
-      <!-- 实时系统监控（类 macOS 活动监视器）：顶部选项卡切换指标视图，1 秒/次刷新 -->
-      <el-card shadow="never" class="block">
+      <!-- 顶部导航栏：实时监控 / 进程巡检 / 服务器详情 / 异常告警 / 纳管记录（互斥切换，杜绝重复展示） -->
+      <el-tabs v-model="navTab" class="nav-tabs">
+        <el-tab-pane name="live">
+          <template #label>实时监控</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
             <span>
@@ -59,49 +54,13 @@
         </div>
 
         <div ref="liveChartEl" class="chart live-chart" />
-      </el-card>
-
-      <!-- 历史全揽：落库数据（最长 2 个月）时间范围切换 + 五指标小图网格 -->
-      <el-dialog
-        v-model="ovVisible"
-        title="历史全揽 · 系统资源落库数据"
-        width="94%"
-        top="4vh"
-        append-to-body
-        destroy-on-close
-      >
-        <div class="row-between ov-toolbar">
-          <el-radio-group v-model="ovRange" size="small" @change="loadOverview">
-            <el-radio-button v-for="r in OV_RANGES" :key="r.m" :value="r.m">{{ r.label }}</el-radio-button>
-          </el-radio-group>
-          <span class="live-src">
-            落库粒度 5 秒 · {{ ovBucketNote }} · 保留 60 天（过期自动清理）
-          </span>
-        </div>
-
-        <div class="ov-summary">
-          <div v-for="s in ovSummary" :key="s.label" class="ov-kpi">
-            <div class="ov-kpi-label">{{ s.label }}</div>
-            <div class="ov-kpi-value" :style="{ color: s.color }">
-              {{ s.value }}<span v-if="s.unit" class="ov-kpi-unit">{{ s.unit }}</span>
-            </div>
-            <div class="ov-kpi-sub">峰值 {{ s.max }}</div>
-          </div>
-        </div>
-
-        <div class="ov-grid">
-          <div v-for="c in OV_DEFS" :key="c.key" class="ov-cell">
-            <div class="ov-cell-title">
-              <span :style="{ color: c.color }">■</span>
-              {{ c.name }}<span v-if="ovBucketNote" class="ov-cell-gran">（{{ ovBucketNote }}）</span>
-            </div>
-            <div :ref="(el) => setOvEl(c.key, el)" class="ov-chart" />
-          </div>
-        </div>
-      </el-dialog>
+          </el-card>
+        </el-tab-pane>
 
       <!-- 服务器详情：SSH 全景采集（系统 / 硬件 / 内存 / 磁盘 / 网络 / 进程） -->
-      <el-card shadow="never" class="block">
+      <el-tab-pane name="sysinfo" lazy>
+          <template #label>服务器详情</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
             <span>
@@ -126,6 +85,7 @@
           show-icon
           class="inspect-alert"
         />
+        <div v-else-if="!sysinfo" v-loading="sysinfoLoading" style="min-height: 180px" />
 
         <template v-if="sysinfo">
           <el-tabs v-model="detailTab">
@@ -286,10 +246,13 @@
             </el-tab-pane>
           </el-tabs>
         </template>
-      </el-card>
+          </el-card>
+        </el-tab-pane>
 
       <!-- 异常告警：该资产名下的全部异常/恢复记录（与异常警告页同源，逐条展示） -->
-      <el-card shadow="never" class="block">
+      <el-tab-pane name="alerts">
+          <template #label>异常告警{{ anomalyTotal ? `（${anomalyTotal}）` : '' }}</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
             <span>
@@ -336,20 +299,22 @@
             @current-change="onAnomalyPage"
           />
         </div>
-      </el-card>
-      <AnomalyDetailDrawer ref="anomalyDrawer" />
+          </el-card>
+        </el-tab-pane>
 
-      <!-- 实时巡检 -->
-      <el-card shadow="never" class="block">
+      <!-- 实时巡检（类似 top）：免密 SSH 进程排行，仅本页签激活时采集，不再重复展示性能指标 -->
+      <el-tab-pane name="inspect">
+          <template #label>进程巡检</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>
           <div class="row-between">
-            <span>实时巡检（类似 top）
-              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）+ Agent 指标卡/趋势图（10s 刷新）" placement="top">
+            <span>进程巡检
+              <el-tooltip content="免密 SSH 采集进程排行（3s 刷新）" placement="top">
                 <el-icon><QuestionFilled /></el-icon>
               </el-tooltip>
             </span>
             <div class="row-gap">
-              <el-switch v-model="autoRefresh" active-text="自动刷新（巡检 3s · 图表 10s）" />
+              <el-switch v-model="autoRefresh" active-text="自动刷新（3s）" />
               <el-button size="small" :loading="inspecting" @click="runInspect">立即刷新</el-button>
             </div>
           </div>
@@ -365,13 +330,6 @@
         />
 
         <template v-if="snapshot">
-          <el-row :gutter="12" class="summary">
-            <el-col :span="6"><el-statistic title="负载 (1/5/15min)" :value="loadText" /></el-col>
-            <el-col :span="6"><el-statistic title="内存已用" :value="memText" /></el-col>
-            <el-col :span="6"><el-statistic title="根分区使用" :value="diskText" /></el-col>
-            <el-col :span="6"><el-statistic title="运行时长" :value="uptimeText" /></el-col>
-          </el-row>
-
           <el-tabs v-model="topTab" class="top-tabs">
             <el-tab-pane label="CPU 占用排行" name="cpu" />
             <el-tab-pane label="内存占用排行" name="mem" />
@@ -390,10 +348,72 @@
           </el-table>
         </template>
         <el-empty v-else-if="!inspecting && !inspectError" description="正在采集…" :image-size="60" />
-      </el-card>
+          </el-card>
+        </el-tab-pane>
+
+      <!-- SSH 终端：模拟交互式登录会话，命令经后端免密通道在目标机实时执行并回显 -->
+      <el-tab-pane name="ssh" lazy>
+          <template #label>SSH 终端</template>
+          <el-card shadow="never" class="pane-card">
+        <template #header>
+          <div class="row-between">
+            <span>
+              SSH 终端
+              <el-tag v-if="sshConnected" size="small" type="success" effect="plain">{{ sshSessionLabel }}</el-tag>
+              <el-tag v-else size="small" type="info" effect="plain">未连接</el-tag>
+              <el-tooltip content="模拟 SSH 会话：命令经平台免密巡检通道在目标机实时执行并回显；支持 cd 切目录、↑/↓ 历史回溯、Ctrl+L 清屏；每条命令写审计日志" placement="top">
+                <el-icon><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+            <div class="row-gap">
+              <el-button size="small" @click="sshClear">清屏</el-button>
+              <el-button size="small" :disabled="sshBusy" @click="sshReconnect">重连</el-button>
+            </div>
+          </div>
+        </template>
+
+        <!-- 快捷命令：常用排障命令一键上屏 -->
+        <div class="ssh-chips">
+          <button
+            v-for="c in SSH_QUICK"
+            :key="c.cmd"
+            type="button"
+            class="ssh-chip"
+            :disabled="sshBusy"
+            @click="sshQuick(c.cmd)"
+          >{{ c.label }}</button>
+        </div>
+
+        <div ref="sshTermEl" class="ssh-term" @click="focusSshInput">
+          <div v-for="(b, i) in sshBlocks" :key="i" class="ssh-block" :class="b.cls">{{ b.text }}</div>
+          <div class="ssh-block ssh-cmd-line">
+            <span class="ssh-prompt" v-html="sshPromptHtml"></span><input
+              ref="sshInputEl"
+              v-model="sshInput"
+              class="ssh-inline-input"
+              :disabled="sshBusy"
+              spellcheck="false"
+              autocomplete="off"
+              autocapitalize="off"
+              @keydown.enter="sshSubmit"
+              @keydown.up.prevent="sshHistoryPrev"
+              @keydown.down.prevent="sshHistoryNext"
+              @keydown.ctrl.l.prevent="sshClear"
+              @keydown.ctrl.c.prevent="sshCtrlC"
+            />
+          </div>
+        </div>
+        <div class="ssh-status">
+          <span>{{ sshBusy ? '命令执行中…' : '就绪 · ↑/↓ 历史回溯 · Ctrl+L 清屏 · Ctrl+C 放弃当前行' }}</span>
+          <span v-if="sshLastMs != null" class="ssh-latency">上次耗时 {{ sshLastMs }} ms</span>
+        </div>
+          </el-card>
+        </el-tab-pane>
 
       <!-- 纳管记录 -->
-      <el-card v-if="asset?.extra?.provision" shadow="never" class="block">
+      <el-tab-pane v-if="asset?.extra?.provision" name="prov">
+          <template #label>纳管记录</template>
+          <el-card shadow="never" class="pane-card">
         <template #header>纳管记录</template>
         <el-descriptions :column="3" border size="small">
           <el-descriptions-item label="状态">
@@ -418,15 +438,60 @@
           :model-value="(asset.extra.provision.logs || []).join('\n')"
           class="log-box"
         />
-      </el-card>
+          </el-card>
+        </el-tab-pane>
+      </el-tabs>
+
+      <!-- 历史全揽：落库数据（最长 2 个月）时间范围切换 + 五指标小图网格 -->
+      <el-dialog
+        v-model="ovVisible"
+        title="历史全揽 · 系统资源落库数据"
+        width="94%"
+        top="4vh"
+        append-to-body
+        destroy-on-close
+        :z-index="93"
+      >
+        <div class="row-between ov-toolbar">
+          <el-radio-group v-model="ovRange" size="small" @change="loadOverview">
+            <el-radio-button v-for="r in OV_RANGES" :key="r.m" :value="r.m">{{ r.label }}</el-radio-button>
+          </el-radio-group>
+          <span class="live-src">
+            落库粒度 5 秒 · {{ ovBucketNote }} · 保留 60 天（过期自动清理）
+          </span>
+        </div>
+
+        <div class="ov-summary">
+          <div v-for="s in ovSummary" :key="s.label" class="ov-kpi">
+            <div class="ov-kpi-label">{{ s.label }}</div>
+            <div class="ov-kpi-value" :style="{ color: s.color }">
+              {{ s.value }}<span v-if="s.unit" class="ov-kpi-unit">{{ s.unit }}</span>
+            </div>
+            <div class="ov-kpi-sub">峰值 {{ s.max }}</div>
+          </div>
+        </div>
+
+        <div class="ov-grid">
+          <div v-for="c in OV_DEFS" :key="c.key" class="ov-cell">
+            <div class="ov-cell-title">
+              <span :style="{ color: c.color }">■</span>
+              {{ c.name }}<span v-if="ovBucketNote" class="ov-cell-gran">（{{ ovBucketNote }}）</span>
+            </div>
+            <div :ref="(el) => setOvEl(c.key, el)" class="ov-chart" />
+          </div>
+        </div>
+      </el-dialog>
+      <AnomalyDetailDrawer ref="anomalyDrawer" />
     </div>
-  </el-dialog>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import * as echarts from 'echarts'
-import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchSystemHistory, fetchSystemRealtime, inspectAsset } from '../api'
+import { fetchAnomalies, fetchAsset, fetchAssetSysinfo, fetchSystemHistory, fetchSystemRealtime, inspectAsset, execAssetCommand } from '../api'
 import { cnTrigger } from '../trigger-cn'
 import { fmtTimeCol } from '../time'
 import AnomalyDetailDrawer from './AnomalyDetailDrawer.vue'
@@ -438,6 +503,8 @@ const props = defineProps({
 defineEmits(['update:modelValue'])
 
 const asset = ref(null)
+// ===== 顶部导航栏：实时监控 / 进程巡检 / 服务器详情 / 异常告警 / 纳管记录 =====
+const navTab = ref('live')
 // ===== 实时系统监控（类 macOS 活动监视器）=====
 const LIVE_TABS = [
   { key: 'cpu', name: 'CPU', color: '#0a84ff', pct: true },
@@ -528,53 +595,10 @@ const title = computed(() => (asset.value ? `资产监控 · ${asset.value.id}�
 
 const fmtNum = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(2))
 
-const healthCards = computed(() => {
-  const l = live.value || {}
-  const pct = (v) => (v == null ? null : Math.max(0, Math.min(100, v)))
-  const color = (v) => (v == null ? '#d2d2d7' : v >= 90 ? '#ff3b30' : v >= 75 ? '#ff9500' : '#34c759')
-  const items = [
-    { key: 'cpu', label: 'CPU 使用率', unit: '%', tip: '整机 CPU 使用率（/proc/stat 实时计算）' },
-    { key: 'mem', label: '内存使用率', unit: '%', tip: '物理内存已用百分比（/proc/meminfo）' },
-    { key: 'disk', label: '磁盘使用率', unit: '%', tip: '根分区已用百分比' },
-    { key: 'load1', label: '负载 load1', unit: '', tip: '1 分钟平均负载，超过 CPU 核数说明过载', raw: true },
-  ]
-  return items.map((it) => {
-    const v = l[it.key]
-    const show = v == null ? '—' : it.raw ? fmtNum(v) : `${fmtNum(v)}`
-    const p = it.raw ? null : pct(v)
-    return {
-      label: it.label,
-      tip: it.tip,
-      unit: it.unit,
-      value: show,
-      pct: p ?? 0,
-      color: color(v),
-      cls: v != null && v >= 90 ? 'danger' : v != null && v >= 75 ? 'warn' : '',
-    }
-  })
-})
-
 const loadText = computed(() => {
   const ld = snapshot.value?.load
   if (!ld || ld.load1 == null) return '—'
   return `${fmtNum(ld.load1)} / ${fmtNum(ld.load5)} / ${fmtNum(ld.load15)}`
-})
-
-const memText = computed(() => {
-  const m = snapshot.value?.mem
-  if (!m || m.total_mb == null) return '—'
-  return `${m.used_mb ?? '—'} / ${m.total_mb} MB`
-})
-
-const diskText = computed(() => (snapshot.value?.disk?.pct != null ? `${fmtNum(snapshot.value.disk.pct)}%` : '—'))
-
-const uptimeText = computed(() => {
-  const s = snapshot.value?.uptime_seconds
-  if (!s) return '—'
-  const d = Math.floor(s / 86400)
-  const h = Math.floor((s % 86400) / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  return d > 0 ? `${d} 天 ${h} 时` : h > 0 ? `${h} 时 ${m} 分` : `${m} 分`
 })
 
 const topRows = computed(() => {
@@ -591,8 +615,12 @@ const PROV_LABELS = {
   '': '已登记',
 }
 
-// ===== 异常告警（与异常警告页同源，按资产精确过滤） =====
+// ===== 异常告警（与异常警告页同源，按资产精确过滤；P0-P3 与后端 LEVEL_COLORS 一致） =====
 const SEV_LABELS = {
+  P0: 'P0 严重故障',
+  P1: 'P1 重要告警',
+  P2: 'P2 一般告警',
+  P3: 'P3 提示信息',
   disaster: '灾难',
   high: '严重',
   average: '较严重',
@@ -601,6 +629,10 @@ const SEV_LABELS = {
   not_classified: '未知',
 }
 const SEV_TAGS = {
+  P0: 'danger',
+  P1: 'warning',
+  P2: 'warning',
+  P3: 'info',
   disaster: 'danger',
   high: 'danger',
   average: 'warning',
@@ -643,10 +675,33 @@ function openAnomalyDetail(row) {
 }
 
 watch(() => props.modelValue, (open) => {
-  if (open && props.assetId) reset()
+  if (open && props.assetId) {
+    reset()
+    ensureFloatPos()
+    window.addEventListener('resize', onWinResize)
+    loadAll()
+    // 等 DOM 布局完成后再校正位置并启动 1 秒轮询
+    nextTick(() => {
+      onWinResize()
+      startLive()
+    })
+  } else if (!open) {
+    teardown()
+  }
 })
 
-onBeforeUnmount(stopAuto)
+onBeforeUnmount(teardown)
+
+// 关闭/卸载时统一清理：停轮询、注销 resize、释放图表实例
+function teardown() {
+  window.removeEventListener('resize', onWinResize)
+  stopAuto()
+  stopLive()
+  if (liveChart) {
+    liveChart.dispose()
+    liveChart = null
+  }
+}
 
 function reset() {
   asset.value = null
@@ -661,31 +716,67 @@ function reset() {
   anomalyPage.value = 1
   live.value = {}
   liveTab.value = 'cpu'
+  navTab.value = 'live'
   for (const k of Object.keys(liveBufs)) liveBufs[k] = []
   stopAuto()
-}
-
-function onOpened() {
-  window.addEventListener('resize', resizeChart)
-  loadAll()
-  // 等弹窗 DOM 布局完成后再初始化图表并启动 1 秒轮询
-  nextTick(() => {
-    startLive()
-  })
-}
-
-function onClosed() {
-  stopAuto()
-  stopLive()
-  window.removeEventListener('resize', resizeChart)
-  if (liveChart) {
-    liveChart.dispose()
-    liveChart = null
-  }
+  resetSsh()
 }
 
 function resizeChart() {
   liveChart && liveChart.resize()
+}
+
+/* ===== 悬浮窗位置：初始水平居中偏上，标题栏拖动，窗口缩放时越界自愈 ===== */
+const posX = ref(0)
+const posY = ref(0)
+const dragging = ref(false)
+let posInit = false
+let dragSX = 0
+let dragSY = 0
+let dragPX = 0
+let dragPY = 0
+
+const winW = () => Math.min(920, window.innerWidth - 48)
+const clampX = (v) => Math.min(Math.max(v, 8), Math.max(8, window.innerWidth - winW() - 8))
+const clampY = (v) => Math.min(Math.max(v, 54), window.innerHeight - 60)
+
+const floatStyle = computed(() => ({ left: `${posX.value}px`, top: `${posY.value}px`, width: `${winW()}px` }))
+
+function ensureFloatPos() {
+  if (posInit) return
+  posInit = true
+  posX.value = clampX((window.innerWidth - winW()) / 2)
+  posY.value = clampY(60)
+}
+
+function onDragDown(e) {
+  if (e.button !== undefined && e.button !== 0) return
+  // 关闭按钮交给 click 处理：指针捕获会把 click 重定向到标题栏，导致按钮失效
+  if (e.target.closest?.('.float-close')) return
+  dragging.value = true
+  dragSX = e.clientX
+  dragSY = e.clientY
+  dragPX = posX.value
+  dragPY = posY.value
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+}
+
+function onDragMove(e) {
+  if (!dragging.value) return
+  posX.value = clampX(dragPX + (e.clientX - dragSX))
+  posY.value = clampY(dragPY + (e.clientY - dragSY))
+}
+
+function onDragUp(e) {
+  if (!dragging.value) return
+  dragging.value = false
+  e.currentTarget?.releasePointerCapture?.(e.pointerId)
+}
+
+function onWinResize() {
+  posX.value = clampX(posX.value)
+  posY.value = clampY(posY.value)
+  resizeChart()
 }
 
 async function loadAll() {
@@ -693,12 +784,30 @@ async function loadAll() {
     const { data } = await fetchAsset(props.assetId)
     asset.value = data
   } finally {
-    // 打开弹窗即开始免密巡检 + 自动刷新
-    runInspect()
+    loadAnomalies()
   }
-  loadSysinfo()
-  loadAnomalies()
 }
+
+// 导航切换：按需采集（进程巡检/服务器详情为 SSH 操作，只在首次进入时触发，切走即停）
+watch(navTab, (tab, prev) => {
+  if (tab === 'inspect') {
+    if (!snapshot.value && !inspecting.value) runInspect()
+    ensureInspectTimer()
+  } else if (prev === 'inspect') {
+    stopAuto() // 离开巡检页签停止 3s 轮询，避免后台空耗 SSH
+  }
+  if (tab === 'sysinfo' && !sysinfo.value && !sysinfoLoading.value && !sysinfoError.value) {
+    loadSysinfo()
+  }
+  if (tab === 'ssh' && !sshBannerShown) {
+    sshBannerShown = true
+    sshBanner()
+    nextTick(focusSshInput)
+  }
+  if (tab === 'live') {
+    nextTick(() => liveChart && liveChart.resize())
+  }
+})
 
 // ===== 实时监控：1 秒/次读 /proc 快照，滑动窗口渲染（自打开起累积，不回填历史） =====
 
@@ -718,6 +827,9 @@ async function tickLive() {
     live.value = data || {}
     if (!data?.supported) return
     const t = (data.ts || Math.floor(Date.now() / 1000)) * 1000
+    // 子机实时值来自 agent 最新帧（约 5s 才更新一次），1s 轮询会拿到重复帧；
+    // 时间戳未变化不追加，避免同一时刻出现多条重复曲线/tooltip 行
+    if (liveBufs.cpu.length && liveBufs.cpu[liveBufs.cpu.length - 1][0] === t) return
     pushBuf('cpu', t, data.cpu)
     pushBuf('mem', t, data.mem)
     pushBuf('disk', t, data.disk)
@@ -1047,50 +1159,277 @@ function stopAuto() {
   }
 }
 
-watch(autoRefresh, (on) => {
+// 进程巡检自动刷新定时器：仅在巡检页签激活时真正采集，其他页签下空转不跑 SSH
+function ensureInspectTimer() {
   stopAuto()
-  if (on) {
+  if (autoRefresh.value) {
     inspectTimer = setInterval(() => {
-      if (!inspecting.value) runInspect()
+      if (navTab.value !== 'inspect' || inspecting.value) return
+      runInspect()
     }, 3000)
   }
+}
+
+watch(autoRefresh, (on) => (on ? ensureInspectTimer() : stopAuto()))
+
+// ===== SSH 终端：模拟交互式登录会话（命令经后端免密通道执行，cwd / 历史由前端维护） =====
+const SSH_QUICK = [
+  { label: 'top（单帧）', cmd: 'top -bn1 | head -30' },
+  { label: '磁盘', cmd: 'df -h' },
+  { label: '内存', cmd: 'free -m' },
+  { label: '负载 / 开机时长', cmd: 'uptime' },
+  { label: '进程 TOP15', cmd: 'ps aux --sort=-pcpu | head -16' },
+  { label: '监听端口', cmd: 'ss -tulnp | head -25' },
+  { label: '最近登录', cmd: 'last -n 8 2>/dev/null || who' },
+]
+// 终端内容块：{ text, cls: dim | cmd | out | err }，上限 500 块防内存膨胀
+const sshBlocks = ref([])
+const sshInput = ref('')
+const sshBusy = ref(false)
+const sshConnected = ref(false)
+const sshCwd = ref('')
+const sshHome = ref('')
+const sshUser = ref('')
+const sshIp = ref('')
+const sshLastMs = ref(null)
+const sshHistory = ref([])
+const sshHistIdx = ref(-1)
+const sshTermEl = ref(null)
+const sshInputEl = ref(null)
+let sshBannerShown = false
+
+const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+const sshSessionLabel = computed(() => `${sshUser.value || 'user'}@${sshIp.value || asset.value?.hostname || '?'}`)
+const sshWho = computed(() =>
+  `${sshUser.value || 'user'}@${sshIp.value || asset.value?.extra?.provision?.ip || asset.value?.hostname || 'host'}`,
+)
+// 提示符目录：HOME 前缀缩略为 ~
+const sshDir = computed(() => {
+  let dir = sshCwd.value || '~'
+  if (sshHome.value && dir.startsWith(sshHome.value)) {
+    dir = `~${dir.slice(sshHome.value.length)}` || '~'
+  }
+  return dir
 })
+const sshPromptHtml = computed(
+  () => `<span style="color:#7ee787">${escHtml(sshWho.value)}</span>:<span style="color:#79c0ff">${escHtml(sshDir.value)}</span>$ `,
+)
+const sshPromptText = computed(() => `${sshWho.value}:${sshDir.value}$ `)
+
+function sshPush(text, cls = 'out') {
+  sshBlocks.value.push({ text, cls })
+  if (sshBlocks.value.length > 500) sshBlocks.value.splice(0, sshBlocks.value.length - 500)
+  nextTick(() => {
+    const el = sshTermEl.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+function focusSshInput() {
+  if (!sshBusy.value) sshInputEl.value?.focus()
+}
+
+// 连接横幅：模拟 ssh 登录首屏
+function sshBanner() {
+  const host = asset.value?.hostname || props.assetId
+  const ip = asset.value?.extra?.provision?.ip || asset.value?.extra?.deploy?.ip
+  sshPush(`Trying ${ip || host}...`, 'dim')
+  sshPush(`Connected to ${host}${ip ? `（${ip}）` : ''} · 会话由平台免密巡检通道承载`, 'dim')
+  sshPush(`Last login: ${new Date().toLocaleString('zh-CN', { hour12: false })} from 平台控制台`, 'dim')
+  sshPush('输入命令开始操作，快捷命令见上方标签；每条命令将写入审计日志', 'dim')
+}
+
+async function sshRun(cmd) {
+  if (sshBusy.value || !props.assetId) return
+  sshBusy.value = true
+  try {
+    const { data } = await execAssetCommand(props.assetId, { command: cmd, cwd: sshCwd.value })
+    sshConnected.value = true
+    sshUser.value = data.username || sshUser.value
+    sshIp.value = data.ip || sshIp.value
+    sshCwd.value = data.cwd || sshCwd.value
+    sshHome.value = data.home || sshHome.value
+    sshLastMs.value = data.duration_ms
+    if (data.output) sshPush(data.output.replace(/\n+$/, ''), 'out')
+    if (data.exit_code !== 0) sshPush(`[exit ${data.exit_code}]`, 'err')
+  } catch (err) {
+    sshPush(err.response?.data?.detail || '命令执行失败（SSH 通道不可用）', 'err')
+  } finally {
+    sshBusy.value = false
+    nextTick(focusSshInput)
+  }
+}
+
+// 回显命令行 + 记历史 + 执行（回车与快捷命令共用）
+function sshEchoAndRun(cmd) {
+  sshPush(sshPromptText.value + cmd, 'cmd')
+  if (sshHistory.value[sshHistory.value.length - 1] !== cmd) sshHistory.value.push(cmd)
+  sshHistIdx.value = -1
+  return sshRun(cmd)
+}
+
+async function sshSubmit() {
+  const cmd = sshInput.value
+  const t = cmd.trim()
+  if (!t) {
+    sshPush(sshPromptText.value, 'cmd')
+    focusSshInput()
+    return
+  }
+  sshInput.value = ''
+  if (t === 'clear' || t === 'cls') {
+    sshBlocks.value = []
+    return
+  }
+  if (t === 'exit') {
+    sshPush(sshPromptText.value + cmd, 'cmd')
+    sshConnected.value = false
+    sshPush('与主机的连接已断开。继续输入任意命令将自动重连。', 'dim')
+    return
+  }
+  await sshEchoAndRun(cmd)
+}
+
+function sshQuick(cmd) {
+  if (sshBusy.value) return
+  sshEchoAndRun(cmd)
+}
+
+function sshHistoryPrev() {
+  if (!sshHistory.value.length) return
+  if (sshHistIdx.value === -1) sshHistIdx.value = sshHistory.value.length
+  sshHistIdx.value = Math.max(0, sshHistIdx.value - 1)
+  sshInput.value = sshHistory.value[sshHistIdx.value]
+}
+
+function sshHistoryNext() {
+  if (sshHistIdx.value === -1) return
+  sshHistIdx.value += 1
+  if (sshHistIdx.value >= sshHistory.value.length) {
+    sshHistIdx.value = -1
+    sshInput.value = ''
+  } else {
+    sshInput.value = sshHistory.value[sshHistIdx.value]
+  }
+}
+
+function sshCtrlC() {
+  sshPush(`${sshPromptText.value}${sshInput.value}^C`, 'cmd')
+  sshInput.value = ''
+  focusSshInput()
+}
+
+function sshClear() {
+  sshBlocks.value = []
+  focusSshInput()
+}
+
+// 重连：清屏重放横幅，cwd 复位
+function sshReconnect() {
+  sshBlocks.value = []
+  sshConnected.value = false
+  sshCwd.value = ''
+  sshBanner()
+  focusSshInput()
+}
+
+function resetSsh() {
+  sshBlocks.value = []
+  sshInput.value = ''
+  sshBusy.value = false
+  sshConnected.value = false
+  sshCwd.value = ''
+  sshHome.value = ''
+  sshUser.value = ''
+  sshIp.value = ''
+  sshLastMs.value = null
+  sshHistory.value = []
+  sshHistIdx.value = -1
+  sshBannerShown = false
+}
 </script>
 
 <style scoped>
-.monitor {
-  max-width: 1280px;
-  margin: 0 auto;
+/* ===== 悬浮监控窗：不遮顶栏与 Dock，标题栏拖动 ===== */
+.float-win {
+  position: fixed;
+  z-index: 90; /* 低于顶栏(95)与 Dock(2002)：监控打开时全局导航仍可见可点 */
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 130px); /* 顶部避开顶栏，底部避开 Dock */
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
 }
-.metric-card {
-  border-radius: var(--r-lg);
-}
-.metric-card :deep(.el-card__body) {
-  padding: 14px 18px;
-}
-.metric-label {
+.float-head {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 13px;
+  justify-content: space-between;
+  gap: 10px;
+  height: 42px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
-.metric-value {
-  font-size: 28px;
+.float-head.dragging {
+  cursor: grabbing;
+}
+.float-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
   font-weight: 600;
-  margin: 4px 0 8px;
-  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.metric-value .metric-unit {
-  font-size: 13px;
-  color: var(--muted);
-  margin-left: 2px;
+.float-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
-.metric-value.danger {
-  color: var(--danger);
+.float-close:hover {
+  background: var(--el-fill-color-dark);
+  color: var(--el-color-danger);
 }
-.metric-value.warn {
-  color: var(--warn);
+.float-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px 16px;
+}
+.monitor {
+  width: 100%;
+}
+/* 顶部导航栏：各功能区域互斥切换 */
+.nav-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+.nav-tabs :deep(.el-tabs__item) {
+  font-size: 15px;
+}
+.nav-tabs :deep(.el-tabs__content) {
+  overflow: visible;
+}
+.pane-card {
+  border-radius: 8px;
 }
 .block {
   margin-top: 12px;
@@ -1111,9 +1450,6 @@ watch(autoRefresh, (on) => {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-.summary {
-  margin-bottom: 8px;
 }
 .top-tabs {
   margin-top: 8px;
@@ -1213,6 +1549,87 @@ watch(autoRefresh, (on) => {
 }
 .live-chart {
   height: 320px;
+}
+/* ===== SSH 终端：黑底终端样式（明暗主题下恒定深色，贴近真实终端） ===== */
+.ssh-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.ssh-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 999px;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.ssh-chip:hover:not(:disabled) {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+}
+.ssh-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ssh-term {
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: 10px;
+  padding: 12px 14px;
+  height: 420px;
+  overflow: auto;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  cursor: text;
+}
+.ssh-block {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ssh-dim {
+  color: #8b949e;
+}
+.ssh-cmd {
+  color: #e6edf3;
+  font-weight: 600;
+}
+.ssh-out {
+  color: #c9d1d9;
+}
+.ssh-err {
+  color: #ff7b72;
+}
+.ssh-cmd-line {
+  display: flex;
+  align-items: baseline;
+}
+.ssh-prompt {
+  flex: none;
+}
+.ssh-inline-input {
+  flex: 1;
+  min-width: 40px;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 0;
+  color: #e6edf3;
+  font: inherit;
+  caret-color: #7ee787;
+}
+.ssh-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
 }
 /* ===== 历史全揽弹窗 ===== */
 .ov-toolbar {

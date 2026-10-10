@@ -12,7 +12,6 @@
       </div>
       <!-- 空状态（尚无母机）时右上角操作按钮整体隐藏，仅空态引导内提供"添加母机"入口 -->
       <div v-if="!(!motherLoading && !mothers.length)" class="toolbar">
-        <el-button size="small" :loading="probing" @click="probeNow">立即探测</el-button>
         <el-button v-if="!detailView" v-perm="'assets:write'" type="primary" @click="openAddMother">
           <el-icon style="margin-right: 4px"><Plus /></el-icon>
           添加母机
@@ -47,10 +46,14 @@
           @click="openMotherDetail(m)"
         >
           <div class="row-main">
-            <span class="dot" :class="m.reachable ? 'ok' : 'down'" />
+            <span class="dot" :class="m.provisioning ? 'pend' : m.reachable ? 'ok' : 'down'" />
             <span class="row-name">{{ m.hostname }}</span>
             <el-tag size="small" type="primary" effect="dark">母机</el-tag>
             <el-tag v-if="m.is_default" size="small" type="warning" effect="plain">默认</el-tag>
+            <el-tag v-if="m.provisioning" size="small" type="warning">纳管中…</el-tag>
+            <el-tag v-else size="small" :type="m.reachable ? 'success' : 'danger'" effect="plain">
+              {{ m.reachable ? '在线' : '离线' }}
+            </el-tag>
           </div>
           <div class="row-sub">
             <span>{{ m.ip || m.id }}</span>
@@ -75,15 +78,20 @@
             返回母机列表
           </el-button>
           <div class="detail-title">
-            <span class="dot" :class="mother?.reachable ? 'ok' : 'down'" />
+            <span class="dot" :class="mother?.provisioning ? 'pend' : mother?.reachable ? 'ok' : 'down'" />
             <span class="mother-name">{{ mother?.hostname || '—' }}</span>
             <el-tag size="small" type="primary" effect="dark">母机</el-tag>
-            <el-tag v-if="mother" size="small" :type="mother.reachable ? 'success' : 'danger'" effect="plain">
-              {{ mother.reachable ? '在线' : '离线' }}
+            <el-tag v-if="mother?.provisioning" size="small" type="warning">纳管中…</el-tag>
+            <el-tag v-else size="small" :type="mother?.reachable ? 'success' : 'danger'" effect="plain">
+              {{ mother?.reachable ? '在线' : '离线' }}
             </el-tag>
           </div>
           <div class="toolbar">
             <el-button type="primary" size="small" :disabled="!mother" @click="openMonitor(mother)">监控详情</el-button>
+            <el-button size="small" plain :disabled="!mother" @click="agentCfgVisible = true">
+              <el-icon style="margin-right: 4px"><Setting /></el-icon>
+              Agent 配置
+            </el-button>
             <el-button
               v-perm="'assets:write'"
               size="small"
@@ -116,8 +124,8 @@
       <template v-if="detailView && mothers.length">
         <div class="overview-toolbar">
           <span class="section-title">已接入子机</span>
-          <span class="sync-hint" title="卡片 CPU/内存/磁盘/负载 每 10 秒自动拉取 Agent 最新上报值">
-            指标每 10 秒自动同步<template v-if="lastSyncAt"> · 最后 {{ lastSyncAt }}</template>
+          <span class="sync-hint" title="卡片 CPU/内存/磁盘/负载/网络 每 1 秒拉取 Agent 最新帧，与监控详情实时面板同源同频">
+            指标 1 秒/次实时同步<template v-if="lastSyncAt"> · 最后 {{ lastSyncAt }}</template>
           </span>
           <div class="children-toolbar">
             <el-button size="small" :loading="motherLoading" title="立即拉取最新指标" @click="loadOverview">
@@ -233,6 +241,8 @@
                     <div class="nm-l">{{ k.label }}</div>
                   </div>
                 </div>
+                <!-- 网络实时速率：与资产监控页同口径（↓ 下载 / ↑ 上传，B/s→KB/s→MB/s） -->
+                <div class="nm-net" v-html="netCell(c)"></div>
                 <div class="node-foot">
                   <span>{{ c.owner || '未指定负责人' }}</span>
                   <span :class="{ stale: !c.reachable }">{{ relTime(c.last_seen_at) }}</span>
@@ -257,12 +267,14 @@
 
     <!-- ===== 详情 / 监控大弹窗 ===== -->
     <AssetMonitor v-model="monitorVisible" :asset-id="monitorId" />
+    <AgentConfigDialog v-model="agentCfgVisible" />
 
-    <!-- 添加母机：纯业务登记（不触碰目标服务器） -->
+    <!-- 添加母机：SSH 验证 + 自动纳管本机子机 -->
     <el-dialog v-model="addMotherVisible" title="添加母机" width="560">
       <el-alert type="info" :closable="false" class="db-note">
-        母机为纯业务登记：仅记录台账信息作为子机归属节点，不会登录或改动目标服务器。
-        子机自研 Agent 上报的数据按归属母机汇聚展示。
+        提交时将验证 SSH 连通性（用户名 / 密码，密码仅本次验证与部署使用，不落库），
+        验证失败不会创建；成功后自动纳管一台「本机子机」并部署自研 Agent，
+        母机的在线状态与监控数据均来自该子机的真实上报。
       </el-alert>
       <el-form label-width="110" style="margin-top: 12px">
         <el-form-item required label="主机名">
@@ -273,6 +285,18 @@
         </el-form-item>
         <el-form-item label="SSH 端口">
           <el-input-number v-model="motherForm.ssh_port" :min="1" :max="65535" />
+        </el-form-item>
+        <el-form-item label="用户名">
+          <el-input v-model="motherForm.username" style="width: 160px" />
+        </el-form-item>
+        <el-form-item label="SSH 密码" required>
+          <el-input
+            v-model="motherForm.password"
+            type="password"
+            show-password
+            placeholder="仅本次验证与部署使用，不落库"
+            style="width: 240px"
+          />
         </el-form-item>
         <el-form-item label="环境">
           <el-select v-model="motherForm.env" style="width: 200px">
@@ -285,8 +309,8 @@
 
         <el-divider content-position="left">告警策略（默认值，可调整）</el-divider>
         <el-alert type="info" :closable="false" class="db-note">
-          定义 CPU / 内存 / 负载的告警阈值与持续触发时长：母机与所有接入子机按同一标准判定告警。
-          登记后可随时在母机列表或详情的「告警策略」按钮中调整。
+          定义 CPU / 内存 / 负载的告警阈值与持续触发窗口（秒）：母机与所有接入子机按同一标准判定告警。
+          OOM / 磁盘 / 网络 / 应用层 / 数据库层等更多规则，登记后可随时在母机列表或详情的「告警策略」抽屉中配置。
         </el-alert>
         <el-form-item v-for="f in POLICY_FIELDS" :key="f.key" :label="f.label">
           <el-input-number
@@ -296,32 +320,45 @@
             :step="f.step"
             :precision="f.precision"
           />
+          <span v-if="f.unit" class="field-hint">{{ f.unit }}</span>
           <span class="field-hint">{{ f.hint }}</span>
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button :loading="sshTesting === 'mother'" @click="runSshTest('mother')">
+          <el-icon style="margin-right: 4px"><Connection /></el-icon>
+          测试连接
+        </el-button>
         <el-button @click="addMotherVisible = false">取消</el-button>
-        <el-button type="primary" :loading="addingMother" @click="submitMother">登记母机</el-button>
+        <el-button type="primary" :loading="addingMother" @click="submitMother">创建母机</el-button>
       </template>
     </el-dialog>
 
-    <!-- 删除母机：纯台账级联删除 -->
+    <!-- 删除母机：名下有子机时禁止删除（必须先删净子机） -->
     <el-dialog v-model="motherDeleteVisible" title="删除母机" width="500">
       <el-alert type="warning" :closable="false" title="此操作不可恢复">
         <p style="margin: 0 0 4px">
           将删除母机台账记录 <b>{{ motherDeleteForm.id }}</b
           >（{{ motherDeleteForm.hostname }}）。
         </p>
-        <p v-if="motherDeleteForm.children > 0" style="margin: 0">
-          该母机名下还有 <b>{{ motherDeleteForm.children }}</b> 台子机，将随母机一并删除（级联删除）。
+        <p v-if="motherDeleteForm.children > 0" style="margin: 0; color: var(--danger-vivid)">
+          该母机名下还有 <b>{{ motherDeleteForm.children }}</b> 台子机，禁止删除。请先在详情中逐台删除子机
+          （删除时会卸载服务器上的 Agent），删净后才能删除母机。
         </p>
-        <p style="margin: 4px 0 0">
-          删除仅清理平台台账记录，不影响服务器本身；如需清理子机上的 Agent，请在删除对应子机时勾选「卸载 Agent」。
+        <p v-else style="margin: 4px 0 0">
+          删除仅清理平台台账记录，不影响服务器本身。
         </p>
       </el-alert>
       <template #footer>
         <el-button @click="motherDeleteVisible = false">取消</el-button>
-        <el-button type="danger" :loading="motherDeleting" @click="submitMotherDelete">确认删除</el-button>
+        <el-button
+          type="danger"
+          :disabled="motherDeleteForm.children > 0"
+          :loading="motherDeleting"
+          @click="submitMotherDelete"
+        >
+          {{ motherDeleteForm.children > 0 ? '存在子机，禁止删除' : '确认删除' }}
+        </el-button>
       </template>
     </el-dialog>
 
@@ -374,6 +411,10 @@
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button :loading="sshTesting === 'child'" @click="runSshTest('child')">
+          <el-icon style="margin-right: 4px"><Connection /></el-icon>
+          测试连接
+        </el-button>
         <el-button @click="addChildVisible = false">取消</el-button>
         <el-button type="primary" :loading="childProvisioning" @click="submitAddChild">开始纳管</el-button>
       </template>
@@ -445,7 +486,7 @@
       </div>
     </el-dialog>
 
-    <!-- 删除子机：可选联动卸载服务器上的自研 Agent -->
+    <!-- 删除子机：默认联动卸载服务器上的自研 Agent（go/py）；服务器已失联可跳过 -->
     <el-dialog v-model="childDeleteVisible" title="删除子机" width="500">
       <el-alert type="warning" :closable="false" title="此操作不可恢复">
         将删除资产 {{ childDeleteForm.hostname }}（{{ childDeleteForm.id }}）的台账记录，并从监控中移除。
@@ -453,8 +494,11 @@
       <el-form label-width="100" style="margin-top: 12px">
         <el-form-item v-if="childDeleteForm.has_provision" label="联动卸载">
           <el-checkbox v-model="childDeleteForm.uninstall">
-            同时登录 {{ childDeleteForm.ip }} 卸载自研 Agent（停进程、删除安装目录与日志）
+            登录 {{ childDeleteForm.ip }} 卸载自研 Agent（停服务、删除安装目录与日志，go/py 通用）
           </el-checkbox>
+          <div v-if="!childDeleteForm.uninstall" class="uninstall-skip-note">
+            跳过卸载将遗留服务器上的 Agent 进程与文件，仅建议在服务器已下线/重装时使用
+          </div>
         </el-form-item>
         <el-form-item v-if="childDeleteForm.uninstall" label="SSH 密码" required>
           <el-input
@@ -471,58 +515,326 @@
       </template>
     </el-dialog>
 
-    <!-- 告警策略：母机/子机统一弹窗（子机自有策略 > 继承母机 > 平台默认） -->
-    <el-dialog v-model="policyVisible" :title="`告警策略 · ${policyTarget?.hostname || ''}`" width="600">
-      <el-alert type="info" :closable="false" class="db-note">
-        {{ policyIsChild
-          ? (policyInfo?.inherited === false
-            ? '该子机使用自有策略，仅作用于本机；保存后立即生效，删除自有策略可恢复继承母机。'
-            : '当前继承所属母机的告警策略（无自有策略）；修改保存后将覆盖为子机自有策略，不再随母机变化。')
-          : '阈值与触发窗口作用于该母机及其所有接入子机的越限判定，新接入子机自动沿用当前策略。' }}
-      </el-alert>
-      <div v-if="policyInfo" class="policy-meta">
-        <el-tag size="small" :type="policyInfo.inherited ? 'info' : 'success'" effect="plain">
-          {{ policySourceLabel }}
-        </el-tag>
-        <span v-if="policyIsChild && policyInfo.source === 'mother'" class="policy-meta-hint">跟随所属母机策略变化</span>
+    <!-- 告警策略：母机/子机统一抽屉（子机自有策略 > 继承母机 > 平台默认），分组配置 + P0-P3 级别 -->
+    <el-drawer v-model="policyVisible" :title="`告警策略 · ${policyTarget?.hostname || ''}`" size="780px">
+      <div v-loading="!policyInfo" class="policy-body">
+        <el-alert type="info" :closable="false" class="db-note">
+          {{ policyIsChild
+            ? (policyInfo?.inherited === false
+              ? '该子机使用自有策略，仅作用于本机；保存后 agent 自动拉取新配置即生效，删除自有策略可恢复继承母机。'
+              : '当前继承所属母机的告警策略（无自有策略）；修改保存后将覆盖为子机自有策略，不再随母机变化。')
+            : '阈值与触发窗口作用于该母机及其所有接入子机的越限判定，保存后 agent 自动拉取新策略，无需重启。' }}
+        </el-alert>
+        <div class="policy-meta">
+          <el-tag size="small" :type="policyInfo?.inherited ? 'info' : 'success'" effect="plain">
+            {{ policySourceLabel }}
+          </el-tag>
+          <span v-if="policyIsChild && policyInfo?.source === 'mother'" class="policy-meta-hint">跟随所属母机策略变化</span>
+          <div class="policy-toolbar">
+            <el-select v-model="templateId" placeholder="应用配置模板" size="small" style="width: 230px" @change="applyTemplate">
+              <el-option v-for="t in policyInfo?.templates || []" :key="t.id" :label="t.label" :value="t.id" />
+            </el-select>
+            <el-button size="small" @click="resetToDefaults">恢复平台默认</el-button>
+          </div>
+        </div>
+
+        <el-tabs v-model="policyTab">
+          <!-- 基础指标（秒制窗口） -->
+          <el-tab-pane label="基础指标" name="basic">
+            <div v-for="s in sectionsOf('basic')" :key="s.key" class="policy-section">
+              <div class="section-head">
+                <span class="section-title">{{ s.title }}</span>
+                <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="sectionTip(s)">
+                  <el-icon class="section-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
+                <span class="section-desc">{{ s.desc }}</span>
+              </div>
+              <div class="section-body">
+                <div v-for="f in s.fields" :key="f.key" class="field-row">
+                  <span class="field-label">{{ f.label }}</span>
+                  <el-input-number
+                    v-model="policyForm[f.key]"
+                    :min="f.min ?? 10"
+                    :max="f.max ?? 86400"
+                    :step="f.step ?? 10"
+                    :precision="f.precision ?? 0"
+                    size="small"
+                    controls-position="right"
+                  />
+                  <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                  <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">告警级别</span>
+                  <el-select v-model="policyForm[`${s.key}_level`]" size="small" style="width: 190px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="`${lv.value} ${lv.label}`">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                  <span class="field-hint">
+                    当前 <span class="level-dot" :style="{ background: levelColor(policyForm[`${s.key}_level`]) }"></span>
+                    {{ policyForm[`${s.key}_level`] }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 系统资源（开关 + 阈值 + 窗口 + 级别全可配） -->
+          <el-tab-pane label="系统资源" name="sys">
+            <div
+              v-for="s in sectionsOf('sys')"
+              :key="s.key"
+              class="policy-section"
+              :class="{ off: s.noSwitch !== true && !policyForm[`${s.key}_enabled`] }"
+            >
+              <div class="section-head">
+                <el-switch v-if="s.noSwitch !== true" v-model="policyForm[`${s.key}_enabled`]" />
+                <span class="section-title">{{ s.title }}</span>
+                <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="sectionTip(s)">
+                  <el-icon class="section-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
+                <span class="section-desc">{{ s.desc }}</span>
+              </div>
+              <div class="section-body">
+                <div v-for="f in s.fields" :key="f.key" class="field-row">
+                  <span class="field-label">{{ f.label }}</span>
+                  <el-input-number
+                    v-model="policyForm[f.key]"
+                    :min="f.min ?? 10"
+                    :max="f.max ?? 86400"
+                    :step="f.step ?? 10"
+                    :precision="f.precision ?? 0"
+                    size="small"
+                    controls-position="right"
+                  />
+                  <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                  <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+                </div>
+                <div v-if="s.text" class="field-row">
+                  <span class="field-label">{{ s.text.label }}</span>
+                  <el-input v-model="policyForm[s.text.key]" size="small" style="width: 200px" :placeholder="s.text.placeholder" />
+                </div>
+                <div class="field-row">
+                  <span class="field-label">告警级别</span>
+                  <el-select v-model="policyForm[`${s.key}_level`]" size="small" style="width: 190px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="`${lv.value} ${lv.label}`">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 进程与端口（列表 + 窗口 + 级别可配） -->
+          <el-tab-pane label="进程与端口" name="proc">
+            <div
+              v-for="s in sectionsOf('proc')"
+              :key="s.key"
+              class="policy-section"
+              :class="{ off: !policyForm[`${s.key}_enabled`] }"
+            >
+              <div class="section-head">
+                <el-switch v-model="policyForm[`${s.key}_enabled`]" />
+                <span class="section-title">{{ s.title }}</span>
+                <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="sectionTip(s)">
+                  <el-icon class="section-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
+                <span class="section-desc">{{ s.desc }}</span>
+              </div>
+              <div class="section-body">
+                <div v-if="s.items" class="field-row">
+                  <span class="field-label">{{ s.items.label }}</span>
+                  <el-input
+                    :model-value="(policyForm[s.items.key] || []).join(', ')"
+                    size="small"
+                    style="width: 300px"
+                    :placeholder="s.items.placeholder"
+                    @update:model-value="(v) => setItems(s.items.key, v, s.items.numeric)"
+                  />
+                  <span class="field-hint">逗号分隔</span>
+                </div>
+                <div v-for="f in s.fields" :key="f.key" class="field-row">
+                  <span class="field-label">{{ f.label }}</span>
+                  <el-input-number
+                    v-model="policyForm[f.key]"
+                    :min="f.min ?? 10"
+                    :max="f.max ?? 86400"
+                    :step="f.step ?? 10"
+                    :precision="f.precision ?? 0"
+                    size="small"
+                    controls-position="right"
+                  />
+                  <span v-if="f.unit" class="field-unit">{{ f.unit }}</span>
+                  <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+                </div>
+                <div class="field-row">
+                  <span class="field-label">告警级别</span>
+                  <el-select v-model="policyForm[`${s.key}_level`]" size="small" style="width: 190px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="`${lv.value} ${lv.label}`">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 应用层规则（阈值/窗口/级别全可配，数据源为 agent 指标抓取） -->
+          <el-tab-pane :label="`应用层（${catalogRows('app').length}）`" name="app">
+            <div class="scrape-box">
+              <el-switch v-model="policyForm.metrics_scrape_enabled" size="small" />
+              <span class="section-title">指标抓取数据源</span>
+              <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="SCRAPE_TIP">
+                <el-icon class="section-help"><QuestionFilled /></el-icon>
+              </el-tooltip>
+              <el-input
+                :model-value="(policyForm.metrics_urls || []).join('\n')"
+                type="textarea"
+                :rows="2"
+                placeholder="Prometheus 文本指标 URL，每行一个（最多 16 个），如 http://127.0.0.1:9090/metrics"
+                @update:model-value="setUrls"
+              />
+              <div class="field-hint">开启后 agent 定期抓取并上报指标；未接数据源的下方规则不会触发，但阈值/窗口/级别均可预先配置。</div>
+            </div>
+            <el-table :data="catalogRows('app')" size="small" class="rule-table">
+              <el-table-column label="规则" min-width="210">
+                <template #default="{ row }">
+                  <div class="rule-name">
+                    {{ row.name }}
+                    <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="ruleTip(row)">
+                      <el-icon class="section-help"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </div>
+                  <div class="rule-metric">{{ row.metric }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="启用" width="64">
+                <template #default="{ row }">
+                  <el-switch v-model="ruleOf(row.id).enabled" size="small" />
+                </template>
+              </el-table-column>
+              <el-table-column label="阈值" width="128">
+                <template #default="{ row }">
+                  <el-input-number
+                    v-model="ruleOf(row.id).threshold"
+                    :min="0"
+                    :step="row.threshold > 0 && row.threshold < 10 ? 0.5 : 10"
+                    size="small"
+                    controls-position="right"
+                    style="width: 110px"
+                  />
+                  <span class="field-unit">{{ row.unit }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="窗口(秒)" width="122">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).window_seconds" :min="10" :max="86400" :step="10" size="small" controls-position="right" style="width: 110px" />
+                </template>
+              </el-table-column>
+              <el-table-column label="级别" width="130">
+                <template #default="{ row }">
+                  <el-select v-model="ruleOf(row.id).level" size="small" style="width: 120px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="lv.value">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="重复告警(分钟)" width="132">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).notify_minutes" :min="0" :max="1440" :step="5" size="small" controls-position="right" style="width: 112px" />
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="field-hint" style="margin-top: 8px">重复告警：故障持续期间每隔该间隔重新提醒一次（如 30=每 30 分钟提醒）；0=不重复，仅触发/恢复时提醒一次（适合 OOM 等瞬时事件）。</div>
+          </el-tab-pane>
+
+          <!-- 数据库与中间件规则 -->
+          <el-tab-pane :label="`数据库层（${catalogRows('db').length}）`" name="db">
+            <el-table :data="catalogRows('db')" size="small" class="rule-table">
+              <el-table-column label="规则" min-width="210">
+                <template #default="{ row }">
+                  <div class="rule-name">
+                    {{ row.name }}
+                    <el-tooltip placement="top" effect="dark" :show-after="80" popper-class="policy-tip" raw-content :content="ruleTip(row)">
+                      <el-icon class="section-help"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </div>
+                  <div class="rule-metric">{{ row.metric }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="启用" width="64">
+                <template #default="{ row }">
+                  <el-switch v-model="ruleOf(row.id).enabled" size="small" />
+                </template>
+              </el-table-column>
+              <el-table-column label="阈值" width="128">
+                <template #default="{ row }">
+                  <el-input-number
+                    v-model="ruleOf(row.id).threshold"
+                    :min="0"
+                    :step="row.threshold > 0 && row.threshold < 10 ? 0.5 : 10"
+                    size="small"
+                    controls-position="right"
+                    style="width: 110px"
+                  />
+                  <span class="field-unit">{{ row.unit }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="窗口(秒)" width="122">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).window_seconds" :min="10" :max="86400" :step="10" size="small" controls-position="right" style="width: 110px" />
+                </template>
+              </el-table-column>
+              <el-table-column label="级别" width="130">
+                <template #default="{ row }">
+                  <el-select v-model="ruleOf(row.id).level" size="small" style="width: 120px">
+                    <el-option v-for="lv in levels" :key="lv.value" :value="lv.value" :label="lv.value">
+                      <span class="level-dot" :style="{ background: lv.color }"></span>{{ lv.value }} {{ lv.label }}
+                    </el-option>
+                  </el-select>
+                </template>
+              </el-table-column>
+              <el-table-column label="重复告警(分钟)" width="132">
+                <template #default="{ row }">
+                  <el-input-number v-model="ruleOf(row.id).notify_minutes" :min="0" :max="1440" :step="5" size="small" controls-position="right" style="width: 112px" />
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="field-hint" style="margin-top: 8px">重复告警：故障持续期间每隔该间隔重新提醒一次；0=不重复，仅触发/恢复时提醒一次。</div>
+          </el-tab-pane>
+        </el-tabs>
       </div>
-      <el-form v-loading="!policyInfo" label-width="130" style="margin-top: 12px; min-height: 180px">
-        <el-form-item v-for="f in POLICY_FIELDS" :key="f.key" :label="f.label">
-          <el-input-number
-            v-model="policyForm[f.key]"
-            :min="f.min"
-            :max="f.max"
-            :step="f.step"
-            :precision="f.precision"
-          />
-          <span class="field-hint">{{ f.hint }}</span>
-        </el-form-item>
-      </el-form>
       <template #footer>
-        <el-button
-          v-if="policyIsChild && policyInfo?.inherited === false"
-          type="warning"
-          plain
-          :loading="policyResetting"
-          @click="resetAlertPolicy"
-        >
-          恢复继承母机
-        </el-button>
-        <el-button @click="policyVisible = false">取消</el-button>
-        <el-button type="primary" :loading="policySaving" :disabled="!policyInfo" @click="submitAlertPolicy">
-          保存
-        </el-button>
+        <div class="drawer-footer">
+          <el-button
+            v-if="policyIsChild && policyInfo?.inherited === false"
+            type="warning"
+            plain
+            :loading="policyResetting"
+            @click="resetAlertPolicy"
+          >
+            恢复继承母机
+          </el-button>
+          <el-button @click="policyVisible = false">取消</el-button>
+          <el-button type="primary" :loading="policySaving" :disabled="!policyInfo" @click="submitAlertPolicy">
+            保存
+          </el-button>
+        </div>
       </template>
-    </el-dialog>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell } from '@element-plus/icons-vue'
+import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection, QuestionFilled } from '@element-plus/icons-vue'
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
+import AgentConfigDialog from '../components/AgentConfigDialog.vue'
 import {
   createMother,
   deleteAsset,
@@ -530,8 +842,8 @@ import {
   fetchAlertPolicy,
   fetchMotherOverview,
   fetchMotherOverviewById,
+  fetchChildrenRealtime,
   fetchMothers,
-  probeAssets,
   provisionAsset,
   fetchAssetProvision,
   removeAsset,
@@ -540,8 +852,6 @@ import {
   updateAlertPolicy,
   updateAsset,
 } from '../api'
-
-const probing = ref(false)
 const query = reactive({ keyword: '' })
 
 const detailView = ref(false) // 总览两层：false=母机记录列表，true=某台母机内部（子机视图）
@@ -561,6 +871,7 @@ const ENV_OPTIONS = Object.entries(ENV_LABELS).map(([value, label]) => ({ value,
 // ===== 详情 / 监控大弹窗 =====
 const monitorVisible = ref(false)
 const monitorId = ref('')
+const agentCfgVisible = ref(false)
 
 // ===== 编辑资产 / 分组 =====
 const editVisible = ref(false)
@@ -568,35 +879,325 @@ const editing = ref(false)
 const editForm = reactive({ id: '', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '' })
 const groupNames = computed(() => [...new Set(children.value.map((c) => c.group).filter(Boolean))])
 
-// ===== 告警策略（默认值与后端 DEFAULT_POLICY 保持一致） =====
+// ===== 告警策略（v2：秒制窗口 + P0-P3 级别，默认值与后端 DEFAULT_POLICY 保持一致） =====
 const ALERT_POLICY_DEFAULT = {
   cpu_threshold: 90,
-  cpu_window_minutes: 5,
+  cpu_window_seconds: 300,
+  cpu_level: 'P1',
   mem_threshold: 90,
-  mem_window_minutes: 5,
+  mem_window_seconds: 300,
+  mem_level: 'P1',
   load_threshold: 1.5,
-  load_window_minutes: 5,
+  load_window_seconds: 300,
+  load_level: 'P1',
+  oom_enabled: false,
+  oom_window_seconds: 300,
+  oom_level: 'P1',
+  swap_enabled: false,
+  swap_threshold: 80,
+  swap_window_seconds: 300,
+  swap_level: 'P2',
+  inode_enabled: false,
+  inode_threshold: 80,
+  inode_window_seconds: 300,
+  inode_level: 'P2',
+  disk_io_enabled: false,
+  disk_io_threshold: 100,
+  disk_io_window_seconds: 300,
+  disk_io_level: 'P2',
+  net_perf_enabled: false,
+  net_loss_threshold: 1.0,
+  net_latency_threshold: 100,
+  net_perf_window_seconds: 300,
+  net_perf_level: 'P2',
+  net_probe_target: '223.5.5.5:443',
+  bandwidth_enabled: false,
+  bandwidth_threshold: 80,
+  bandwidth_window_seconds: 600,
+  bandwidth_level: 'P2',
+  tcp_conn_enabled: false,
+  tcp_time_wait_threshold: 10000,
+  tcp_conn_pct_threshold: 80,
+  tcp_conn_window_seconds: 300,
+  tcp_conn_level: 'P2',
+  process_enabled: false,
+  process_items: ['nginx', 'mysqld', 'java'],
+  process_window_seconds: 60,
+  process_level: 'P0',
+  port_enabled: false,
+  port_items: [22, 80, 443],
+  port_window_seconds: 60,
+  port_level: 'P0',
+  metrics_scrape_enabled: false,
+  metrics_urls: [],
+  // 重复告警间隔（分钟）：事件持续期间每隔该间隔重新提醒；0=不重复仅状态变化提醒
+  cpu_notify_minutes: 30,
+  mem_notify_minutes: 30,
+  load_notify_minutes: 30,
+  swap_notify_minutes: 30,
+  inode_notify_minutes: 30,
+  disk_io_notify_minutes: 30,
+  net_perf_notify_minutes: 30,
+  bandwidth_notify_minutes: 30,
+  tcp_conn_notify_minutes: 30,
+  process_notify_minutes: 30,
+  port_notify_minutes: 30,
+  oom_notify_minutes: 0,
+  rules: {},
 }
-// 字段描述：新增母机表单与告警策略对话框共用，保证两处配置完全一致
+// 添加母机表单里的基础三项（秒制）；完整策略登记后可在「告警策略」抽屉配置
 const POLICY_FIELDS = [
-  { key: 'cpu_threshold', label: 'CPU 阈值', min: 1, max: 99, step: 1, precision: 0, hint: 'CPU 使用率超过该值（%）即进入告警判定' },
-  { key: 'cpu_window_minutes', label: 'CPU 触发窗口', min: 1, max: 120, step: 1, precision: 0, hint: '持续超过阈值该时长（分钟）才触发告警' },
-  { key: 'mem_threshold', label: '内存阈值', min: 1, max: 99, step: 1, precision: 0, hint: '内存使用率超过该值（%）即进入告警判定' },
-  { key: 'mem_window_minutes', label: '内存触发窗口', min: 1, max: 120, step: 1, precision: 0, hint: '持续超过阈值该时长（分钟）才触发告警' },
-  { key: 'load_threshold', label: '负载阈值', min: 0.1, max: 100, step: 0.1, precision: 1, hint: 'CPU load（1m 平均）超过该值进入告警判定' },
-  { key: 'load_window_minutes', label: '负载触发窗口', min: 1, max: 120, step: 1, precision: 0, hint: '持续超过阈值该时长（分钟）才触发告警' },
+  { key: 'cpu_threshold', label: 'CPU 阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0, hint: 'CPU 使用率超过该值（%）即进入告警判定' },
+  { key: 'cpu_window_seconds', label: 'CPU 触发窗口', unit: '秒', min: 10, max: 86400, step: 10, precision: 0, hint: '持续超过阈值该时长（秒）才触发告警' },
+  { key: 'mem_threshold', label: '内存阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0, hint: '内存使用率超过该值（%）即进入告警判定' },
+  { key: 'mem_window_seconds', label: '内存触发窗口', unit: '秒', min: 10, max: 86400, step: 10, precision: 0, hint: '持续超过阈值该时长（秒）才触发告警' },
+  { key: 'load_threshold', label: '负载阈值', unit: '', min: 0.1, max: 100, step: 0.1, precision: 1, hint: 'CPU load（1m 平均）超过该值进入告警判定' },
+  { key: 'load_window_seconds', label: '负载触发窗口', unit: '秒', min: 10, max: 86400, step: 10, precision: 0, hint: '持续超过阈值该时长（秒）才触发告警' },
 ]
+// 策略抽屉分组配置描述（数据驱动渲染；enabled 开关/阈值/窗口/级别全部可配）
+const POLICY_SECTIONS = [
+  { tab: 'basic', key: 'cpu', title: 'CPU 使用率', desc: 'CPU 使用率持续高位运行', noSwitch: true,
+    tip: '监控 CPU 使用率：持续超过阈值达到触发窗口即告警。用于发现死循环、流量激增、进程异常抢占 CPU 等导致的 CPU 打满。',
+    fields: [
+      { key: 'cpu_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
+      { key: 'cpu_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'cpu_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'basic', key: 'mem', title: '内存使用率', desc: '内存使用率持续高位运行', noSwitch: true,
+    tip: '监控物理内存使用率：持续超过阈值达到触发窗口即告警。用于发现内存泄漏、缓存膨胀等可能演变为 OOM 的风险。',
+    fields: [
+      { key: 'mem_threshold', label: '使用率阈值', unit: '%', min: 1, max: 99, step: 1, precision: 0 },
+      { key: 'mem_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'mem_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'basic', key: 'load', title: '系统负载（load1）', desc: '1 分钟平均负载持续越限', noSwitch: true,
+    tip: '监控 1 分钟平均负载（load1）：持续超过阈值即告警。负载表示正在运行+等待 CPU 的任务数，过高说明机器已过载、任务在排队（如 4 核机器负载长期 > 4）。',
+    fields: [
+      { key: 'load_threshold', label: '负载阈值', min: 0.1, max: 100, step: 0.1, precision: 1 },
+      { key: 'load_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'load_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'sys', key: 'oom', title: 'OOM Kill', desc: '发生 OOM kill 事件即告警；恢复窗口内无新事件自动恢复',
+    tip: '监控内核 OOM Kill 事件：内存不足时内核会强制杀掉占用内存最大的进程（dmesg 记录 oom-killer），一旦发生立即告警；恢复窗口内无新事件则自动恢复。用于兜底发现内存耗尽导致的进程被杀。',
+    fields: [
+      { key: 'oom_window_seconds', label: '恢复窗口', unit: '秒' },
+      { key: 'oom_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '瞬时事件默认 0：发生提醒一次，恢复后再次发生重新告警' },
+    ] },
+  { tab: 'sys', key: 'swap', title: 'Swap 使用率', desc: 'Swap 使用率持续越限',
+    tip: '监控 Swap 交换分区使用率：持续超过阈值即告警。Swap 被大量使用说明物理内存已不够、系统开始换页，性能明显下降（未配 Swap 的机器不会触发）。',
+    fields: [
+      { key: 'swap_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'swap_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'swap_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'sys', key: 'inode', title: 'Inode 使用率', desc: '文件系统 inode 持续越限（耗尽前预警）',
+    tip: '监控文件系统 inode（索引节点）使用率：持续超过阈值即告警。inode 耗尽后即使磁盘空间未满也无法创建新文件，常见于海量小文件（会话文件、图片缩略图、日志碎片），属于磁盘写满前的预警。',
+    fields: [
+      { key: 'inode_threshold', label: '使用率阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'inode_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'inode_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'sys', key: 'disk_io', title: '磁盘 IO 延迟', desc: '磁盘 await（平均 IO 等待时间）持续过高',
+    tip: '监控磁盘 IO 延迟（await，平均每次 IO 的等待时间）：持续超过阈值即告警。用于发现磁盘写满/打满、坏盘、大量随机读写导致的系统卡顿（数据库、日志写入慢常常因此引起）。',
+    fields: [
+      { key: 'disk_io_threshold', label: 'await 阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
+      { key: 'disk_io_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'disk_io_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'sys', key: 'net_perf', title: '网络性能（丢包/延迟）', desc: 'agent 对探测目标 TCP 拨测，丢包率或延迟持续越限',
+    tip: '网络拨测：agent 定期对探测目标发起 TCP 建连，统计丢包率与建连延迟，任一持续超过阈值即告警。用于发现网络抖动、丢包、跨机房专线质量劣化（探测目标应选业务依赖的关键地址或公网基准点）。',
+    fields: [
+      { key: 'net_loss_threshold', label: '丢包率阈值', unit: '%', min: 0.1, max: 100, step: 0.1, precision: 1 },
+      { key: 'net_latency_threshold', label: '延迟阈值', unit: 'ms', min: 1, max: 10000, step: 10, precision: 0 },
+      { key: 'net_perf_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'net_perf_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ],
+    text: { key: 'net_probe_target', label: '探测目标', placeholder: '223.5.5.5:443' } },
+  { tab: 'sys', key: 'bandwidth', title: '带宽使用率', desc: '出口/入口带宽使用率持续越限',
+    tip: '监控出口/入口带宽利用率：持续超过阈值即告警。用于发现流量打满带宽（大文件传输、被刷、CC 攻击、异常外发）导致的网络拥塞和业务变慢。',
+    fields: [
+      { key: 'bandwidth_threshold', label: '带宽阈值', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'bandwidth_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'bandwidth_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'sys', key: 'tcp_conn', title: 'TCP 连接', desc: 'TIME_WAIT 过多或总连接数接近系统上限',
+    tip: '监控 TCP 连接状态：TIME_WAIT 数量过多，或总连接数占系统上限（somaxconn/文件句柄）比例持续超过阈值即告警。用于发现连接泄漏、短连接滥用、端口/句柄耗尽导致无法建立新连接的风险。',
+    fields: [
+      { key: 'tcp_time_wait_threshold', label: 'TIME_WAIT 数', unit: '个', min: 1, max: 1000000, step: 100, precision: 0 },
+      { key: 'tcp_conn_pct_threshold', label: '连接上限比', unit: '%', min: 1, max: 100, step: 1, precision: 0 },
+      { key: 'tcp_conn_window_seconds', label: '触发窗口', unit: '秒' },
+      { key: 'tcp_conn_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '持续期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'proc', key: 'process', title: '关键进程消失', desc: '核心进程异常退出即告警（按 /proc 进程名子串匹配）',
+    tip: '守护关键进程：按进程名子串匹配 /proc 下的进程，列表中任一进程消失且持续超过恢复窗口即告警，进程重新出现自动恢复。用于发现核心服务进程崩溃/被误杀（systemd 拉起失败、被 OOM 杀掉等）。',
+    items: { key: 'process_items', label: '监控进程', placeholder: 'nginx, mysqld, java' },
+    fields: [
+      { key: 'process_window_seconds', label: '恢复窗口', unit: '秒' },
+      { key: 'process_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '进程持续消失期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+  { tab: 'proc', key: 'port', title: '关键端口探活', desc: '本机端口 TCP 探活失败即告警',
+    tip: '本机端口探活：agent 对列表中的端口发起 TCP 连接，连续失败且持续超过恢复窗口即告警，端口恢复可达自动恢复。用于发现服务挂掉、端口未监听、防火墙误封等（比进程监控更贴近「服务真正可连接」）。',
+    items: { key: 'port_items', label: '监控端口', placeholder: '22, 80, 443', numeric: true },
+    fields: [
+      { key: 'port_window_seconds', label: '恢复窗口', unit: '秒' },
+      { key: 'port_notify_minutes', label: '重复告警', unit: '分钟', min: 0, max: 1440, step: 5, hint: '端口持续不可达期间每该间隔重新提醒；0=仅触发/恢复时提醒' },
+    ] },
+]
+// ===== 告警策略问号悬浮提示：说明策略作用 + 下方各配置项含义 =====
+const LABEL_TIPS = {
+  使用率阈值: '指标持续超过该百分比进入告警判定',
+  负载阈值: 'load1 超过该值进入判定（约等于 CPU 核数即满载，建议按核数调整）',
+  'await 阈值': '平均每次 IO 等待超过该毫秒数进入判定',
+  丢包率阈值: '拨测丢包率超过该百分比进入判定',
+  延迟阈值: 'TCP 建连延迟超过该毫秒数进入判定',
+  带宽阈值: '出口/入口带宽利用率超过该百分比进入判定',
+  'TIME_WAIT 数': 'TIME_WAIT 状态连接数超过该值进入判定',
+  连接上限比: '总连接数占系统上限的比例超过该百分比进入判定',
+  触发窗口: '指标持续越限达到该时长才真正触发告警（防瞬时抖动误报）',
+  恢复窗口: '该窗口内不再出现新事件/持续异常，则告警自动恢复',
+  重复告警: '故障持续期间每隔该分钟数重新提醒一次；0=不重复，仅触发/恢复时各提醒一次',
+  监控进程: '逗号分隔进程名子串（按 /proc 匹配），任一进程消失即触发判定',
+  监控端口: '逗号分隔端口号，任一端口 TCP 探活失败即触发判定',
+  探测目标: 'agent 发起 TCP 拨测的目标地址（ip:port），需从本机网络可达',
+}
+function sectionTip(s) {
+  const lines = [`<b>作用</b>：${s.tip}`, '<b>下方配置</b>']
+  for (const item of [s.items, s.text]) {
+    if (item) lines.push(`· ${item.label}：${LABEL_TIPS[item.label] || ''}`)
+  }
+  for (const f of s.fields) lines.push(`· ${f.label}${f.unit ? `（${f.unit}）` : ''}：${f.hint || LABEL_TIPS[f.label] || ''}`)
+  lines.push('· 告警级别：P0 严重故障 / P1 重要告警 / P2 一般告警 / P3 提示信息')
+  return lines.join('<br/>')
+}
+// 指标抓取数据源说明（应用层规则的数据来源）
+const SCRAPE_TIP = [
+  '<b>作用</b>：应用层/数据库层规则基于 agent 抓取的指标判定，此处配置指标来源（Prometheus 文本格式）',
+  '<b>行为</b>：开启后 agent 按周期抓取并上报列表中的 URL（每行一个，最多 16 个）',
+  '<b>注意</b>：未接入数据源的规则不会触发，但阈值/窗口/级别均可先配置好，接入后自动生效',
+].join('<br/>')
+// 应用/数据库层规则目录说明（id → 作用一句话）
+const RULE_TIPS = {
+  app_health: '对应用健康检查接口连续探测失败达到阈值次数即告警，通常意味着服务假死、崩溃或端口未监听，属最高级故障。',
+  app_http_5xx: '统计服务端错误（5xx）占比，持续超过阈值说明服务内部异常（代码错误、依赖故障），用户请求正在失败。',
+  app_http_5xx_critical: '5xx 错误率的紧急档：突破更高阈值立即按 P0 升级处理，用于重大故障的快速升级。',
+  app_http_4xx_surge: '4xx 客户端错误较昨日同时段增长率超阈值，通常是攻击扫描、爬虫或上游参数/路由变更引起。',
+  app_latency_p95: '95% 的请求响应时间低于该值，P95 超阈值说明大部分用户已明显感到变慢。',
+  app_latency_p99: '99% 的请求响应时间低于该值，P99 超阈值说明存在长尾慢请求（GC 停顿、慢 SQL、锁竞争等）。',
+  app_qps_drop: 'QPS 较昨日同时段下降超阈值，可能是上游流量异常或服务假死（还活着但没人访问进来）。',
+  app_qps_overload: '当前 QPS 达到压测容量上限的比例超阈值，说明接近过载，需要扩容或限流。',
+  app_timeout: '请求超时占比超阈值，说明下游变慢或线程/连接池耗尽，用户请求正在大量失败。',
+  app_thread_pool: '线程池使用率超阈值，线程耗尽后新请求将排队或被拒绝，是容量不足的预警信号。',
+  app_conn_pool_wait: '连接池出现等待（获取连接排队数 > 0）即告警，说明连接数不够或数据库变慢。',
+  app_queue_backlog: '任务/消息队列深度持续增长即告警，消费速度跟不上生产速度，积压会持续放大延迟。',
+  app_jvm_full_gc: 'JVM Full GC 频率超阈值（默认每分钟 2 次），频繁 Full GC 伴随长时间停顿（STW），服务周期性卡死。',
+  app_jvm_gc_time: 'GC 总耗时占比超阈值，说明 JVM 花大量时间做垃圾回收，有效吞吐明显下降。',
+  app_heap_high: 'JVM 堆内存使用率持续超阈值，逼近 OOM，多由内存泄漏或堆配置过小引起。',
+  app_log_error_surge: 'ERROR 日志量较基线突增超过阈值倍数，是应用内部异常最直接的信号（无需埋点即可发现）。',
+  app_deploy_anomaly: '发布后 5xx 率或延迟上升超阈值即告警，用于发布事故的快速发现与回滚决策。',
+  app_downstream_fail: '调用下游服务（RPC/HTTP）失败率超阈值，说明依赖服务异常，需要降级、熔断或切换节点。',
+  mysql_conn_pct: 'MySQL 已用连接数占 max_connections 比例超阈值，连接耗尽后新请求无法建立会话。',
+  mysql_slow_query_surge: '慢查询数量较基线增长率超阈值，通常是慢 SQL 上线、缺索引或数据量突增。',
+  mysql_replica_lag: '主从复制延迟秒数超阈值，从库数据落后会导致读到旧数据，并影响故障切换安全性。',
+  mysql_replica_broken: '复制线程停止（IO/SQL 线程异常）即告警，主从一致性被破坏，属 P0 级故障。',
+  mysql_lock_waits: '锁等待/死锁每分钟次数超阈值，说明存在锁热点，事务相互阻塞导致业务卡顿。',
+  mysql_disk_free: 'MySQL 数据盘剩余空间低于阈值即告警，磁盘写满后数据库不可写，属 P0 级故障。',
+  redis_mem_pct: 'Redis 内存使用率超阈值，达到 maxmemory 后开始淘汰键或拒绝写入，可能引发缓存击穿。',
+  redis_hit_rate_drop: '缓存命中率下降幅度超阈值，命中率暴跌会让回源流量打垮数据库。',
+  redis_replica_broken: 'Redis 主从复制断开/故障切换即告警，影响读扩展能力与高可用。',
+  redis_persist_fail: 'RDB/AOF 持久化失败即告警，实例宕机后可能丢失数据且无法恢复。',
+  mq_backlog: '消息队列积压条数超阈值，生产快于消费，通常是消费者挂了或下游处理能力不足。',
+  mq_consume_delay: '消息从产生到被消费的延迟超阈值，实时性业务（风控、通知、同步）会受影响。',
+  mq_no_consumer: '队列消费者数量为 0 即告警，消息将持续无限堆积，通常消费者进程已挂。',
+  mq_dlq_growth: '死信队列消息占比增长超阈值，说明大量消息反复消费失败，需要人工介入排查。',
+  nginx_5xx_rate: 'Nginx 返回 5xx 的比例超阈值，说明 upstream 异常或 Nginx 自身配置/资源问题。',
+  nginx_upstream_fail: 'Nginx 连接 upstream 失败次数超阈值，后端节点不可达、超时或被摘除。',
+  nginx_conn_pct: 'Nginx 活跃连接数占 worker_connections 上限比例超阈值，连接耗尽后会拒绝新请求。',
+}
+const OP_LABELS = { gte: '≥', ge: '≥', gt: '>', lte: '≤', lt: '<' }
+function ruleTip(r) {
+  return [
+    `<b>作用</b>：${RULE_TIPS[r.id] || '基于 agent 抓取的指标进行阈值判定'}`,
+    `<b>判定</b>：指标 <code>${r.metric}</code> ${OP_LABELS[r.op] || r.op} 阈值（默认 ${r.threshold}${r.unit || ''}），持续 ${r.window_seconds} 秒触发`,
+    '<b>配置</b>：启用开关 / 阈值 / 窗口 / 级别 / 重复告警（0=仅触发与恢复时各提醒一次）均可按行调整',
+  ].join('<br/>')
+}
 const policyVisible = ref(false)
 const policySaving = ref(false)
 const policyResetting = ref(false)
 const policyTarget = ref(null) // 当前设置策略的资产（母机或子机）
-const policyInfo = ref(null) // GET 返回（policy / inherited / source / defaults）
+const policyInfo = ref(null) // GET 返回（policy / inherited / source / defaults / levels / catalog / templates）
+const policyDefaults = ref(null) // 平台默认策略（恢复默认用）
+const policyTab = ref('basic')
+const templateId = ref('')
 const policyForm = reactive({ ...ALERT_POLICY_DEFAULT })
 const policyIsChild = computed(() => !!policyTarget.value && !policyTarget.value.is_mother)
 const policySourceLabel = computed(() => {
   const map = { self: '子机自有策略', mother: '继承母机策略', default: '平台默认策略' }
   return policyTarget.value?.is_mother ? '母机策略（子机未自定义时沿用）' : map[policyInfo.value?.source] || ''
 })
+// P0-P3 级别（后端 meta 下发含颜色；异常兜底与后端 LEVEL_COLORS 一致）
+const FALLBACK_LEVELS = [
+  { value: 'P0', label: '严重故障', color: '#ff3b30' },
+  { value: 'P1', label: '重要告警', color: '#ff9500' },
+  { value: 'P2', label: '一般告警', color: '#f7ba2a' },
+  { value: 'P3', label: '提示信息', color: '#909399' },
+]
+const levels = computed(() => policyInfo.value?.levels || FALLBACK_LEVELS)
+function levelColor(v) {
+  return levels.value.find((l) => l.value === v)?.color || '#909399'
+}
+function sectionsOf(tab) {
+  return POLICY_SECTIONS.filter((s) => s.tab === tab)
+}
+function catalogRows(group) {
+  return (policyInfo.value?.catalog || []).filter((r) => r.group === group)
+}
+// 应用/数据库规则行：目录默认值合并已保存配置，保证新增规则有完整初始值
+function buildPolicyForm(policy) {
+  const base = { ...ALERT_POLICY_DEFAULT, ...(policy || {}) }
+  const catalog = policyInfo.value?.catalog || []
+  const rules = {}
+  for (const r of catalog) {
+    rules[r.id] = {
+      enabled: false,
+      threshold: r.threshold,
+      window_seconds: r.window_seconds,
+      level: r.level,
+      notify_minutes: r.notify_minutes ?? 30,
+      ...(base.rules?.[r.id] || {}),
+    }
+  }
+  base.rules = rules
+  return base
+}
+function ruleOf(id) {
+  if (!policyForm.rules[id]) {
+    policyForm.rules[id] = { enabled: false, threshold: 0, window_seconds: 60, level: 'P2', notify_minutes: 30 }
+  }
+  if (policyForm.rules[id].notify_minutes == null) policyForm.rules[id].notify_minutes = 30
+  return policyForm.rules[id]
+}
+function setItems(key, value, numeric = false) {
+  const parts = String(value).split(/[,，\s]+/).filter(Boolean)
+  policyForm[key] = numeric
+    ? parts.map(Number).filter((n) => Number.isInteger(n) && n > 0 && n < 65536)
+    : parts.slice(0, 32)
+}
+function setUrls(value) {
+  policyForm.metrics_urls = String(value).split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 16)
+}
+// 配置模板：standard/strict/relaxed 一键填充（保存后生效）
+function applyTemplate(tid) {
+  const tpl = (policyInfo.value?.templates || []).find((t) => t.id === tid)
+  if (!tpl) return
+  Object.assign(policyForm, buildPolicyForm(tpl.policy))
+  ElMessage.success(`已应用模板「${tpl.label}」，保存后生效`)
+}
+function resetToDefaults() {
+  Object.assign(policyForm, buildPolicyForm(policyDefaults.value || ALERT_POLICY_DEFAULT))
+  templateId.value = ''
+  ElMessage.success('已恢复平台默认值，保存后生效')
+}
 
 // ===== 添加母机（SSH 验证 + 自动纳管本机子机） =====
 const addMotherVisible = ref(false)
@@ -615,6 +1216,24 @@ const motherForm = reactive({
 // ===== SSH 连通性测试（新增母机 / 子机表单共用） =====
 const sshTesting = ref('') // '' | 'mother' | 'child'
 
+// 错误信息提取：兼容 FastAPI 422（detail 为数组）、请求超时、网络异常等所有形态
+function errMsg(err, fallback) {
+  const d = err?.response?.data?.detail
+  if (typeof d === 'string' && d) return d
+  if (Array.isArray(d) && d.length) {
+    const first = d[0]
+    const field = (first.loc || []).slice(-1)[0] || ''
+    return `参数校验失败${field ? `（${field}）` : ''}：${first.msg || '请检查表单填写'}`
+  }
+  if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '')) {
+    return '连接测试超时，请确认目标机 IP/端口正确且网络可达后重试'
+  }
+  if (!err?.response) {
+    return '网络异常：无法连接到平台服务，请检查本机到平台的网络'
+  }
+  return fallback
+}
+
 async function runSshTest(target) {
   const form = target === 'mother' ? motherForm : addChildForm
   const port = target === 'mother' ? form.ssh_port : form.port
@@ -631,23 +1250,48 @@ async function runSshTest(target) {
     const { data } = await testSsh({ ip: form.ip.trim(), port, username: form.username, password: form.password })
     ElMessage.success(data.message || '连接成功')
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '连接失败：无法建立 SSH 会话')
+    ElMessage.error(errMsg(err, '连接失败：无法建立 SSH 会话'))
   } finally {
     sshTesting.value = ''
   }
 }
 
 let overviewTimer = null
+let realtimeTimer = null
 onMounted(() => {
   refresh()
-  // 子机卡片指标（CPU/内存等）准实时：10s 轮询 overview（Agent 最新上报值）
+  // 全量 overview 低频轮询：分组统计 / 告警徽标 / 归属关系（10s）
   overviewTimer = setInterval(() => {
     if (!motherLoading.value) loadOverview()
   }, 10000)
+  // 分组卡片实时轮询：1 秒/次批量拉 Agent 最新帧（与监控详情实时面板同源同频）
+  realtimeTimer = setInterval(loadChildrenRealtime, 1000)
 })
 onBeforeUnmount(() => {
   if (overviewTimer) clearInterval(overviewTimer)
+  if (realtimeTimer) clearInterval(realtimeTimer)
 })
+
+// 分组卡片实时刷新：仅轻量指标，在线态翻转时触发一次全量 overview 同步徽标/分组统计
+async function loadChildrenRealtime() {
+  if (document.hidden || !detailView.value || !selectedMotherId.value) return
+  try {
+    const { data } = await fetchChildrenRealtime(selectedMotherId.value)
+    const items = data.items || {}
+    let flipped = false
+    for (const c of children.value) {
+      const m = items[c.id]
+      if (!m) continue
+      c.metrics = { ...m }
+      if (c.reachable !== m.online) flipped = true
+      c.reachable = m.online
+    }
+    lastSyncAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    if (flipped) loadOverview()
+  } catch {
+    /* 单次拉取失败静默，下一秒重试 */
+  }
+}
 
 // 子机卡片指标单元格（Agent 最新上报；无数据显示 "—"）
 function nodeMetricCells(c) {
@@ -660,6 +1304,26 @@ function nodeMetricCells(c) {
     { label: '磁盘', value: fmt(m.disk), unit: '%', cls: cls(m.disk) },
     { label: '负载', value: fmt(m.load), unit: '', cls: '' },
   ]
+}
+
+// 网速格式化（与 AssetMonitor 实时面板一致）：B/s → KB/s → MB/s → GB/s
+function speedText(bps) {
+  if (bps == null) return '—'
+  if (bps >= 1024 ** 3) return `${(bps / 1024 ** 3).toFixed(2)} GB/s`
+  if (bps >= 1024 ** 2) return `${(bps / 1024 ** 2).toFixed(2)} MB/s`
+  if (bps >= 1024) return `${(bps / 1024).toFixed(1)} KB/s`
+  return `${Math.round(bps)} B/s`
+}
+
+// 卡片网络行：↓ 下载 / ↑ 上传（与资产监控页网络视图同口径）；无数据返回空（CSS 隐藏）
+function netCell(c) {
+  const m = c.metrics || {}
+  if (m.net_rx_bps == null && m.net_tx_bps == null) return ''
+  return (
+    `<span style="color:#34c759">↓ ${speedText(m.net_rx_bps)}</span>` +
+    '<span class="nm-net-dot">·</span>' +
+    `<span style="color:#ff9500">↑ ${speedText(m.net_tx_bps)}</span>`
+  )
 }
 
 function openMotherDetail(m) {
@@ -877,21 +1541,8 @@ function relTime(v) {
   return `${Math.floor(h / 24)} 天前`
 }
 
-async function probeNow() {
-  probing.value = true
-  try {
-    const { data } = await probeAssets()
-    ElMessage.success(`探测完成：在线 ${data.reachable}/${data.total}`)
-    refresh()
-  } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '探测失败')
-  } finally {
-    probing.value = false
-  }
-}
-
 async function confirmDelete(row) {
-  // 母机走台账级联删除弹窗；子机走删除弹窗（可选联动卸载 agent）
+  // 母机走删除弹窗（有子机禁止删除）；子机走删除弹窗（默认联动卸载 agent）
   if (row?.kind === 'mother' || mothers.value.some((m) => m.id === row?.id)) {
     openMotherDelete(row)
     return
@@ -967,14 +1618,14 @@ async function submitChildDelete() {
   }
 }
 
-// ===== 母机删除（纯台账级联删除，不触碰服务器） =====
+// ===== 母机删除（纯台账，不触碰服务器；名下有子机时后端 400 拒绝） =====
 const motherDeleteVisible = ref(false)
 const motherDeleting = ref(false)
 const motherDeleteForm = reactive({ id: '', hostname: '', children: 0 })
 
 function openMotherDelete(row) {
   const m = mothers.value.find((x) => x.id === row.id) || row
-  // 级联删除：母机删除时名下子机一并删除；子机被工单/维护窗口/备份任务引用时后端会 409 拒绝
+  // 删除限制：名下有子机时禁止删除（前端禁用按钮 + 后端 400 兜底）
   // 统计真实子机：排除"本机·母机"合成行（is_mother），它不是数据库资产
   const cnt = m.children_count ?? (m.id === selectedMotherId.value ? children.value.filter((c) => !c.is_mother).length : 0)
   Object.assign(motherDeleteForm, { id: m.id, hostname: m.hostname || '', children: cnt ?? 0 })
@@ -987,8 +1638,7 @@ async function submitMotherDelete() {
   try {
     const { data } = await deleteAsset(motherDeleteForm.id)
     motherDeleteVisible.value = false
-    const n = (data.cascade_children || []).length
-    ElMessage.success(`已删除 ${motherDeleteForm.id}${n ? `，并级联删除其名下 ${n} 台子机` : ''}`)
+    ElMessage.success(`已删除 ${motherDeleteForm.id}`)
     if (wasSelected) {
       selectedMotherId.value = ''
       detailView.value = false
@@ -1092,23 +1742,33 @@ async function submitMother() {
     ElMessage.warning('请填写主机名和服务器 IP')
     return
   }
+  if (!motherForm.password) {
+    ElMessage.warning('请填写 SSH 密码（用于验证连通性并自动纳管本机子机）')
+    return
+  }
   addingMother.value = true
   try {
     const { data: row } = await createMother({
       hostname: motherForm.hostname.trim(),
       ip: motherForm.ip.trim(),
       ssh_port: motherForm.ssh_port,
+      username: motherForm.username,
+      password: motherForm.password,
       env: motherForm.env,
       owner: motherForm.owner,
       alert_policy: { ...motherForm.alert_policy },
     })
-    ElMessage.success('母机已登记')
+    ElMessage.success(
+      row.provision_started
+        ? `母机已创建，本机子机 ${row.self_child_id} 纳管与 Agent 部署已启动（约 1 分钟）`
+        : '母机已登记',
+    )
     addMotherVisible.value = false
     // 选中刚登记的母机并进入详情
     selectedMotherId.value = row.id
     await loadOverview()
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || '登记失败')
+    ElMessage.error(errMsg(err, '创建失败'))
   } finally {
     addingMother.value = false
   }
@@ -1118,12 +1778,15 @@ async function submitMother() {
 async function openAlertPolicy(m) {
   policyTarget.value = m
   policyInfo.value = null
+  policyTab.value = 'basic'
+  templateId.value = ''
   Object.assign(policyForm, { ...ALERT_POLICY_DEFAULT })
   policyVisible.value = true
   try {
     const { data } = await fetchAlertPolicy(m.id)
     policyInfo.value = data
-    Object.assign(policyForm, { ...ALERT_POLICY_DEFAULT, ...(data.policy || {}) })
+    policyDefaults.value = data.defaults || null
+    Object.assign(policyForm, buildPolicyForm(data.policy))
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '读取告警策略失败')
   }
@@ -1135,7 +1798,7 @@ async function submitAlertPolicy() {
   try {
     await updateAlertPolicy(policyTarget.value.id, { ...policyForm })
     ElMessage.success(
-      policyIsChild.value ? '告警策略已保存（子机自有策略，立即生效）' : '告警策略已保存（母机与所有接入子机统一生效）',
+      policyIsChild.value ? '告警策略已保存（子机 agent 将在约 30 秒内自动同步生效）' : '告警策略已保存（母机与所有接入子机统一生效，agent 约 30 秒内自动同步）',
     )
     policyVisible.value = false
   } catch (err) {
@@ -1152,7 +1815,9 @@ async function resetAlertPolicy() {
   try {
     const { data } = await resetAlertPolicyApi(policyTarget.value.id)
     policyInfo.value = data
-    Object.assign(policyForm, { ...ALERT_POLICY_DEFAULT, ...(data.policy || {}) })
+    policyDefaults.value = data.defaults || null
+    Object.assign(policyForm, buildPolicyForm(data.policy))
+    templateId.value = ''
     ElMessage.success('已恢复继承母机策略')
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '恢复继承失败')
@@ -1214,7 +1879,7 @@ async function resetAlertPolicy() {
   padding: 56px 24px;
   border: 1px dashed var(--line-strong);
   border-radius: var(--r-xl);
-  background: linear-gradient(180deg, #fafcff 0%, #ffffff 70%);
+  background: linear-gradient(180deg, var(--el-fill-color-lighter) 0%, var(--el-bg-color) 70%);
 }
 .empty-icon {
   font-size: 52px;
@@ -1350,6 +2015,24 @@ async function resetAlertPolicy() {
   font-size: 11px;
   color: var(--muted);
 }
+/* 网络实时速率行（↓ 下载 / ↑ 上传）；无 Agent 数据时为空并隐藏 */
+.nm-net {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.nm-net:empty {
+  display: none;
+}
+.nm-net :deep(.nm-net-dot) {
+  color: var(--muted);
+}
 .field-hint {
   margin-left: 10px;
   color: var(--faint);
@@ -1366,6 +2049,104 @@ async function resetAlertPolicy() {
   font-size: 12px;
 }
 
+/* ===== 告警策略抽屉（分组配置） ===== */
+.policy-body {
+  min-height: 240px;
+}
+.policy-toolbar {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.policy-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.policy-section.off {
+  opacity: 0.55;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.section-desc {
+  color: var(--faint);
+  font-size: 12px;
+}
+.section-help {
+  color: #86868b;
+  font-size: 14px;
+  cursor: help;
+  flex-shrink: 0;
+  transition: color 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.section-help:hover {
+  color: var(--brand, #0071e3);
+}
+.section-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.field-label {
+  width: 96px;
+  flex: none;
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+  text-align: right;
+}
+.field-unit {
+  color: var(--faint);
+  font-size: 12px;
+}
+.level-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.scrape-box {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rule-table {
+  width: 100%;
+}
+.rule-name {
+  font-size: 12px;
+}
+.rule-metric {
+  color: var(--faint);
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .dot {
   width: 10px;
   height: 10px;
@@ -1380,6 +2161,18 @@ async function resetAlertPolicy() {
 .dot.down {
   background: var(--danger-vivid);
   box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.18);
+}
+/* 纳管中：本机子机 Agent 部署未完成，状态未确立 */
+.dot.pend {
+  background: var(--warn-vivid, #ff9500);
+  box-shadow: 0 0 0 3px rgba(255, 149, 0, 0.18);
+}
+/* 删除子机弹窗：跳过卸载的提示 */
+.uninstall-skip-note {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* ===== 子机分组 ===== */
@@ -1402,11 +2195,11 @@ async function resetAlertPolicy() {
 }
 .group-block {
   margin-bottom: 18px;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: 14px 16px 4px;
-  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
 }
 .group-block.drop-target {
   border-color: var(--brand);
@@ -1636,5 +2429,24 @@ async function resetAlertPolicy() {
 }
 .muted {
   color: var(--faint);
+}
+</style>
+
+<style>
+/* 告警策略问号提示弹层（teleport 到 body，需全局样式） */
+.policy-tip {
+  max-width: 420px;
+  line-height: 1.7;
+  font-size: 12px;
+}
+.policy-tip b {
+  color: #ffd04b;
+}
+.policy-tip code {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 0 4px;
+  border-radius: 4px;
 }
 </style>

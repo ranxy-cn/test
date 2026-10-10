@@ -275,7 +275,8 @@ def test_uninstall_via_ssh_success():
     )
     logs: list[str] = []
     dep_mod.uninstall_via_ssh(ssh, logs=logs)
-    assert ssh.chan.commands[1].startswith("pkill -f 'devops-agent/agent'")
+    assert "pkill -f 'devops-agent[/]agent'" in ssh.chan.commands[1]
+    assert "pkill -f '[.]/agent --config'" in ssh.chan.commands[1]
     assert "rm -rf /opt/devops-agent" in ssh.chan.commands[2]
     assert any("已停止 agent 进程并清理 /opt/devops-agent" in ln for ln in logs)
 
@@ -567,7 +568,7 @@ def test_remove_endpoint_uninstall_failure_returns_502(client, db, monkeypatch):
 
 
 def test_remove_endpoint_mother_rules(client, db):
-    """母机删除规则：勾卸载 → 400（纯台账级联删除，无需卸载）；仅删记录 → 允许。"""
+    """母机删除规则：勾卸载 → 400（纯台账，不支持卸载）；仅删记录（无子机）→ 允许。"""
     m = Asset(
         id="m-x",
         hostname="mx",
@@ -580,11 +581,32 @@ def test_remove_endpoint_mother_rules(client, db):
         reachable=True,
     )
     db.add(m)
+    db.add(
+        Asset(
+            id="node-mx",
+            hostname="node-mx",
+            kind="node",
+            app="",
+            role="app",
+            env="prod",
+            owner="",
+            mother_id="m-x",
+            tenant_id="t1",
+        )
+    )
     db.commit()
 
-    r = client.post("/api/v1/assets/m-x/remove", json={"uninstall": True, "ssh_password": "pw"})
+    # 有子机 → 先删子机
+    r = client.post("/api/v1/assets/m-x/remove", json={})
     assert r.status_code == 400
-    assert "母机" in r.json()["detail"]
+    assert "先删除" in r.json()["detail"]
+    assert db.get(Asset, "m-x") is not None
+
+    # 删净子机后：勾卸载 → 400（母机纯台账，不支持卸载）
+    assert client.post("/api/v1/assets/node-mx/remove", json={"uninstall": False}).status_code == 200
+    r1 = client.post("/api/v1/assets/m-x/remove", json={"uninstall": True, "ssh_password": "pw"})
+    assert r1.status_code == 400
+    assert "不支持卸载" in r1.json()["detail"]
 
     r2 = client.post("/api/v1/assets/m-x/remove", json={})
     assert r2.status_code == 200
