@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.routers.deps import CurrentUser, require_perm
 from app.schemas import AnomalyOut, ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
+from app.security import encrypt_secret
 from app.services import provision as provision_svc
 from app.services import diagnostics as diagnostics_svc
 from app.services.alert_policy import (
@@ -127,6 +128,8 @@ def _asset_row(a: Asset) -> dict:
         "last_seen_at": a.last_seen_at,
         "last_check_at": a.last_check_at,
         "unreachable_reason": a.unreachable_reason,
+        # SSH 密码是否已配置（加密落库，永不回传明文；SSH 终端/卸载 Agent 凭据来源）
+        "ssh_password_set": bool(getattr(a, "ssh_password_enc", "")),
     }
 
 
@@ -503,6 +506,8 @@ def create_mother(
         kind="mother",
         tenant_id=get_settings().tenant_id,
         reachable=False,  # 在线状态由本机子机 agent 推导（见 list_mothers），台账初始不可达
+        # SSH 密码加密落库（Fernet）：供 SSH 终端 / 卸载 Agent 复用；空密码仅登记不保存
+        ssh_password_enc=encrypt_secret(body.password) if use_ssh else "",
         extra={
             "alert_policy": alert_policy,
             "provision": {
@@ -542,6 +547,7 @@ def create_mother(
                 mother_id=aid,
                 tenant_id=get_settings().tenant_id,
                 reachable=False,
+                ssh_password_enc=encrypt_secret(body.password),
                 extra={"provision": {"status": "running", "ip": body.ip, "port": body.ssh_port, "username": body.username.strip()}},
             )
         else:
@@ -549,6 +555,8 @@ def create_mother(
             extra = dict(child.extra or {})
             extra["provision"] = {"status": "running", "ip": body.ip, "port": body.ssh_port, "username": body.username.strip()}
             child.extra = extra
+            # 复用已有子机（升级为母机场景）：刷新为本次验证通过的密码
+            child.ssh_password_enc = encrypt_secret(body.password)
         token = _secrets.token_urlsafe(24)
         child.extra = {**(child.extra or {}), "agent_token": token}
         child_id = cid
@@ -852,6 +860,8 @@ class AssetUpdateIn(BaseModel):
     owner: str = Field(default="", max_length=64)
     group: str | None = Field(default=None, max_length=64)
     custom_groups: list[str] | None = None
+    # SSH 密码三态：None=不修改（前端留空不传）；空串=清除；非空=加密保存
+    ssh_password: str | None = Field(default=None, max_length=128)
 
 
 @router.patch("/api/v1/assets/{asset_id}", dependencies=[Depends(require_perm("assets:write"))])
@@ -882,6 +892,9 @@ def update_asset(asset_id: str, body: AssetUpdateIn, db: Session = Depends(get_d
             if g and g not in names:
                 names.append(g)
         a.extra = {**(a.extra or {}), "custom_groups": names}
+    if body.ssh_password is not None:
+        # 三态语义：空串=清除已保存密码；非空=加密保存（编辑子机页面的 SSH 密码配置入口）
+        a.ssh_password_enc = encrypt_secret(body.ssh_password) if body.ssh_password else ""
     db.commit()
     return _asset_row(a)
 
@@ -994,10 +1007,15 @@ def remove_asset(
         username = str(prov.get("username") or "root")
         if not ip:
             raise HTTPException(400, "该资产没有纳管来源（ip/端口），无法远程卸载；请取消勾选「卸载 agent」后直接删除")
-        if not body.ssh_password:
-            raise HTTPException(400, "请输入该服务器的 SSH 密码用于卸载 agent")
+        # 密码优先级：请求临时密码 > 资产保存的 SSH 密码（编辑入口配置）；都没有才要求补填
+        uninstall_password = body.ssh_password or _asset_ssh_password(a)
+        if not uninstall_password:
+            raise HTTPException(
+                400,
+                "未提供 SSH 密码：请输入该服务器密码，或先在「编辑资产」中保存 SSH 密码后再卸载",
+            )
         try:
-            ssh = provision_svc._connect_ssh(ip, port, username, body.ssh_password)
+            ssh = provision_svc._connect_ssh(ip, port, username, uninstall_password)
             try:
                 agent_deployer.uninstall_via_ssh(ssh, logs=uninstall_logs)
             finally:
@@ -1225,8 +1243,31 @@ def _ssh_target_for_asset(a: Asset, body: AssetInspectIn) -> tuple[str, int, str
     return ip, port, username
 
 
-def _ssh_collect(fn, password_used: bool) -> dict:
-    """SSH 上机采集公共封装：认证失败用 409（避免触发前端 401 全局登出踢人）。"""
+def _asset_ssh_password(a: Asset) -> str:
+    """解密资产保存的 SSH 密码；未配置或密文失效（如换过加密密钥）返回空串。"""
+    from app.security import decrypt_secret
+
+    try:
+        return decrypt_secret(a.ssh_password_enc or "")
+    except Exception:  # noqa: BLE001 密文不可解按未配置处理，回退其他凭据通道
+        return ""
+
+
+def _load_private_key_safe() -> object | None:
+    """探测免密巡检私钥是否可用；缺失/损坏一律返回 None（不抛异常）。"""
+    from app.services.inspector import INSPECT_KEY_PATH, _load_private_key
+
+    try:
+        return _load_private_key(INSPECT_KEY_PATH)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ssh_collect(fn, password_used: bool, password_saved: bool = False) -> dict:
+    """SSH 上机采集公共封装：认证失败用 409（避免触发前端 401 全局登出踢人）。
+
+    认证失败不计数、不锁定（可无限次重试），文案按凭据来源引导到编辑子机。
+    """
     import paramiko
 
     try:
@@ -1234,8 +1275,13 @@ def _ssh_collect(fn, password_used: bool) -> dict:
     except paramiko.AuthenticationException:
         if password_used:
             raise HTTPException(409, "SSH 认证失败：用户名或密码错误") from None
+        if password_saved:
+            raise HTTPException(
+                409, "SSH 认证失败：该子机保存的 SSH 密码已失效（不限制重试次数），请在「编辑资产」中更新 SSH 密码"
+            ) from None
         raise HTTPException(
-            409, "免密巡检未就绪：该机器尚未配置巡检公钥，请在纳管时自动下发或联系管理员"
+            409,
+            "免密巡检未就绪：该机器尚未配置巡检公钥，且未保存 SSH 密码，请在「编辑资产」中保存 SSH 密码",
         ) from None
     except FileNotFoundError:
         raise HTTPException(503, "巡检私钥未配置，无法免密采集") from None
@@ -1309,13 +1355,22 @@ def asset_exec(
 ):
     """SSH 终端：在目标机上执行一条命令并回显输出。
 
-    与巡检/详情同一套凭据口径（巡检私钥 + 密码兜底）；cd/环境变量跨请求生效由前端回传 cwd 实现。
-    每条命令写审计留痕（操作人/主机/命令/退出码）。
+    凭据优先级：请求临时密码 > 资产保存的 SSH 密码（加密落库，新增/编辑子机配置入口）
+    > 免密巡检私钥兜底；认证失败不限制重试次数。cd/环境变量跨请求生效由前端回传 cwd 实现。
+    每条命令写审计留痕（操作人/主机/命令/退出码），密码不入审计与日志。
     """
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
     ip, port, username = _ssh_target_for_asset(a, body)
+    saved_password = _asset_ssh_password(a)
+    if not body.password and not saved_password:
+        pkey_probe = _load_private_key_safe()
+        if pkey_probe is None:
+            raise HTTPException(
+                400,
+                "该资产尚未保存 SSH 密码且免密巡检私钥不可用：请在「编辑资产」中填写 SSH 密码后重试",
+            )
 
     import re
     import shlex
@@ -1343,7 +1398,7 @@ def asset_exec(
                 ip,
                 port=port,
                 username=username,
-                password=body.password or None,
+                password=body.password or saved_password or None,
                 pkey=pkey,
                 timeout=6.0,
                 banner_timeout=6.0,
@@ -1384,7 +1439,11 @@ def asset_exec(
             "duration_ms": duration_ms,
         }
 
-    result = _ssh_collect(_run, password_used=bool(body.password))
+    result = _ssh_collect(
+        _run,
+        password_used=bool(body.password),
+        password_saved=bool(saved_password) and not body.password,
+    )
     add_audit(
         db,
         ticket_id=None,
@@ -1516,7 +1575,7 @@ def _spawn_agent_deploy(
 
 
 class AssetProvisionIn(BaseModel):
-    """资产页一键纳管：SSH 密码直连新机下发自研 agent。密码仅本次部署使用，不落库。"""
+    """资产页一键纳管：SSH 密码直连新机下发自研 agent。密码 Fernet 加密落库（SSH 终端/卸载凭据）。"""
 
     display_name: str = Field(default="", max_length=64, description="子机显示名；空=用安装后的真实主机名")
     ip: str = Field(min_length=3, max_length=64)
@@ -1588,6 +1647,8 @@ def provision_asset(
             mother_id=mother_id,
             tenant_id=get_settings().tenant_id,
             reachable=False,
+            # SSH 密码加密落库：SSH 终端 / 卸载 Agent 凭据（新增子机页面配置入口）
+            ssh_password_enc=encrypt_secret(body.password) if body.password else "",
             extra={"provision": {"status": "running", "ip": body.ip, "port": body.port, "username": body.username}},
         )
     else:
@@ -1614,6 +1675,9 @@ def provision_asset(
         extra = dict(asset.extra or {})
         extra["provision"] = {"status": "running", "ip": body.ip, "port": body.port, "username": body.username}
         asset.extra = extra
+        # 幂等重跑纳管：刷新为本次验证通过的密码（避免旧密码失效后终端不可用）
+        if body.password:
+            asset.ssh_password_enc = encrypt_secret(body.password)
     # 签发 agent 令牌（上报认证用）
     token = _secrets.token_urlsafe(24)
     asset.extra = {**(asset.extra or {}), "agent_token": token}

@@ -1235,7 +1235,7 @@ function sshBanner() {
   const host = asset.value?.hostname || props.assetId
   const ip = asset.value?.extra?.provision?.ip || asset.value?.extra?.deploy?.ip
   sshPush(`Trying ${ip || host}...`, 'dim')
-  sshPush(`Connected to ${host}${ip ? `（${ip}）` : ''} · 会话由平台免密巡检通道承载`, 'dim')
+  sshPush(`Connected to ${host}${ip ? `（${ip}）` : ''} · 凭据：子机保存的 SSH 密码（加密存储），免密私钥兜底`, 'dim')
   sshPush(`Last login: ${new Date().toLocaleString('zh-CN', { hour12: false })} from 平台控制台`, 'dim')
   sshPush('输入命令开始操作，快捷命令见上方标签；每条命令将写入审计日志', 'dim')
 }

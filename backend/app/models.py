@@ -237,6 +237,9 @@ class Asset(Base):
     last_restart_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     external_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     zabbix_host: Mapped[str] = mapped_column(String(128), default="")
+    ssh_password_enc: Mapped[str] = mapped_column(
+        String(512), default="", comment="SSH 密码密文（Fernet；配置入口：新增/编辑子机页面）"
+    )
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
 
 

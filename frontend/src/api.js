@@ -120,7 +120,7 @@ export const deployAgent = (id, payload) => http.post(`/assets/${id}/agent/deplo
 export const fetchAgentDeployStatus = (id) => http.get(`/assets/${id}/agent/deploy`)
 export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, payload, { timeout: 20000 })
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
-// SSH 终端：在资产上实时执行一条命令并回显（免密巡检通道，命令/输出即内容）
+// SSH 终端：在资产上实时执行一条命令并回显（凭据：资产保存的 SSH 密码 > 免密巡检私钥兜底）
 export const execAssetCommand = (id, payload) => http.post(`/assets/${id}/exec`, payload, { timeout: 30000 })
 export const runAction = (payload) => http.post('/actions/run', payload)
 export const fetchPlaybooks = () => http.get('/playbooks')

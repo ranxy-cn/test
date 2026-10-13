@@ -62,6 +62,35 @@ def validate_username(username: str) -> list[str]:
     return []
 
 
+# ===== 可逆加密（资产 SSH 密码等落库密文，密钥口径与 AI 配置加密一致） =====
+
+
+def _secret_fernet():
+    """由 AI_ENCRYPT_KEY（或 JWT_SECRET）派生 Fernet，用于敏感凭据加密落库。"""
+    import base64
+    import hashlib
+
+    from cryptography.fernet import Fernet
+
+    s = get_settings()
+    raw = (getattr(s, "ai_encrypt_key", "") or s.jwt_secret or "devops-agent-fallback-key").encode()
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw).digest()))
+
+
+def encrypt_secret(plain: str) -> str:
+    """明文加密为可落库密文；空串原样返回（表示未配置）。"""
+    if not plain:
+        return ""
+    return _secret_fernet().encrypt(plain.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(enc: str) -> str:
+    """密文解密为明文；空串原样返回。解密失败抛 InvalidToken，由调用方兜底。"""
+    if not enc:
+        return ""
+    return _secret_fernet().decrypt(enc.encode("utf-8")).decode("utf-8")
+
+
 # ===== JWT =====
 
 

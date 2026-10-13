@@ -272,7 +272,7 @@
     <!-- 添加母机：SSH 验证 + 自动纳管本机子机 -->
     <el-dialog v-model="addMotherVisible" title="添加母机" width="560">
       <el-alert type="info" :closable="false" class="db-note">
-        提交时将验证 SSH 连通性（用户名 / 密码，密码仅本次验证与部署使用，不落库），
+        提交时将验证 SSH 连通性（用户名 / 密码，密码加密保存，用于 SSH 终端登录与卸载 Agent），
         验证失败不会创建；成功后自动纳管一台「本机子机」并部署自研 Agent，
         母机的在线状态与监控数据均来自该子机的真实上报。
       </el-alert>
@@ -294,7 +294,7 @@
             v-model="motherForm.password"
             type="password"
             show-password
-            placeholder="仅本次验证与部署使用，不落库"
+            placeholder="加密保存，供 SSH 终端使用"
             style="width: 240px"
           />
         </el-form-item>
@@ -366,7 +366,7 @@
     <el-dialog v-model="addChildVisible" title="添加子机（自动部署自研 Agent）" width="560">
       <el-alert type="info" :closable="false" class="db-note">
         平台将 SSH 登录目标机下发自研 Agent：采集 CPU / 内存 / 磁盘 / 负载并主动上报（约 1 分钟），
-        全程无需登录服务器操作。SSH 密码仅本次部署使用，不落库。
+        全程无需登录服务器操作。SSH 密码加密保存，用于 SSH 终端登录与卸载 Agent，可在「编辑资产」中随时更新。
       </el-alert>
       <el-form label-width="130" style="margin-top: 12px">
         <el-form-item label="目标机 IP" required>
@@ -383,7 +383,7 @@
             v-model="addChildForm.password"
             type="password"
             show-password
-            placeholder="仅本次安装使用，不落库"
+            placeholder="加密保存，供 SSH 终端使用"
             style="width: 240px"
           />
         </el-form-item>
@@ -450,6 +450,19 @@
         <el-form-item label="负责人">
           <el-input v-model="editForm.owner" style="width: 200px" />
         </el-form-item>
+        <el-form-item label="SSH 密码">
+          <template #label>
+            <HelpLabel label="SSH 密码" tip="用于 SSH 终端登录与卸载 Agent；Fernet 加密保存，不回显明文。留空表示不修改" />
+          </template>
+          <el-input
+            v-model="editForm.ssh_password"
+            type="password"
+            show-password
+            autocomplete="new-password"
+            :placeholder="editForm.ssh_password_set ? '已保存（留空不修改）' : '未配置，填写后保存即可用终端'"
+            style="width: 220px"
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
@@ -500,12 +513,13 @@
             跳过卸载将遗留服务器上的 Agent 进程与文件，仅建议在服务器已下线/重装时使用
           </div>
         </el-form-item>
-        <el-form-item v-if="childDeleteForm.uninstall" label="SSH 密码" required>
+        <el-form-item v-if="childDeleteForm.uninstall" label="SSH 密码">
           <el-input
             v-model="childDeleteForm.password"
             type="password"
             show-password
-            :placeholder="`服务器 ${childDeleteForm.ip} 的 SSH 密码（仅本次卸载使用，不落库）`"
+            autocomplete="new-password"
+            :placeholder="childDeleteForm.ssh_password_set ? '留空则使用已保存的 SSH 密码卸载' : `服务器 ${childDeleteForm.ip} 的 SSH 密码`"
           />
         </el-form-item>
       </el-form>
@@ -877,7 +891,7 @@ const agentCfgVisible = ref(false)
 // ===== 编辑资产 / 分组 =====
 const editVisible = ref(false)
 const editing = ref(false)
-const editForm = reactive({ id: '', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '' })
+const editForm = reactive({ id: '', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '', ssh_password: '', ssh_password_set: false })
 const groupNames = computed(() => [...new Set(children.value.map((c) => c.group).filter(Boolean))])
 
 // ===== 告警策略（v2：秒制窗口 + P0-P3 级别，默认值与后端 DEFAULT_POLICY 保持一致） =====
@@ -1498,6 +1512,8 @@ function openEdit(row) {
     role: row.role || 'app',
     env: row.env || 'prod',
     owner: row.owner || '',
+    ssh_password: '', // 密码永不回显；留空 = 不修改
+    ssh_password_set: !!row.ssh_password_set,
   })
   editVisible.value = true
 }
@@ -1505,14 +1521,17 @@ function openEdit(row) {
 async function submitEdit() {
   editing.value = true
   try {
-    await updateAsset(editForm.id, {
+    const payload = {
       hostname: editForm.hostname,
       group: editForm.group || '',
       app: editForm.app,
       role: editForm.role,
       env: editForm.env,
       owner: editForm.owner,
-    })
+    }
+    // SSH 密码留空不传（不修改）；填写才提交（后端 Fernet 加密保存）
+    if (editForm.ssh_password) payload.ssh_password = editForm.ssh_password
+    await updateAsset(editForm.id, payload)
     ElMessage.success('已保存')
     editVisible.value = false
     refresh()
@@ -1578,7 +1597,7 @@ async function openChildInstall(c) {
 // ===== 子机删除（可选联动卸载服务器上的自研 agent） =====
 const childDeleteVisible = ref(false)
 const childDeleting = ref(false)
-const childDeleteForm = reactive({ id: '', hostname: '', ip: '', has_provision: false, uninstall: true, password: '' })
+const childDeleteForm = reactive({ id: '', hostname: '', ip: '', has_provision: false, uninstall: true, password: '', ssh_password_set: false })
 
 function openChildDelete(c) {
   Object.assign(childDeleteForm, {
@@ -1588,13 +1607,15 @@ function openChildDelete(c) {
     has_provision: !!c.ip && !!c.provision_status,
     uninstall: !!c.ip && !!c.provision_status,
     password: '',
+    ssh_password_set: !!c.ssh_password_set,
   })
   childDeleteVisible.value = true
 }
 
 async function submitChildDelete() {
-  if (childDeleteForm.uninstall && !childDeleteForm.password) {
-    ElMessage.warning('请输入 SSH 密码，用于卸载服务器上的自研 agent')
+  // 卸载密码：留空时后端自动回退用资产保存的 SSH 密码；两者都没有才拦截
+  if (childDeleteForm.uninstall && !childDeleteForm.password && !childDeleteForm.ssh_password_set) {
+    ElMessage.warning('请输入 SSH 密码，或先在「编辑资产」中保存 SSH 密码')
     return
   }
   childDeleting.value = true
