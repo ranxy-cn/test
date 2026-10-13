@@ -168,6 +168,8 @@ export const uploadKnowledgeDocument = (file) => {
 }
 export const deleteKnowledgeDocument = (id) => http.delete(`/knowledge/documents/${id}`)
 export const sendKnowledgeChat = (message, history = []) => http.post('/knowledge/chat', { message, history }, { timeout: 90000 })
+// 智能数据问答（NL2SQL）：自然语言 → 只读 SQL（表白名单/单库限定）→ AI 解读
+export const sendDataQuery = (question) => http.post('/knowledge/data-query', { question }, { timeout: 90000 })
 
 // ===== AI 日志分析 =====
 export const getAiSettings = () => http.get('/ai/settings')

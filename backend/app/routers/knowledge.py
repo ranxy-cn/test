@@ -156,3 +156,24 @@ def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Dep
         model = "fallback"
         source = "fallback"
     return {"answer": answer, "model": model, "source": source, "knowledge": hits, "runtime": context, "user": current.username}
+
+
+class DataQueryIn(BaseModel):
+    question: str = Field(min_length=1, max_length=1000, description="自然语言数据问题")
+
+
+@router.post("/api/v1/knowledge/data-query", dependencies=[Depends(require_perm("knowledge:chat"))])
+def data_query(body: DataQueryIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
+    """智能数据问答：自然语言 → 只读 SQL（表白名单/单库限定/只读事务）→ AI 解读。"""
+    from app.services import nl2sql
+
+    try:
+        result = nl2sql.run_data_query(db, body.question, operator=current.username)
+    except ValueError as e:
+        raise HTTPException(400, f"SQL 安全审计拦截：{e}")
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    except Exception as e:
+        raise HTTPException(503, f"数据问答暂不可用：{e}")
+    result["user"] = current.username
+    return result

@@ -9,9 +9,9 @@
       <div v-if="!messages.length" class="welcome">
         <div class="bot-mark"><el-icon><Monitor /></el-icon></div>
         <h3>你好，我是新知AI-智能巡检</h3>
-        <p>我可以基于企业运维知识和实时状态，回答例如：</p>
+        <p>{{ dataMode ? '我可以直接查询业务数据库（只读），回答例如：' : '我可以基于企业运维知识和实时状态，回答例如：' }}</p>
         <div class="suggestions">
-          <button v-for="item in suggestions" :key="item" @click="send(item)">
+          <button v-for="item in activeSuggestions" :key="item" @click="send(item)">
             {{ item }}<el-icon><ArrowRight /></el-icon>
           </button>
         </div>
@@ -24,6 +24,23 @@
             <small v-if="item.source">· {{ item.source === 'ai' ? '企业模型' : '状态兜底' }}</small>
           </div>
           <div class="message-text">{{ item.content }}</div>
+          <div v-if="item.data" class="data-block">
+            <div class="data-meta">查询到 {{ item.data.row_count }} 行（最多展示 {{ item.data.rows.length }} 行）</div>
+            <el-table :data="item.data.rows" size="small" max-height="240" class="data-table">
+              <el-table-column
+                v-for="(col, i) in item.data.columns"
+                :key="col + i"
+                :prop="String(i)"
+                :label="col"
+                min-width="110"
+                show-overflow-tooltip
+              />
+            </el-table>
+            <details class="sql-detail">
+              <summary>执行的只读 SQL（安全审计通过）</summary>
+              <code>{{ item.data.sql }}</code>
+            </details>
+          </div>
           <div v-if="item.knowledge?.length" class="citation">
             <el-icon><Collection /></el-icon>
             参考 {{ item.knowledge.length }} 条知识：{{ item.knowledge.map((row) => row.title).join('、') }}
@@ -40,7 +57,11 @@
     </div>
     <div class="quick-bar">
       <span>快捷提问</span>
-      <button v-for="item in suggestions.slice(0, 3)" :key="item" @click="send(item)">{{ item }}</button>
+      <button v-for="item in activeSuggestions.slice(0, 3)" :key="item" @click="send(item)">{{ item }}</button>
+      <span class="mode-switch">
+        <el-switch v-model="dataMode" size="small" />
+        数据问答<small>直连业务库（只读）</small>
+      </span>
     </div>
     <div class="composer">
       <el-input
@@ -49,7 +70,7 @@
         :autosize="{ minRows: 2, maxRows: 5 }"
         maxlength="4000"
         show-word-limit
-        placeholder="描述你的运维问题，或询问当前服务器状态..."
+        :placeholder="dataMode ? '用自然语言查询业务数据，如：每个负责人名下有多少台子机？' : '描述你的运维问题，或询问当前服务器状态...'"
         @keydown.enter.exact.prevent="send()"
       />
       <el-button type="primary" :loading="sending" :disabled="!draft.trim()" @click="send()">
@@ -61,21 +82,29 @@
 </template>
 
 <script setup>
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Collection, Monitor, Promotion } from '@element-plus/icons-vue'
-import { sendKnowledgeChat } from '../api'
+import { sendDataQuery, sendKnowledgeChat } from '../api'
 
 const draft = ref('')
 const sending = ref(false)
 const messages = ref([])
 const messageBox = ref(null)
+const dataMode = ref(false)
 const suggestions = [
   '当前服务器整体状态怎么样？',
   '请分析最近的活动告警并给出处理建议',
   '公司磁盘告警的标准处置规则是什么？',
   '哪些任务单还没有闭环？',
 ]
+const dataSuggestions = [
+  '现在有多少台资产？母机和子机各多少？',
+  '当前各严重级别的异常告警有多少？',
+  '每个负责人名下有多少台机器？',
+  '最近的 AI 分析结论有哪些？',
+]
+const activeSuggestions = computed(() => (dataMode.value ? dataSuggestions : suggestions))
 
 async function scrollBottom() {
   await nextTick()
@@ -90,18 +119,34 @@ async function send(text = '') {
   sending.value = true
   await scrollBottom()
   try {
-    const history = messages.value.slice(-12).map((item) => ({ role: item.role, content: item.content }))
-    const result = (await sendKnowledgeChat(value, history.slice(0, -1))).data
-    messages.value.push({
-      id: `${Date.now()}-a`,
-      role: 'assistant',
-      content: result.answer,
-      source: result.source,
-      knowledge: result.knowledge,
-    })
+    if (dataMode.value) {
+      const result = (await sendDataQuery(value)).data
+      messages.value.push({
+        id: `${Date.now()}-a`,
+        role: 'assistant',
+        content: result.answer,
+        source: result.model === 'llm' ? 'ai' : 'fallback',
+        data: {
+          sql: result.sql,
+          columns: result.columns,
+          rows: (result.rows || []).map((row) => Object.fromEntries(row.map((v, i) => [String(i), v]))),
+          row_count: result.row_count,
+        },
+      })
+    } else {
+      const history = messages.value.slice(-12).map((item) => ({ role: item.role, content: item.content }))
+      const result = (await sendKnowledgeChat(value, history.slice(0, -1))).data
+      messages.value.push({
+        id: `${Date.now()}-a`,
+        role: 'assistant',
+        content: result.answer,
+        source: result.source,
+        knowledge: result.knowledge,
+      })
+    }
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '对话请求失败')
-    messages.value.push({ id: `${Date.now()}-e`, role: 'assistant', content: '对话服务暂时不可用，请稍后重试。' })
+    messages.value.push({ id: `${Date.now()}-e`, role: 'assistant', content: error.response?.data?.detail || '对话服务暂时不可用，请稍后重试。' })
   } finally {
     sending.value = false
     await scrollBottom()
@@ -282,6 +327,48 @@ async function send(text = '') {
 .quick-bar button:hover {
   border-color: var(--brand);
   color: var(--brand);
+}
+.mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.mode-switch small {
+  color: var(--faint);
+  font-size: 11px;
+}
+.data-block {
+  margin-top: 8px;
+  text-align: left;
+}
+.data-meta {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.data-table {
+  border-radius: 8px;
+  width: 100%;
+}
+.sql-detail {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.sql-detail code {
+  display: block;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--ink-2);
+  background: var(--el-fill-color-light);
+  font-size: 11px;
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 .composer {
   display: flex;
