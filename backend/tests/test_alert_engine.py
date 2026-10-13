@@ -50,7 +50,13 @@ def _sample(db, asset_id: str, field: str, value: float, seconds_ago: float, ext
 
 
 def _ev(db, event_id: str) -> AnomalyEvent | None:
-    return db.query(AnomalyEvent).filter_by(event_id=event_id).one_or_none()
+    """按 event_id 前缀取最新一条（新版每次新发生独立成条，id 追加时刻后缀）。"""
+    return (
+        db.query(AnomalyEvent)
+        .filter(AnomalyEvent.event_id.like(f"{event_id}%"))
+        .order_by(AnomalyEvent.id.desc())
+        .first()
+    )
 
 
 def test_breach_full_window_triggers(auth_token, client, db):
@@ -80,8 +86,8 @@ def test_short_burst_does_not_trigger(auth_token, client, db):
     assert _ev(db, "metric-ch-burst-cpu") is None
 
 
-def test_idempotent_recover_and_reopen(auth_token, client, db, monkeypatch):
-    """持续越限不重复建事件；出现正常样本自动恢复；再次越限重开同一事件。"""
+def test_recover_then_retrigger_creates_new(auth_token, client, db, monkeypatch):
+    """持续越限不重复建事件；出现正常样本自动恢复；恢复后再次越限新建一条独立记录。"""
     import app.services.alert_engine as engine_mod
 
     _mk_child(db, "ch-cyc", extra={"alert_policy": _policy(cpu_threshold=50, cpu_window_seconds=60)})
@@ -91,10 +97,10 @@ def test_idempotent_recover_and_reopen(auth_token, client, db, monkeypatch):
     ev = _ev(db, "metric-ch-cyc-cpu")
     assert ev is not None and ev.status == "abnormal"
 
-    # 持续越限：再扫描不重复触发
+    # 持续越限：再扫描不重复建条
     stats = run_alert_cycle(db)
     assert stats["triggered"] == 0
-    assert db.query(AnomalyEvent).filter_by(event_id="metric-ch-cyc-cpu").count() == 1
+    assert db.query(AnomalyEvent).filter(AnomalyEvent.event_id.like("metric-ch-cyc-cpu%")).count() == 1
 
     # 窗口内出现正常样本 → 自动恢复
     _sample(db, "ch-cyc", "cpu", 10, 10)
@@ -103,7 +109,7 @@ def test_idempotent_recover_and_reopen(auth_token, client, db, monkeypatch):
     ev = _ev(db, "metric-ch-cyc-cpu")
     assert ev.status == "recovered" and ev.recovered_at is not None
 
-    # 时间推进后 agent 继续上报越限样本 → 重开同一事件（不新建）
+    # 时间推进后 agent 继续上报越限样本 → 新建一条独立告警记录
     future = utcnow() + timedelta(minutes=2)
     monkeypatch.setattr(engine_mod, "utcnow", lambda: future)
     db.add(SystemMetricSample(asset_id="ch-cyc", ts=future - timedelta(seconds=5), cpu=90))
@@ -111,8 +117,16 @@ def test_idempotent_recover_and_reopen(auth_token, client, db, monkeypatch):
     db.commit()
     stats = run_alert_cycle(db)
     assert stats["triggered"] >= 1
-    assert db.query(AnomalyEvent).filter_by(event_id="metric-ch-cyc-cpu").count() == 1
-    assert _ev(db, "metric-ch-cyc-cpu").status == "abnormal"
+    evs = (
+        db.query(AnomalyEvent)
+        .filter(AnomalyEvent.event_id.like("metric-ch-cyc-cpu%"))
+        .order_by(AnomalyEvent.id)
+        .all()
+    )
+    assert len(evs) == 2
+    assert evs[0].status == "recovered"  # 上一轮告警保持已恢复
+    assert evs[1].status == "abnormal"  # 本轮为全新记录
+    assert evs[1].event_id != evs[0].event_id
 
 
 def test_child_without_own_policy_uses_mother(auth_token, client, db):

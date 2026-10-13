@@ -196,7 +196,12 @@ def test_alert_engine_payload_carries_attribution(db):
     db.commit()
     stats = run_alert_cycle(db)
     assert stats.get("triggered", 0) >= 1
-    ev = db.scalar(select(AnomalyEvent).where(AnomalyEvent.event_id == f"metric-{asset.id}-cpu"))
+    ev = db.scalar(
+        select(AnomalyEvent)
+        .where(AnomalyEvent.event_id.like(f"metric-{asset.id}-cpu%"))
+        .order_by(AnomalyEvent.id.desc())
+        .limit(1)
+    )
     assert ev is not None
     payload = ev.payload or {}
     assert payload.get("top_processes") == procs

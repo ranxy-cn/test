@@ -4,7 +4,8 @@
 视为持续越限；瞬间冲高回落不触发。事件型规则（OOM/进程消失/端口探活失败）
 为「窗口内出现过即异常、整窗干净自动恢复」。
 级别体系 P0~P3（severity 直接存储级别值，前端按级别着色：P0 红/P1 橙/P2 黄/P3 蓝灰）。
-事件写入 anomaly_events（event_id=metric-<asset_id>-<rule_key> 幂等），由
+事件写入 anomaly_events（每次新发生独立成条：event_id=metric-<asset_id>-<rule_key>-<时刻>；
+持续 abnormal 期间复用同一行刷新，恢复后再触发则新建一条告警记录），由
 celery beat 每分钟调用 run_alert_cycle。规则来源：资产生效策略（子机自有 >
 母机继承 > 平台默认），策略变更后引擎下轮扫描即用新策略，无需重启。
 """
@@ -65,6 +66,11 @@ def _fmt(v) -> str:
     return str(v)
 
 
+def _like_escape(s: str) -> str:
+    """LIKE 模式转义（% _ \\），供按 event_id 前缀定位事件使用。"""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _upsert_event(
     db: Session,
     stats: dict,
@@ -91,7 +97,10 @@ def _upsert_event(
     extra: dict | None = None,
     attribution: dict | None = None,
 ) -> None:
-    """统一事件写入：breach 建/重开/刷新事件；不越限或规则禁用时自动恢复。
+    """统一事件写入：breach 建/刷新事件；不越限或规则禁用时自动恢复。
+
+    每次新发生独立成条：恢复后再触发会新建一条告警记录（event_id 追加时刻后缀）；
+    持续 abnormal 期间复用同一行，仅刷新 latest / 级别 / 重复提醒，不重复建条。
 
     重复提醒：事件持续 abnormal 期间，每满 notify_minutes 分钟在原事件上
     重复提醒一次（repeat_count +1、last_notified_at 刷新），不产生新事件；
@@ -99,10 +108,17 @@ def _upsert_event(
 
     上下文增强：payload 携带 window_series（窗口内样本值序列 [(ts, val)]，最多
     60 点，便于回看告警前后曲线）与 extra（规则特有上下文，如 OOM 被杀进程明细）。
-    首次触发/恢复后再次触发时登记 diag_ids，扫描提交后自动 SSH 采集进程快照。
+    每次新发生时登记 diag_ids，扫描提交后自动 SSH 采集进程快照。
     """
-    event_id = f"metric-{asset.id}-{rule_key}"
-    ev = db.scalar(select(AnomalyEvent).where(AnomalyEvent.event_id == event_id))
+    # 定位该资产+规则当前「打开中」的告警（任意代次，含旧版无时间后缀的幂等键）
+    prefix = f"metric-{_like_escape(str(asset.id))}-{_like_escape(rule_key)}%"
+    ev = db.scalar(
+        select(AnomalyEvent)
+        .where(AnomalyEvent.event_id.like(prefix, escape="\\"), AnomalyEvent.status == "abnormal")
+        .order_by(AnomalyEvent.id.desc())
+        .limit(1)
+    )
+    new_event_id = f"metric-{asset.id}-{rule_key}-{now.strftime('%Y%m%d%H%M%S')}"
     payload = {
         "kind": "rule_breach",
         "rule_id": rule_key,
@@ -135,8 +151,9 @@ def _upsert_event(
         else f"{asset.hostname or asset.id} {detail}"
     )
     if ev is None:
+        # 恢复后再触发 / 首次触发：新建一条独立告警记录
         ev = AnomalyEvent(
-            event_id=event_id,
+            event_id=new_event_id,
             hostid="",
             host=asset.id,
             hostname=asset.hostname or asset.id,
@@ -152,25 +169,10 @@ def _upsert_event(
         db.flush()  # 取自增 id，供自动诊断采集
         stats["triggered"] += 1
         stats.setdefault("diag_ids", []).append(ev.id)
-        stats.setdefault("recovery_ids", []).append(ev.id)
-        log.warning(
-            "告警触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
-            asset.id, rule_key, level, latest, threshold, win, message,
-        )
-    elif ev.status != "abnormal":
-        ev.status = "abnormal"
-        ev.recovered_at = None
-        ev.last_seen_at = now
-        ev.severity = level
-        ev.message = message
-        ev.payload = {**payload, "repeat_count": 1, "notify_minutes": notify_minutes, "last_notified_at": now.isoformat()}
-        db.flush()
-        stats["triggered"] += 1
-        stats.setdefault("diag_ids", []).append(ev.id)
         stats.setdefault("ai_ids", []).append(ev.id)
         stats.setdefault("recovery_ids", []).append(ev.id)
         log.warning(
-            "告警再次触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
+            "告警触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
             asset.id, rule_key, level, latest, threshold, win, message,
         )
     else:
