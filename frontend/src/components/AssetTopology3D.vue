@@ -55,8 +55,9 @@
 
 <script setup>
 // 资产关联 3D 拓扑（WebGL / three.js 版）：
-// 母机 = 机房机柜（半透明柜体 + 状态棱线），子机 = 机柜内按业务分组分层堆叠的
-// 1U 服务器单元（含状态指示灯），分组间有隔板与侧挂铭牌 —— 关系即「母机(柜) → 分组(层) → 子机(单元)」。
+// 场景按母机业务分组划分独立区域（一区一组：品牌色地块 + 发光描边 + 大号分组铭牌，互不重叠），
+// 区域内每台母机 = 机房机柜（半透明柜体 + 状态棱线），柜内子机按业务子分组分层堆叠为
+// 1U 服务器单元（含状态指示灯）—— 关系即「分组(区) → 母机(柜) → 子分组(层) → 子机(单元)」。
 // 手法参考 threejs-demo（Viewer/BoxHelper/Popover 模式），无外部模型、纯代码生成。
 // 性能策略：按需渲染（静止不提交 GPU）+ 几何/材质全场景共享缓存 + Phong 替代 PBR
 // + 像素比封顶 1.5 + 数据未变跳过重建 + WebGL2 检测降级；相机不自动旋转，仅用户交互时变化。
@@ -85,6 +86,9 @@ const RACK_D = 3.2 // 机柜深
 const UNIT_H = 0.8 // 服务器单元高（1U 意象）
 const UNIT_GAP = 0.18
 const GROUP_GAP = 0.42 // 分组层间隔
+const ZONE_MARGIN_W = 10 // 区域地块超出机柜包络的留白
+const ZONE_MARGIN_D = 10
+const ZONE_GAP = 9 // 区域之间的净空隙（地块边缘到边缘）
 
 const sceneRef = ref(null)
 const canvasHost = ref(null)
@@ -123,6 +127,16 @@ const STATE_COLORS = {
   down: { dark: 0xff453a, light: 0xff3b30 },
 }
 const stateColor = (state) => (STATE_COLORS[state] || STATE_COLORS.ok)[props.dark ? 'dark' : 'light']
+
+/* 分组区域配色（按区域序号循环取色，与节点状态色解耦） */
+const ZONE_ACCENTS = [
+  { dark: 0x409cff, light: 0x0071e3 },
+  { dark: 0x30d158, light: 0x1f9d4d },
+  { dark: 0xbf5af2, light: 0x8a3fc0 },
+  { dark: 0xff9f0a, light: 0xd97400 },
+  { dark: 0x64d2ff, light: 0x0088bd },
+  { dark: 0xff6482, light: 0xd93567 },
+]
 
 /* ===== 数据铺平：母机 + 子机（截断展示上限） ===== */
 const SCORE_WARN = 70
@@ -211,6 +225,7 @@ function buildSharedAssets() {
     tower: trackGeo(new THREE.BoxGeometry(2.4, 3.6, 2.4)),
     platform: trackGeo(new THREE.BoxGeometry(RACK_W + 3.4, 0.35, RACK_D + 3.4)),
     divider: trackGeo(new THREE.BoxGeometry(RACK_W - 0.8, 0.05, RACK_D - 0.7)),
+    zoneBar: trackGeo(new THREE.BoxGeometry(1, 0.12, 0.34)), // 区域描边条（按边长 scale.x 拉伸）
     groundPlane: trackGeo(new THREE.PlaneGeometry(220, 220)),
   }
   // MeshPhongMaterial 替代 MeshStandardMaterial：省掉 PBR BRDF 逐像素开销，大画布下更省 GPU
@@ -237,6 +252,11 @@ function buildSharedAssets() {
     MAT.shellEdge[s] = trackMat(new THREE.LineBasicMaterial({ color: c, transparent: true, opacity: 0.9 }))
     MAT.platEdge[s] = trackMat(new THREE.LineBasicMaterial({ color: c, transparent: true, opacity: 0.55 }))
   }
+  // 分组区域配色：地块淡色底 + 发光描边（按区域序号取色，与状态色解耦）
+  MAT.zoneTint = ZONE_ACCENTS.map((a) => trackMat(new THREE.MeshBasicMaterial({
+    color: props.dark ? a.dark : a.light, transparent: true, opacity: props.dark ? 0.08 : 0.12, depthWrite: false,
+  })))
+  MAT.zoneEdge = ZONE_ACCENTS.map((a) => trackMat(new THREE.MeshBasicMaterial({ color: props.dark ? a.dark : a.light })))
 }
 
 /* WebGL2 检测：three r186 仅支持 WebGL2，老浏览器（仅 WebGL1）优雅降级为空态 */
@@ -271,7 +291,7 @@ function initScene() {
   controls.dampingFactor = 0.06
   controls.enablePan = false
   controls.minDistance = 14
-  controls.maxDistance = 110
+  controls.maxDistance = 180 // 多分区大场景下自动取景距离更远，放宽钳制
   controls.maxPolarAngle = Math.PI * 0.46
   // 不自动旋转：相机仅在用户拖拽/缩放时变化，配合按需渲染实现静止时零 GPU
 
@@ -311,7 +331,7 @@ function initScene() {
 
 /* ===== 地面：素面板 + 网格线（同 demo Floors 手法；几何/材质走共享缓存） ===== */
 function buildGround() {
-  const grid = new THREE.GridHelper(140, 56, theme().gridCenter, theme().grid)
+  const grid = new THREE.GridHelper(200, 80, theme().gridCenter, theme().grid)
   grid.material.transparent = true
   grid.material.opacity = props.dark ? 0.5 : 0.65
   const plane = new THREE.Mesh(GEO.groundPlane, MAT.ground)
@@ -372,20 +392,63 @@ function buildContent() {
   const mothers = (props.mothers || []).slice(0, MAX_MOTHERS)
   if (!mothers.length) { frameScene(); applyHighlight(); requestRender(); return }
 
-  // 机柜网格布点
-  const cols = mothers.length <= 1 ? 1 : mothers.length <= 4 ? mothers.length : Math.ceil(mothers.length / 2)
-  const rows = Math.ceil(mothers.length / cols)
-  const originX = (-(cols - 1) * POD_SPACING) / 2
-  const originZ = (-(rows - 1) * POD_SPACING) / 2
-
-  mothers.forEach((mother, mi) => {
-    const px = originX + (mi % cols) * POD_SPACING
-    const pz = originZ + Math.floor(mi / cols) * POD_SPACING
-    buildPod(mother, px, pz)
+  // 按母机业务分组划分独立区域：一组一区，空间上互不重叠
+  const dMap = new Map()
+  for (const m of mothers) {
+    const g = m.group || '未分组'
+    if (!dMap.has(g)) dMap.set(g, [])
+    dMap.get(g).push(m)
+  }
+  // 预计算各区域包络：列/行间距取全域最大包络 + 固定净空，任意区域组合都不重叠
+  const zones = [...dMap.entries()].map(([gName, members]) => {
+    const cols = Math.min(members.length, 3)
+    return {
+      gName, members,
+      zoneW: (cols - 1) * POD_SPACING + RACK_W + ZONE_MARGIN_W,
+      zoneD: (Math.ceil(members.length / cols) - 1) * POD_SPACING + RACK_D + ZONE_MARGIN_D,
+    }
+  })
+  const pitchX = Math.max(...zones.map((z) => z.zoneW)) + ZONE_GAP
+  const pitchZ = Math.max(...zones.map((z) => z.zoneD)) + ZONE_GAP
+  const dCols = zones.length <= 1 ? 1 : zones.length <= 4 ? 2 : 3
+  const baseX = (-(dCols - 1) * pitchX) / 2
+  const baseZ = (-(Math.ceil(zones.length / dCols) - 1) * pitchZ) / 2
+  zones.forEach((zone, zi) => {
+    buildDistrict(zone, baseX + (zi % dCols) * pitchX, baseZ + Math.floor(zi / dCols) * pitchZ, zi)
   })
   frameScene()
   applyHighlight() // 重建后恢复外部联动描边
   requestRender()
+}
+
+/* 分组区域：品牌色淡色地块 + 发光描边 + 大号分组铭牌；区域内母机机柜按小网格排布 */
+function buildDistrict(zone, cx, cz, zi) {
+  const accent = (props.dark ? ZONE_ACCENTS[zi % ZONE_ACCENTS.length].dark : ZONE_ACCENTS[zi % ZONE_ACCENTS.length].light)
+  const { gName, members, zoneW, zoneD } = zone
+  const cols = Math.min(members.length, 3)
+  const baseX = cx - ((cols - 1) * POD_SPACING) / 2
+  const baseZ = cz - ((Math.ceil(members.length / cols) - 1) * POD_SPACING) / 2
+  members.forEach((m, i) => {
+    buildPod(m, baseX + (i % cols) * POD_SPACING, baseZ + Math.floor(i / cols) * POD_SPACING)
+  })
+
+  const tint = new THREE.Mesh(new THREE.PlaneGeometry(zoneW, zoneD), MAT.zoneTint[zi % MAT.zoneTint.length])
+  tint.rotation.x = -Math.PI / 2
+  tint.position.set(cx, 0.02, cz)
+  tint.renderOrder = 1
+  contentGroup.add(tint)
+
+  const edge = MAT.zoneEdge[zi % MAT.zoneEdge.length]
+  const mkBar = (len) => { const b = new THREE.Mesh(GEO.zoneBar, edge); b.scale.x = len; return b }
+  const barN = mkBar(zoneW); barN.position.set(cx, 0.05, cz - zoneD / 2)
+  const barS = mkBar(zoneW); barS.position.set(cx, 0.05, cz + zoneD / 2)
+  const barW = mkBar(zoneD); barW.position.set(cx - zoneW / 2, 0.05, cz); barW.rotation.y = Math.PI / 2
+  const barE = mkBar(zoneD); barE.position.set(cx + zoneW / 2, 0.05, cz); barE.rotation.y = Math.PI / 2
+  contentGroup.add(barN, barS, barW, barE)
+
+  const label = makeLabelSprite(short(gName, 10), { size: 46, accent: `#${accent.toString(16).padStart(6, '0')}` })
+  label.position.set(cx, 1.5, cz + zoneD / 2 + 2.4)
+  contentGroup.add(label)
 }
 
 function buildPod(mother, px, pz) {
@@ -503,6 +566,11 @@ function frameScene() {
   camera.position.set(extent * 0.72, extent * 0.62, extent * 0.86)
   controls.target.set(0, Math.max(1.5, extentY * 0.35), 0)
   controls.update()
+  // 雾随场景尺度放大：多分区大场景下远端区域不被雾吞掉
+  const t = theme()
+  const fogScale = Math.max(1, extent / 60)
+  scene.fog.near = t.fogNear * fogScale
+  scene.fog.far = t.fogFar * fogScale
 }
 
 /* ===== 主题切换：背景/雾/网格/灯光/铭牌重建 ===== */
