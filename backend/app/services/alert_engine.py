@@ -170,6 +170,7 @@ def _upsert_event(
         stats["triggered"] += 1
         stats.setdefault("diag_ids", []).append(ev.id)
         stats.setdefault("ai_ids", []).append(ev.id)
+        stats.setdefault("notify_ids", []).append(ev.id)
         stats.setdefault("recovery_ids", []).append(ev.id)
         log.warning(
             "告警触发 asset=%s rule=%s level=%s latest=%s threshold=%s window=%ss msg=%s",
@@ -456,6 +457,23 @@ def run_alert_cycle(db: Session) -> dict:
                 db.commit()
                 stats["ai_dispatched"] = dispatched
                 log.info("AI 日志分析已派发 count=%s", dispatched)
+    # 告警 → 负责人推送联动：向资产负责人配置的渠道推送告警信息（AI 分析完成后另行推送）；
+    # 单条失败不影响其他告警与其他渠道，推送异常不影响扫描主流程。
+    notify_ids = stats.get("notify_ids") or []
+    if notify_ids:
+        from app.services import owner_notify
+
+        notified = 0
+        for aid in notify_ids:
+            try:
+                if owner_notify.notify_alert(db, aid):
+                    notified += 1
+            except Exception:
+                db.rollback()
+                log.exception("负责人告警推送失败 anomaly_id=%s", aid)
+        if notified:
+            db.commit()
+            stats["owner_notified"] = notified
     # 告警 → 恢复任务联动：触发生成任务（命中启用脚本的低风险项后台自动执行），
     # 告警恢复自动关闭任务（前端默认隐藏未结之外的状态，即「恢复时消失」）。
     recovery_ids = stats.get("recovery_ids") or []

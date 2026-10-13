@@ -43,6 +43,8 @@ bcrypt(rounds=12)；密码策略 8-64 位含大小写数字；JWT HS256（iss/au
 - **双目录**：`versions/`（18 个 .py，0001~0014 语义编号 + 4 个 hash 编号）与 `ddl/`（对应 .sql **权威 DDL 文档**）
 - **0013_ai_log_analysis**：anomaly_events 加 `ai_status` 列 + 建 `ai_analyses`（3 索引）/`ai_audit_logs`（4 索引），InnoDB utf8mb4；sqlite 测试库跳过走 create_all
 - **0015_asset_ssh_password**：assets 加 `ssh_password_enc`（String 512 NOT NULL DEFAULT ''，Fernet 密文）；存量资产空串=未配置，行为不变
+- **0016_owner_contacts**：建 `owner_contacts`（负责人联系人：name 唯一索引、phone/email/dingtalk_webhook/feishu_webhook/wecom_webhook 默认空串、channels JSON 多选渠道、updated_at），InnoDB utf8mb4；sqlite 测试库跳过走 create_all；模型 `OwnerContact`（Asset 类之后），api.py `upsert_contact` 按 owner 姓名与资产提交同事务落库
+- **config.py 新增**：`smtp_host/port(465)/user/password/sender/use_ssl(True)`（邮箱推送，未配置降级失败留痕）、`sms_provider=""`（短信 stub 开关：空=未对接，消息生成+留痕照走）
 - **四步强流程**（README 定死）：改模型（字段带 comment）→ 写迁移（编号顺延）→ 更新 ddl/ SQL（每字段/每表必须 COMMENT）→ 登记迭代历史表
 - `env.py`：sys.path 注入 backend/ 后 `from app import models` 注册全部表；URL 优先 alembic.ini（database.py 会 set_main_option），否则 DATABASE_URL
 

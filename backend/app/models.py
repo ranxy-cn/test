@@ -243,6 +243,25 @@ class Asset(Base):
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class OwnerContact(Base):
+    """负责人通知联系人：资产 owner → 推送渠道配置（姓名唯一，资产提交时 upsert）。
+
+    channels 至少一项：sms（电话短信，供应商对接预留）| email | dingtalk | feishu | wecom。
+    """
+
+    __tablename__ = "owner_contacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    phone: Mapped[str] = mapped_column(String(32), default="", comment="电话/短信接收号码")
+    email: Mapped[str] = mapped_column(String(128), default="")
+    dingtalk_webhook: Mapped[str] = mapped_column(String(512), default="", comment="钉钉自定义机器人 webhook")
+    feishu_webhook: Mapped[str] = mapped_column(String(512), default="", comment="飞书自定义机器人 webhook")
+    wecom_webhook: Mapped[str] = mapped_column(String(512), default="", comment="企业微信群机器人 webhook")
+    channels: Mapped[list] = mapped_column(JSON, default=list, comment="启用的推送渠道列表")
+    updated_at: Mapped[datetime] = mapped_column(TZDateTime, default=utcnow, onupdate=utcnow)
+
+
 class AppSetting(Base):
     """系统级键值配置（如子机 agent 全局默认采集/推送配置）。"""
 

@@ -183,6 +183,28 @@ def export_assets(db: Session = Depends(get_db)):
     )
 
 
+@router.get("/api/v1/assets/owner-contacts", dependencies=[Depends(require_perm("assets:read"))])
+def list_owner_contacts(q: str = "", db: Session = Depends(get_db)):
+    """负责人通知联系人列表（新增/编辑子机页面的负责人联想与渠道回填）。"""
+    from app.services import owner_notify as owner_notify_svc
+
+    rows = owner_notify_svc.list_contacts(db, q=q)
+    return {
+        "items": [
+            {
+                "name": r.name,
+                "phone": r.phone,
+                "email": r.email,
+                "dingtalk_webhook": r.dingtalk_webhook,
+                "feishu_webhook": r.feishu_webhook,
+                "wecom_webhook": r.wecom_webhook,
+                "channels": r.channels or [],
+            }
+            for r in rows
+        ]
+    }
+
+
 class AssetImportResult(BaseModel):
     created: int = 0
     updated: int = 0
@@ -847,6 +869,20 @@ def mother_group_options(mother_id: str, db: Session = Depends(get_db)):
     return {"items": items}
 
 
+class OwnerNotifyIn(BaseModel):
+    """负责人推送渠道配置：channels 可多选（电话短信/邮箱/钉钉/飞书/企业微信，至少一项）。
+
+    所选渠道的接收地址必填（校验在服务层 validate_notify_payload，便于返回中文业务提示）。
+    """
+
+    channels: list[str] = Field(default_factory=list, max_length=8)
+    phone: str = Field(default="", max_length=32)
+    email: str = Field(default="", max_length=128)
+    dingtalk_webhook: str = Field(default="", max_length=512)
+    feishu_webhook: str = Field(default="", max_length=512)
+    wecom_webhook: str = Field(default="", max_length=512)
+
+
 class AssetUpdateIn(BaseModel):
     """资产编辑：基础信息 + 业务分组（group 传空串表示移出分组）。
 
@@ -862,6 +898,8 @@ class AssetUpdateIn(BaseModel):
     custom_groups: list[str] | None = None
     # SSH 密码三态：None=不修改（前端留空不传）；空串=清除；非空=加密保存
     ssh_password: str | None = Field(default=None, max_length=128)
+    # 负责人推送渠道配置：None=不修改；提供时按姓名 upsert（校验至少一渠道+地址必填）
+    owner_notify: OwnerNotifyIn | None = None
 
 
 @router.patch("/api/v1/assets/{asset_id}", dependencies=[Depends(require_perm("assets:write"))])
@@ -895,6 +933,16 @@ def update_asset(asset_id: str, body: AssetUpdateIn, db: Session = Depends(get_d
     if body.ssh_password is not None:
         # 三态语义：空串=清除已保存密码；非空=加密保存（编辑子机页面的 SSH 密码配置入口）
         a.ssh_password_enc = encrypt_secret(body.ssh_password) if body.ssh_password else ""
+    if body.owner_notify is not None:
+        # 负责人必填（前端必填+此处兜底）；推送配置校验通过后按姓名 upsert
+        from app.services import owner_notify as owner_notify_svc
+
+        if not (a.owner or "").strip() or not (body.owner or "").strip():
+            raise HTTPException(400, "负责人必填")
+        _chans, err = owner_notify_svc.validate_notify_payload(body.owner_notify.model_dump())
+        if err:
+            raise HTTPException(400, err)
+        owner_notify_svc.upsert_contact(db, body.owner, body.owner_notify.model_dump())
     db.commit()
     return _asset_row(a)
 
@@ -1586,9 +1634,11 @@ class AssetProvisionIn(BaseModel):
     app: str = Field(default="", max_length=64)
     role: str = Field(default="app", max_length=64)
     env: str = Field(default="prod", max_length=32)
-    owner: str = Field(default="", max_length=64)
+    owner: str = Field(min_length=1, max_length=64, description="负责人必填：告警时向其推送渠道发送告警与 AI 分析")
     group: str = Field(default="", max_length=64)
     mother_id: str = Field(default="", max_length=64, description="归属母机；空=默认母机")
+    # 负责人推送渠道配置（可多选，至少一项）；提交时按姓名 upsert 到 owner_contacts
+    owner_notify: OwnerNotifyIn | None = None
 
 
 @router.post("/api/v1/assets/provision")
@@ -1681,6 +1731,14 @@ def provision_asset(
     # 签发 agent 令牌（上报认证用）
     token = _secrets.token_urlsafe(24)
     asset.extra = {**(asset.extra or {}), "agent_token": token}
+    # 负责人推送渠道：校验（至少一渠道+地址必填）后按姓名 upsert，与资产同事务落库
+    if body.owner_notify is not None:
+        from app.services import owner_notify as owner_notify_svc
+
+        _chans, err = owner_notify_svc.validate_notify_payload(body.owner_notify.model_dump())
+        if err:
+            raise HTTPException(400, err)
+        owner_notify_svc.upsert_contact(db, body.owner, body.owner_notify.model_dump())
     db.add(asset)
     db.commit()
 
@@ -1825,6 +1883,19 @@ def zabbix_webhook(
     except Exception:
         db.rollback()
         log.exception("恢复任务联动失败 event_id=%s", anomaly.event_id)
+
+    # 告警 → 负责人推送联动：首次异常向资产负责人渠道推送告警信息（AI 分析完成另行推送）
+    owner_notified = False
+    if not recovered and not duplicate:
+        try:
+            from app.services import owner_notify
+
+            owner_notified = bool(owner_notify.notify_alert(db, anomaly.id))
+            if owner_notified:
+                db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("负责人告警推送失败 anomaly_id=%s", anomaly.id)
 
     ticket_out = None
     skipped = False

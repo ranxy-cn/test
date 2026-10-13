@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     ansible_timeout_seconds: int = 120
     ansible_host_key_checking: bool = True
     notify_webhook_url: str = ""
+    # 负责人告警推送：邮箱走 SMTP（未配置时邮箱渠道降级失败并记录原因）；
+    # 电话短信渠道正常生成消息，sms_provider 为空表示供应商未对接（跳过实际发送，记录留痕）。
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_sender: str = ""
+    smtp_use_ssl: bool = True
+    sms_provider: str = ""  # 空=供应商未对接（stub）；预留 aliyun/tencent 等接入点
     # 真实 CPU 压测工具：仅服务器部署时打开
     stress_tools_enabled: bool = False
     stress_max_seconds: int = 1200

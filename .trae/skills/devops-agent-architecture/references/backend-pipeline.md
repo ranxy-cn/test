@@ -12,6 +12,7 @@
 - **alert_policy.py**：P0-P3 级别（P0 红 / P1 橙 / P2 黄 / P3 蓝灰）；`DEFAULT_POLICY`（cpu/mem 90% 300s=P1、load 1.5；process/port 默认 P0 但 enabled=False）；优先级 子机>母机>平台默认；v2 秒制窗口兼容 v1 分钟×60
 - **locks.py**：`ResourceLock` 以 asset_id 为主键的单资产互斥锁；TTL 默认 120s 过期自动清理；heartbeat 续期；冲突 → 排队事件+审计
 - **notify.py**：Inbox / Log / Webhook 三实现，`build_notifiers`（始终 inbox+log，配置 NOTIFY_WEBHOOK_URL 才加 webhook）；事件五类：ticket_created / pending_approval / recovered / escalated / lock_queued
+- **owner_notify.py**（负责人告警推送，2026-10 新增）：`owner_contacts` 联系人按资产 owner 姓名匹配，渠道 `sms/email/dingtalk/feishu/wecom` 多选。`notify_alert(db, anomaly_id)` 新告警推送（级别/主机/告警/负责人/value/threshold + 「AI 分析完成后另行推送」）；`notify_ai_analysis(db, anomaly_id)` AI done 后推送（结论/诊断截 400/建议前 3 条）；`_dispatch` 按渠道顺序逐个 try、单渠道失败不影响其他、逐渠道写 `notifications` 留痕（kind=owner_alert/owner_ai_analysis，channel=owner-{渠道}，payload.notify={ok,reason}）。短信 `_send_sms` 为 stub（`SMS_PROVIDER` 空返回 ok=True「短信供应商未对接，消息已生成待发送」），消息生成与留痕逻辑完整；邮箱走 SMTP（未配置降级失败留痕）；钉钉/飞书/企微 webhook httpx 5s。**三个触发点**：alert_engine.evaluate 尾部新事件、zabbix webhook 首次异常（duplicate/恢复不推）、ai_analyzer.run_analysis 成功 done 后
 - **cooldowns.py**：ActionFailure 熔断表；`action_fail_cooldown_violated` 按默认 1800s 判定
 - **agent_deployer.py**：SSH 下发自研 agent（py/go）。流程=连 SSH → sudo 探测 → py 版检测 python3≥3.7（可自动安装）→ sftp 原子上传 → pkill 旧进程 → `pty=False` nohup setsid 拉起（PTY 会话关闭会杀子进程）→ 10s 内等首帧上报验证。进度写 `asset.extra["agent_deploy"]`
 - **provision.py**：纯 SSH 远程执行库（连接/PTY 流式日志/sudo 探测）；`asset_id_for_ip` 生成 `node-<ip>-<port>`；ProvisionError 可读错误转译

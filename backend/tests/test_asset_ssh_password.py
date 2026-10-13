@@ -81,7 +81,19 @@ def test_provision_saves_encrypted_password(auth_token, client, db, api_mod, mon
     monkeypatch.setattr(api_mod, "_spawn_agent_deploy", lambda aid, **kw: None)
     r = client.post(
         "/api/v1/assets/provision",
-        json={"ip": "10.20.0.9", "port": 22, "username": "root", "password": "SshPass#123"},
+        json={
+            "ip": "10.20.0.9",
+            "port": 22,
+            "username": "root",
+            "password": "SshPass#123",
+            "owner": "张三",
+            "owner_notify": {
+                "channels": ["sms", "email", "dingtalk"],
+                "phone": "13800000000",
+                "email": "zs@example.com",
+                "dingtalk_webhook": "https://oapi.dingtalk.com/robot/send?access_token=x",
+            },
+        },
         headers=_h(auth_token),
     )
     assert r.status_code == 200
@@ -89,6 +101,15 @@ def test_provision_saves_encrypted_password(auth_token, client, db, api_mod, mon
     row = db.get(Asset, aid)
     assert row.ssh_password_enc and row.ssh_password_enc != "SshPass#123"
     assert decrypt_secret(row.ssh_password_enc) == "SshPass#123"
+    assert row.owner == "张三"
+
+    # 负责人推送配置已按姓名 upsert 到 owner_contacts
+    from app.models import OwnerContact
+
+    contact = db.query(OwnerContact).filter(OwnerContact.name == "张三").first()
+    assert contact is not None
+    assert contact.channels == ["sms", "email", "dingtalk"]
+    assert contact.phone == "13800000000"
 
     detail = client.get(f"/api/v1/assets/{aid}", headers=_h(auth_token)).json()
     assert detail["ssh_password_set"] is True

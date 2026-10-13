@@ -439,6 +439,16 @@ def run_analysis(anomaly_id: int, operator: str = "system") -> AiAnalysis | None
         db.commit()
         log.info("AI 日志分析完成 anomaly_id=%s status=%s model=%s latency=%sms blocked=%s",
                  anomaly_id, analysis.status, model, latency, blocked)
+        # AI 分析完成 → 负责人推送分析结论（独立事务语义：推送失败不影响分析结果落库）
+        if analysis.status == "done":
+            try:
+                from app.services import owner_notify
+
+                owner_notify.notify_ai_analysis(db, anomaly_id, analysis.id)
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                log.exception("AI 分析结果推送失败 anomaly_id=%s", anomaly_id)
         return analysis
     except Exception:
         db.rollback()

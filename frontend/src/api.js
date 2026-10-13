@@ -98,6 +98,8 @@ export const importAssets = (file) => {
   return http.post('/assets/import', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 })
 }
 export const provisionAsset = (payload) => http.post('/assets/provision', payload)
+// 负责人通知联系人（新增/编辑子机页面：负责人联想 + 渠道配置回填）
+export const listOwnerContacts = (q = '') => http.get('/assets/owner-contacts', { params: q ? { q } : {} })
 export const fetchAssetProvision = (id) => http.get(`/assets/${id}/provision`)
 // 删除子机：uninstall=true 时后端先 SSH 卸载服务器上的自研 agent 再删台账
 export const removeAsset = (id, payload = {}) => http.post(`/assets/${id}/remove`, payload, { timeout: 240000 })

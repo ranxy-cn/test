@@ -406,8 +406,24 @@
         <el-form-item label="业务分组">
           <el-input v-model="addChildForm.group" placeholder="可留空" style="width: 240px" />
         </el-form-item>
-        <el-form-item label="负责人">
-          <el-input v-model="addChildForm.owner" placeholder="可留空" style="width: 240px" />
+        <el-form-item label="负责人" required>
+          <template #label>
+            <HelpLabel label="负责人" tip="必填：该子机出现告警时，向负责人的推送渠道发送告警与 AI 分析" />
+          </template>
+          <el-select
+            v-model="addChildForm.owner"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择已有负责人或输入新姓名"
+            style="width: 240px"
+            @change="applyContactProfile(addChildForm)"
+          >
+            <el-option v-for="c in ownerContacts" :key="c.name" :label="c.name" :value="c.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="推送方式">
+          <OwnerNotifyEditor v-model="addChildForm.owner_notify" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -447,8 +463,24 @@
             <el-option v-for="e in ENV_OPTIONS" :key="e.value" :label="e.label" :value="e.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="负责人">
-          <el-input v-model="editForm.owner" style="width: 200px" />
+        <el-form-item label="负责人" required>
+          <template #label>
+            <HelpLabel label="负责人" tip="必填：该子机出现告警时，向负责人的推送渠道发送告警与 AI 分析" />
+          </template>
+          <el-select
+            v-model="editForm.owner"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择已有负责人或输入新姓名"
+            style="width: 240px"
+            @change="applyContactProfile(editForm)"
+          >
+            <el-option v-for="c in ownerContacts" :key="c.name" :label="c.name" :value="c.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="推送方式">
+          <OwnerNotifyEditor v-model="editForm.owner_notify" />
         </el-form-item>
         <el-form-item label="SSH 密码">
           <template #label>
@@ -849,6 +881,7 @@ import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, V
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
 import AgentConfigDialog from '../components/AgentConfigDialog.vue'
+import OwnerNotifyEditor from '../components/OwnerNotifyEditor.vue'
 import {
   createMother,
   deleteAsset,
@@ -858,6 +891,7 @@ import {
   fetchMotherOverviewById,
   fetchChildrenRealtime,
   fetchMothers,
+  listOwnerContacts,
   provisionAsset,
   fetchAssetProvision,
   removeAsset,
@@ -891,7 +925,7 @@ const agentCfgVisible = ref(false)
 // ===== 编辑资产 / 分组 =====
 const editVisible = ref(false)
 const editing = ref(false)
-const editForm = reactive({ id: '', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '', ssh_password: '', ssh_password_set: false })
+const editForm = reactive({ id: '', kind: 'child', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '', ssh_password: '', ssh_password_set: false, owner_notify: emptyNotify() })
 const groupNames = computed(() => [...new Set(children.value.map((c) => c.group).filter(Boolean))])
 
 // ===== 告警策略（v2：秒制窗口 + P0-P3 级别，默认值与后端 DEFAULT_POLICY 保持一致） =====
@@ -1506,6 +1540,7 @@ function openMonitor(row) {
 function openEdit(row) {
   Object.assign(editForm, {
     id: row.id,
+    kind: row.kind || (row.is_mother ? 'mother' : 'child'),
     hostname: row.hostname || '',
     group: row.group || '',
     app: row.app || '',
@@ -1514,7 +1549,12 @@ function openEdit(row) {
     owner: row.owner || '',
     ssh_password: '', // 密码永不回显；留空 = 不修改
     ssh_password_set: !!row.ssh_password_set,
+    owner_notify: emptyNotify(),
   })
+  // 子机：负责人联想 + 已有渠道配置回填（母机编辑不强制推送配置）
+  if (editForm.kind === 'child') {
+    loadOwnerContacts().then(() => applyContactProfile(editForm))
+  }
   editVisible.value = true
 }
 
@@ -1531,6 +1571,16 @@ async function submitEdit() {
     }
     // SSH 密码留空不传（不修改）；填写才提交（后端 Fernet 加密保存）
     if (editForm.ssh_password) payload.ssh_password = editForm.ssh_password
+    // 子机：负责人 + 推送渠道必填；母机编辑不强制（未配置则不提交渠道）
+    if (editForm.kind === 'child') {
+      if (!validateOwnerNotify(editForm)) {
+        editing.value = false
+        return
+      }
+      payload.owner_notify = editForm.owner_notify
+    } else if ((editForm.owner_notify?.channels || []).length) {
+      payload.owner_notify = editForm.owner_notify
+    }
     await updateAsset(editForm.id, payload)
     ElMessage.success('已保存')
     editVisible.value = false
@@ -1684,11 +1734,64 @@ const LANG_HINTS = {
   go: 'Go：静态单文件、零依赖（推荐）',
   py: 'Python：单脚本，目标机需 Python3（缺失时自动尝试安装）',
 }
-const addChildForm = reactive({ display_name: '', ip: '', port: 22, username: 'root', password: '', lang: 'go', app: '', group: '', owner: '' })
+// ===== 负责人通知联系人（新增/编辑子机共用）：联想 + 渠道配置回填 + 提交校验 =====
+const ownerContacts = ref([])
+
+function emptyNotify() {
+  return { channels: [], phone: '', email: '', dingtalk_webhook: '', feishu_webhook: '', wecom_webhook: '' }
+}
+
+async function loadOwnerContacts() {
+  try {
+    const { data } = await listOwnerContacts()
+    ownerContacts.value = data.items || []
+  } catch {
+    ownerContacts.value = []
+  }
+}
+
+// 选/输负责人后：若该姓名已有联系人配置则回填渠道（留空的新表单才会覆盖）
+function applyContactProfile(form) {
+  const hit = ownerContacts.value.find((c) => c.name === form.owner)
+  if (!hit) return
+  form.owner_notify = {
+    channels: [...(hit.channels || [])],
+    phone: hit.phone || '',
+    email: hit.email || '',
+    dingtalk_webhook: hit.dingtalk_webhook || '',
+    feishu_webhook: hit.feishu_webhook || '',
+    wecom_webhook: hit.wecom_webhook || '',
+  }
+}
+
+// 提交校验：负责人必填；渠道至少一项；所选渠道对应地址必填。通过返回 true
+function validateOwnerNotify(form) {
+  if (!(form.owner || '').trim()) {
+    ElMessage.warning('请填写负责人（用于告警推送）')
+    return false
+  }
+  const n = form.owner_notify || emptyNotify()
+  if (!(n.channels || []).length) {
+    ElMessage.warning('请至少选择一种推送方式（电话短信/邮箱/钉钉/飞书/企业微信）')
+    return false
+  }
+  const need = { sms: ['phone', '接收号码'], email: ['email', '邮箱地址'], dingtalk: ['dingtalk_webhook', '钉钉 Webhook'], feishu: ['feishu_webhook', '飞书 Webhook'], wecom: ['wecom_webhook', '企微 Webhook'] }
+  for (const ch of n.channels) {
+    const [key, label] = need[ch] || []
+    if (key && !(n[key] || '').trim()) {
+      ElMessage.warning(`已选「${label}」，请填写对应${ch === 'sms' ? '接收号码' : '地址'}`)
+      return false
+    }
+  }
+  return true
+}
+
+const addChildForm = reactive({ display_name: '', ip: '', port: 22, username: 'root', password: '', lang: 'go', app: '', group: '', owner: '', owner_notify: emptyNotify() })
 let provisionTimer = null
 
 function openAddChild(groupName = '') {
-  Object.assign(addChildForm, { display_name: '', ip: '', port: 22, username: 'root', password: '', lang: 'go', app: '', group: groupName || '', owner: '' })
+  Object.assign(addChildForm, { display_name: '', ip: '', port: 22, username: 'root', password: '', lang: 'go', app: '', group: groupName || '', owner: '', owner_notify: emptyNotify() })
+  loadOwnerContacts()
   addChildVisible.value = true
 }
 
@@ -1706,6 +1809,7 @@ async function submitAddChild() {
     ElMessage.warning('请填写 SSH 密码（用于自动部署自研 Agent）')
     return
   }
+  if (!validateOwnerNotify(addChildForm)) return
   childProvisioning.value = true
   try {
     await provisionAsset({
@@ -1718,6 +1822,7 @@ async function submitAddChild() {
       app: addChildForm.app,
       group: addChildForm.group,
       owner: addChildForm.owner,
+      owner_notify: addChildForm.owner_notify,
       mother_id: selectedMotherId.value,
     })
     addChildVisible.value = false

@@ -345,7 +345,7 @@ def test_provision_lang_go_dispatch_and_invalid_rejected(client, monkeypatch):
         called.update(kw)
 
     monkeypatch.setattr(dep_mod, "deploy_to_host", fake_deploy)
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.61", "password": "x", "lang": "go"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.61", "password": "x", "lang": "go"})
     assert r.status_code == 200
     for _ in range(40):
         if called:
@@ -353,7 +353,7 @@ def test_provision_lang_go_dispatch_and_invalid_rejected(client, monkeypatch):
         time.sleep(0.05)
     assert called["lang"] == "go"
 
-    r2 = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.62", "password": "x", "lang": "rust"})
+    r2 = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.62", "password": "x", "lang": "rust"})
     assert r2.status_code == 422
 
 
@@ -375,7 +375,7 @@ def test_provision_reuses_existing_asset_for_same_ip_port(client, db, monkeypatc
     db.add(legacy)
     db.commit()
 
-    resp = client.post("/api/v1/assets/provision", json={"ip": "ranxx.cn", "port": 1001, "password": "x"})
+    resp = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "ranxx.cn", "port": 1001, "password": "x"})
     assert resp.status_code == 200
     assert resp.json()["id"] == "node-ranxx-cn", "复用旧资产 id，避免重复建卡"
     assert db.query(Asset).filter(Asset.id.like("node-ranxx-cn%")).count() == 1
@@ -389,7 +389,7 @@ def test_provision_same_ip_different_port_creates_distinct_assets(client, db, mo
     """同 IP 不同 SSH 端口是不同资产，互不覆盖。"""
     monkeypatch.setattr(dep_mod, "deploy_to_host", lambda *a, **kw: None)
     for port in (22, 1001):
-        resp = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.55", "port": port, "password": "x"})
+        resp = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.55", "port": port, "password": "x"})
         assert resp.status_code == 200
     ids = {a.id for a in db.query(Asset).filter(Asset.id.like("node-10-0-0-55%")).all()}
     assert ids == {"node-10-0-0-55-22", "node-10-0-0-55-1001"}
@@ -413,7 +413,7 @@ def test_provision_legacy_without_port_and_new_port_distinct(client, db, monkeyp
     db.commit()
 
     # 同 IP 但端口 1001 → 不能复用旧资产（尽管旧记录端口缺失）
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.5", "port": 1001, "password": "pw"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.5", "port": 1001, "password": "pw"})
     assert r.status_code == 200
     assert r.json()["id"] == "node-10-0-0-5-1001"
     assert db.get(Asset, "node-10-0-0-5-1001") is not None
@@ -426,7 +426,7 @@ def test_provision_display_name_duplicate_rejected(client, db):
     db.commit()
     r = client.post(
         "/api/v1/assets/provision",
-        json={"display_name": "订单-网关-01", "ip": "10.9.9.10", "password": "pw"},
+        json={"owner": "ops", "display_name": "订单-网关-01", "ip": "10.9.9.10", "password": "pw"},
     )
     assert r.status_code == 409
 
@@ -450,15 +450,15 @@ def test_provision_mother_validation(client, db, monkeypatch):
     db.add(Asset(id="child-1", hostname="c-1", app="", role="app", env="prod", owner="", tenant_id="t1"))
     db.commit()
 
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.9.9.1", "password": "x", "mother_id": "no-such"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.9.9.1", "password": "x", "mother_id": "no-such"})
     assert r.status_code == 404
     assert "归属母机不存在" in r.json()["detail"]
 
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.9.9.2", "password": "x", "mother_id": "child-1"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.9.9.2", "password": "x", "mother_id": "child-1"})
     assert r.status_code == 400
     assert "不是母机" in r.json()["detail"]
 
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.1.1.1", "password": "x", "mother_id": "m-1"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.1.1.1", "password": "x", "mother_id": "m-1"})
     assert r.status_code == 200  # 母机本机子机：允许纳管
     assert r.json()["status"] == "running"
 
