@@ -849,6 +849,7 @@ import {
   removeAsset,
   renameGroup as renameGroupApi,
   resetAlertPolicy as resetAlertPolicyApi,
+  testSsh,
   updateAlertPolicy,
   updateAsset,
 } from '../api'
