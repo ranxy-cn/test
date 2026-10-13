@@ -12,8 +12,8 @@
     <main class="login-panel">
       <!-- 玻璃拟态卡片 -->
       <section class="login-card" :class="{ shake: shaking }" aria-label="登录表单">
-        <div class="brand-mark" aria-hidden="true">D</div>
-        <h1 class="title">DevOpsAgent</h1>
+        <div class="brand-mark" aria-hidden="true">新</div>
+        <h1 class="title">新知AI-智能巡检</h1>
         <p class="subtitle">智能运维数字员工 · 工作台登录</p>
 
         <form class="form" novalidate @submit.prevent="doLogin">

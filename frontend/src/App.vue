@@ -6,8 +6,8 @@
     <!-- 超薄顶栏：透明悬浮，仅保留品牌与右上角辅助区，内容区最大化 -->
     <header class="topbar">
       <div class="brand-mini" @click="router.push('/dashboard')">
-        <span class="brand-logo" aria-hidden="true">D</span>
-        <span class="brand-name">DevOpsAgent</span>
+        <span class="brand-logo" aria-hidden="true">新</span>
+        <span class="brand-name">新知AI-智能巡检</span>
         <span class="clock mono" :title="'北京时间'">
           <el-icon :size="12"><Clock /></el-icon>
           北京时间 {{ clock }}

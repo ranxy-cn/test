@@ -1,4 +1,4 @@
-# DevOpsAgent · 智能运维数字员工（二期骨架）
+# 新知AI-智能巡检 · 智能运维数字员工（二期骨架）
 
 > **LLM 只做分析与建议 · 策略引擎做决定 · 执行器做动作 · 证据链做证明**
 
@@ -222,7 +222,7 @@ Webhook 同时接受演示字段与 **Zabbix 5.0 媒体类型**常见宏（点�
 
 ### 真实告警 e2e
 
-与 `scripts/demo.sh`（纯 mock 三色路径，不访问 Zabbix）不同：本脚本用 **真实 Zabbix 5.0** 只读 API 取当前问题（若无打开的 problem，则注入一条 5.0 webhook 宏兼容载荷），由 DevOpsAgent **立案 → 调查/诊断 → 策略引擎 → 自动修复或待审批/升级**，证据须带 real API 的 host/items/problems。
+与 `scripts/demo.sh`（纯 mock 三色路径，不访问 Zabbix）不同：本脚本用 **真实 Zabbix 5.0** 只读 API 取当前问题（若无打开的 problem，则注入一条 5.0 webhook 宏兼容载荷），由新知AI-智能巡检 **立案 → 调查/诊断 → 策略引擎 → 自动修复或待审批/升级**，证据须带 real API 的 host/items/problems。
 
 Linux / macOS / Git Bash：
 
@@ -396,4 +396,4 @@ playbooks/ansible/         真实 Ansible 白名单 YAML
 - 不实现 Zabbix 自动应答、远程命令或改监控配置（只读白名单强制）。
 - 备份仅为任务/运行记录骨架，**备份成功 ≠ 可恢复**，隔离恢复也只是 mock 标记。
 
-本仓库原先为 ERC4907 沙箱示例，已替换为 DevOpsAgent 工程。
+本仓库原先为 ERC4907 沙箱示例，已替换为新知AI-智能巡检工程。

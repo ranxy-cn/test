@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DevOpsAgent 子机采集探针（Python 实现，零第三方依赖，纯标准库）。
+"""新知AI-智能巡检 子机采集探针（Python 实现，零第三方依赖，纯标准库）。
 
 兼容 python3.6+（CentOS 7 等老系统自带 3.6：复杂类型标注一律字符串化，
 运行时不求值；禁用 from __future__ import annotations）。
@@ -437,7 +437,7 @@ def load_config(path: str) -> dict:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="DevOpsAgent 子机采集探针")
+    ap = argparse.ArgumentParser(description="新知AI-智能巡检 子机采集探针")
     ap.add_argument("--server", default=os.environ.get("AGENT_SERVER", ""))
     ap.add_argument("--token", default=os.environ.get("AGENT_TOKEN", ""))
     ap.add_argument("--asset-id", default=os.environ.get("AGENT_ASSET_ID", ""))

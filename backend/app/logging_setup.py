@@ -28,7 +28,7 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id
 asset_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("asset_id", default="")
 task_var: contextvars.ContextVar[str] = contextvars.ContextVar("task", default="")
 
-_SERVICE = {"name": "devops-agent"}
+_SERVICE = {"name": "新知AI-智能巡检"}
 
 
 def _ctx() -> dict:

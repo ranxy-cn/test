@@ -63,7 +63,7 @@ def health():
 
     return {
         "ok": True,
-        "service": "devops-agent",
+        "service": "新知AI-智能巡检",
         "employee": get_settings().employee_id,
         "integrations": describe_integrations(),
     }

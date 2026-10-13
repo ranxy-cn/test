@@ -113,7 +113,7 @@ def notify_alert(db: Session, anomaly_id: int) -> list[Notification]:
         log.info("告警推送跳过 anomaly=%s 无负责人或未配置渠道", anomaly_id)
         return []
 
-    title = f"【DevOpsAgent 告警】{ev.hostname or ev.host or ev.ip}"
+    title = f"【新知AI-智能巡检 告警】{ev.hostname or ev.host or ev.ip}"
     body = _alert_text(ev, asset)
     payload = {
         "anomaly_id": ev.id,
@@ -229,7 +229,7 @@ def _send_email(to: str, title: str, body: str) -> tuple[bool, str]:
         return False, "SMTP 未配置（需设置 SMTP_HOST/SMTP_SENDER）"
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = Header(title, "utf-8")
-    msg["From"] = formataddr((str(Header("DevOpsAgent", "utf-8")), s.smtp_sender))
+    msg["From"] = formataddr((str(Header("新知AI-智能巡检", "utf-8")), s.smtp_sender))
     msg["To"] = to
     if s.smtp_use_ssl:
         server = smtplib.SMTP_SSL(s.smtp_host, s.smtp_port, timeout=HTTP_TIMEOUT)

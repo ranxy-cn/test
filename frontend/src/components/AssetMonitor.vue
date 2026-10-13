@@ -31,7 +31,7 @@
             </span>
             <span class="row-gap">
               <span class="live-src">
-                DevOpsAgent 所在服务器<template v-if="live?.net_iface"> · 网口 {{ live.net_iface }}</template> · 自打开起实时记录
+                新知AI-智能巡检 所在服务器<template v-if="live?.net_iface"> · 网口 {{ live.net_iface }}</template> · 自打开起实时记录
               </span>
               <el-button size="small" plain @click="openOverview">历史全揽</el-button>
             </span>

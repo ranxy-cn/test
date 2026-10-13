@@ -59,7 +59,7 @@ def get_jwt_secret_configured() -> bool:
 
 
 app = FastAPI(
-    title="DevOpsAgent",
+    title="新知AI-智能巡检",
     description="智能运维数字员工。LLM 只做分析与建议，策略引擎做决定，执行器做动作，证据链做证明。",
     version="0.3.0",
     lifespan=lifespan,

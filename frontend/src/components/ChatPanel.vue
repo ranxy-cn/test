@@ -8,7 +8,7 @@
     <div ref="messageBox" class="message-box">
       <div v-if="!messages.length" class="welcome">
         <div class="bot-mark"><el-icon><Monitor /></el-icon></div>
-        <h3>你好，我是 DevOpsAgent</h3>
+        <h3>你好，我是新知AI-智能巡检</h3>
         <p>我可以基于企业运维知识和实时状态，回答例如：</p>
         <div class="suggestions">
           <button v-for="item in suggestions" :key="item" @click="send(item)">
@@ -20,7 +20,7 @@
         <div class="message-avatar">{{ item.role === 'assistant' ? 'AI' : '我' }}</div>
         <div class="message-content">
           <div class="message-meta">
-            {{ item.role === 'assistant' ? 'DevOpsAgent' : '我' }}
+            {{ item.role === 'assistant' ? '新知AI-智能巡检' : '我' }}
             <small v-if="item.source">· {{ item.source === 'ai' ? '企业模型' : '状态兜底' }}</small>
           </div>
           <div class="message-text">{{ item.content }}</div>
@@ -33,7 +33,7 @@
       <div v-if="sending" class="message assistant">
         <div class="message-avatar">AI</div>
         <div class="message-content">
-          <div class="message-meta">DevOpsAgent</div>
+          <div class="message-meta">新知AI-智能巡检</div>
           <div class="typing"><i /><i /><i /></div>
         </div>
       </div>
