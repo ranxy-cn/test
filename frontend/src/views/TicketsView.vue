@@ -351,7 +351,7 @@ const statusType = (s) => ({
 const lightLabel = (l) => ({ green: '绿灯', yellow: '黄灯', red: '红灯' }[l] || l)
 
 async function load(silent = false) {
-  // silent：4 秒自动刷新不展示 loading 遮罩（避免遮罩盖住页面底部 Dock）
+  // silent：4 秒自动刷新不展示 loading 遮罩（避免遮罩盖住顶部导航 Dock）
   if (!silent) loading.value = true
   try {
     const params = { page: page.value, page_size: pageSize.value }

@@ -399,11 +399,11 @@ html.dark .clock { background: rgba(255, 255, 255, 0.08); }
   align-items: stretch;
 }
 
-/* ===== 主内容区：占满剩余空间，底部为 Dock 预留 ===== */
+/* ===== 主内容区：占满剩余空间（导航已移至顶部下拉，无需底部预留） ===== */
 .main {
   flex: 1;
   min-width: 0;
-  padding: 54px 22px 100px; /* 顶部补偿固定顶栏高度 */
+  padding: 54px 22px 32px; /* 顶部补偿固定顶栏高度 */
 }
 
 /* 路由过渡：轻微上浮淡入 */
@@ -415,7 +415,7 @@ html.dark .clock { background: rgba(255, 255, 255, 0.08); }
    响应式
    ============================================================ */
 @media (max-width: 1024px) {
-  .main { padding: 54px 14px 96px; }
+  .main { padding: 54px 14px 28px; }
 }
 @media (max-width: 768px) {
   .topbar { padding: 0 10px; }
@@ -423,6 +423,6 @@ html.dark .clock { background: rgba(255, 255, 255, 0.08); }
   .clock { margin-left: 8px; padding: 4px 8px; font-size: 11px; }
   .clock .el-icon { display: none; }
   .user-name, .role-chip { display: none; }
-  .main { padding: 52px 10px 92px; }
+  .main { padding: 52px 10px 24px; }
 }
 </style>
