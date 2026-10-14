@@ -44,4 +44,5 @@
 
 ## 相关既有 skill
 
-- `deploy-186`：部署到 186 生产服务器（不走 git，先读 .agent/ 访问信息）。部署任务不要用本 skill
+- `deploy-103`：**日常部署目标（103 NAT VPS，/opt/devops-platform）**，git archive 打包 + expect 上传，构建 3-8 分钟
+- `deploy-186`：**已停用（2026-10-14 应用户要求下线平台，勿再部署）**，仅存档

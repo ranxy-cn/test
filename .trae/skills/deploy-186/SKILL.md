@@ -1,9 +1,11 @@
 ---
 name: deploy-186
-description: Deploy 新知AI-智能巡检 to the 186 prod server by reading .agent access info first, syncing files without git, running SKIP_PULL=1 deploy, then verifying health. Use when user says 上线部署, 部署到186, deploy, release. Not for local dev servers.
+description: "[已停用] 186 服务器平台已于 2026-10-14 停用（docker compose stop），日常部署一律走 deploy-103。仅当用户明确说「部署到186/重启186」时才用本 skill。"
 ---
 
 # 部署新知AI-智能巡检到 186 生产服务器
+
+> **⛔ 2026-10-14 已停用**：应用户要求 devops-agent 平台在 186 上已 `docker compose stop`（日常部署目标改为 103，见 deploy-103 skill）。用户明确要求「部署/重启 186」时才继续本流程；重启用 `cd /home/ranxiaoying/devops-agent && docker-compose start`。宿主机 MySQL(3306) 未停——本地开发 .env 仍依赖它，勿动。
 
 把当前项目部署到生产服务器 124.221.251.186（目录 /home/ranxiaoying/devops-agent）。
 **不走 git**（服务器目录不是 git 仓库，用户也明确要求不提交 git），直接同步文件。

@@ -1,6 +1,6 @@
 ---
 name: devops-agent-architecture
-description: 新知AI-智能巡检 project architecture map and per-module business logic reference (backend, frontend, data, ops). Use when starting any task in this repo to avoid rescanning the codebase, when asked 项目架构 or 模块业务逻辑, or after code iterations that add or change routers, services, models, views, playbooks, workers or env vars. Not for 186 deployment, use deploy-186 instead.
+description: 新知AI-智能巡检 project architecture map and per-module business logic reference (backend, frontend, data, ops). Use when starting any task in this repo to avoid rescanning the codebase, when asked 项目架构 or 模块业务逻辑, or after code iterations that add or change routers, services, models, views, playbooks, workers or env vars. Not for deployment, use deploy-103 instead.
 ---
 
 # 新知AI-智能巡检 项目架构地图
@@ -16,7 +16,7 @@ description: 新知AI-智能巡检 project architecture map and per-module busin
 3. 代码迭代完成后，按「维护规则」同步更新对应 reference 文件（这是硬要求）。
 4. **代码更新后的收尾（硬要求，用户已授权）**：每次代码更新完成并验证通过后，必须依次执行：
    - `git commit` 提交本次改动（**只 commit 不 push**，除非用户明确要求 push）；
-   - 部署到 186 生产：`bash .trae/skills/deploy-186/scripts/deploy.sh`（流程见 deploy-186 skill）。
+   - 部署到 **103** 生产（日常唯一部署目标）：`bash .trae/skills/deploy-103/scripts/deploy-103.sh`（流程见 deploy-103 skill；186 已于 2026-10-14 停用，勿再部署）。
 
    两条都要做，不许只做其一；commit 信息用中文概括「改了什么 + 为什么」。
 
