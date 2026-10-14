@@ -72,7 +72,7 @@ def test_chat_rejects_injected_system_role(client):
 
 def test_chat_stream_emits_deltas(client, monkeypatch):
     """流式问答：AI 正常时逐段推送 delta，结束时 source=ai。"""
-    def fake_stream(messages, **kwargs):
+    async def fake_stream(messages, **kwargs):
         yield "第一段"
         yield "第二段"
     monkeypatch.setattr("app.routers.knowledge.chat_completion_stream", fake_stream)
@@ -87,7 +87,7 @@ def test_chat_stream_emits_deltas(client, monkeypatch):
 
 def test_chat_stream_fallback_when_ai_unavailable(client, monkeypatch):
     """流式问答：AI 不可用（未配密钥/网关异常）→ 兜底摘要整段经 delta 发出，source=fallback。"""
-    def broken_stream(messages, **kwargs):
+    async def broken_stream(messages, **kwargs):
         raise RuntimeError("未配置 AI API Key")
         yield  # pragma: no cover 使其成为生成器函数
     monkeypatch.setattr("app.routers.knowledge.chat_completion_stream", broken_stream)

@@ -170,26 +170,29 @@ def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Dep
 def chat_stream(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
     """智能问答流式输出：SSE 逐段推送回答（meta → delta* → done）。
 
+    - 端点保持同步：知识检索/实时状态查询在线程池完成，不阻塞事件循环
+    - 推流用异步生成器直通事件循环，消除每 chunk 一次的线程池调度抖动
     - meta：模型名 / 知识库命中 / 实时状态（首帧即发，前端可先渲染引用）
     - delta：回答文本增量
     - done：结束标记（source=ai|fallback）；网关不可用时兜底摘要整段经 delta 发出
     - 响应头 X-Accel-Buffering: no 关闭 nginx 代理缓冲，保证逐段到达前端
     """
     messages, hits, context = _chat_messages(db, body.message, body.history)
+    model = chat_model_name(db)
 
     def _sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    def _gen():
-        yield _sse("meta", {"model": chat_model_name(db), "knowledge": hits, "runtime": context, "user": current.username})
+    async def _agen():
+        yield _sse("meta", {"model": model, "knowledge": hits, "runtime": context, "user": current.username})
         collected: list[str] = []
-        source, model = "ai", chat_model_name(db)
+        source = "ai"
         try:
-            for delta in chat_completion_stream(messages, db=db):
+            async for delta in chat_completion_stream(messages, db=db):
                 collected.append(delta)
                 yield _sse("delta", {"text": delta})
         except Exception:
-            source, model = "fallback", "fallback"
+            source = "fallback"
             if collected:
                 yield _sse("delta", {"text": "\n\n[连接中断，以上为已生成的部分回答]"})
             else:
@@ -205,7 +208,7 @@ def chat_stream(body: ChatIn, db: Session = Depends(get_db), current: CurrentUse
         yield _sse("done", {"source": source, "model": model})
 
     return StreamingResponse(
-        _gen(),
+        _agen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

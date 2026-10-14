@@ -86,6 +86,7 @@ import { computed, nextTick, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Collection, Monitor, Promotion } from '@element-plus/icons-vue'
 import { sendDataQuery, streamKnowledgeChat } from '../api'
+import { createTyper } from '../composables/typewriter'
 
 const draft = ref('')
 const sending = ref(false)
@@ -148,13 +149,17 @@ async function send(text = '') {
           receiving.value = true
         }
       }
-      const result = await streamKnowledgeChat(value, history.slice(0, -1), {
-        onDelta: (t) => {
-          ensureLive()
-          live.content += t
-          scrollBottom()
-        },
+      // rAF 逐帧匀速上屏：突发大块 chunk 也顺滑；用户上翻离开底部时暂停自动跟随
+      const typer = createTyper((chunk) => {
+        ensureLive()
+        live.content += chunk
+        const box = messageBox.value
+        if (!box || box.scrollHeight - box.scrollTop - box.clientHeight < 90) scrollBottom()
       })
+      const result = await streamKnowledgeChat(value, history.slice(0, -1), {
+        onDelta: (t) => typer.push(t),
+      })
+      typer.flush()
       ensureLive()
       live.source = result.source
       if (result.knowledge?.length) live.knowledge = result.knowledge
