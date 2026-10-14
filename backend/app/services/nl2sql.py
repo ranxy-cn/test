@@ -290,8 +290,12 @@ def mock_sql_for(question: str) -> str | None:
     return None
 
 
-def generate_sql(question: str, schema_text: str) -> tuple[str, str]:
-    """调 LLM 生成 SQL，返回 (sql, model)。失败抛异常由上层降级。"""
+def generate_sql(question: str, schema_text: str, db: Any = None) -> tuple[str, str]:
+    """调 LLM 生成 SQL，返回 (sql, model)。失败抛异常由上层降级。
+
+    必须传 db：AI 网关配置存于 app_settings（系统管理页可改），
+    不传则只读环境变量，生产环境恒抛「未配置 AI API Key」→ 前端 502。
+    """
     system = (
         "你是 MySQL SQL 生成器。根据表结构与用户问题，只输出一条 SELECT 语句："
         "不要任何解释、不要 markdown、不要分号。"
@@ -303,6 +307,7 @@ def generate_sql(question: str, schema_text: str) -> tuple[str, str]:
     raw = chat_completion(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         max_tokens=600,
+        db=db,
     )
     return _extract_sql_text(raw), "llm"
 
@@ -345,7 +350,7 @@ def _rows_to_text(columns: list[str], rows: list[list[Any]], limit: int) -> str:
     return f"{head}\n{body}"
 
 
-def interpret_result(question: str, sql: str, columns: list[str], rows: list[list[Any]]) -> tuple[str, str]:
+def interpret_result(question: str, sql: str, columns: list[str], rows: list[list[Any]], db: Any = None) -> tuple[str, str]:
     """LLM 解读查询结果，返回 (answer, model)；未配置/失败时降级模板。"""
     try:
         raw = chat_completion(
@@ -363,6 +368,7 @@ def interpret_result(question: str, sql: str, columns: list[str], rows: list[lis
                 },
             ],
             max_tokens=700,
+            db=db,
         )
         return raw.strip(), "llm"
     except Exception:
@@ -401,7 +407,7 @@ def run_data_query(db: Any, question: str, operator: str = "system") -> dict[str
         log.info("nl2sql exec failed operator=%s sql=%r err=%s", operator, guarded, e)
         raise RuntimeError(f"查询执行失败：{e}") from e
 
-    answer, interp_model = interpret_result(question, guarded, columns, rows)
+    answer, interp_model = interpret_result(question, guarded, columns, rows, db=db)
     log.info(
         "nl2sql ok operator=%s question=%r sql=%r rows=%s model=%s",
         operator, question, guarded, len(rows), interp_model,

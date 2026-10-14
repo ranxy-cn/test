@@ -166,8 +166,9 @@ async function send(text = '') {
       if (!live.content.trim()) live.content = result.error || '（AI 未返回内容，请稍后重试）'
     }
   } catch (error) {
-    ElMessage.error(error.message || '对话请求失败')
-    messages.value.push({ id: `${Date.now()}-e`, role: 'assistant', content: error.message || '对话服务暂时不可用，请稍后重试。' })
+    const detail = error.response?.data?.detail
+    ElMessage.error(detail || error.message || '对话请求失败')
+    messages.value.push({ id: `${Date.now()}-e`, role: 'assistant', content: detail || error.message || '对话服务暂时不可用，请稍后重试。' })
   } finally {
     sending.value = false
     receiving.value = false

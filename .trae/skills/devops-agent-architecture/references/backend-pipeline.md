@@ -27,7 +27,7 @@
 - **tickets.py**：工单号 `TKT-YYYYMMDD-NNNN`（北京时区）；幂等键 `event_id|asset_id|job_version|action_type`
 - **audit.py**：`add_event` 写 ticket_events 事件流、`add_audit` 写 audit_logs 审计链
 - **knowledge.py**：知识文档解析（md/docx 等）、`redact_sensitive` 脱敏、关键词打分检索，供 routers/knowledge.py 与 AI 对话使用；`chat_completion_stream` 为 async 生成器（httpx.AsyncClient stream=True + aiter_lines 解析 OpenAI 兼容 SSE），直通事件循环免线程池抖动
-- **nl2sql.py**（智能数据问答，2026-10 新增）：NL→SQL→只读执行→AI 解读四段管线；`ALLOWED_TABLES` 24 张业务表白名单（含中文说明，inspector 反射列名带缓存）；`validate_and_guard` 基于 sqlglot（MySQL 方言）做 AST 安全审计；`execute_readonly` MySQL 走 `START TRANSACTION READ ONLY`+ROLLBACK（连接归还池无残留），sqlite 直连；查询留痕走 `nl2sql` logger（拦截/成功/失败均记 operator+question+sql）。依赖 sqlglot==25.24.5（requirements.txt）
+- **nl2sql.py**（智能数据问答，2026-10 新增）：NL→SQL→只读执行→AI 解读四段管线；`ALLOWED_TABLES` 24 张业务表白名单（含中文说明，inspector 反射列名带缓存）；`validate_and_guard` 基于 sqlglot（MySQL 方言）做 AST 安全审计；`execute_readonly` MySQL 走 `START TRANSACTION READ ONLY`+ROLLBACK（连接归还池无残留），sqlite 直连；查询留痕走 `nl2sql` logger（拦截/成功/失败均记 operator+question+sql）。依赖 sqlglot==25.24.5（requirements.txt）。**`generate_sql`/`interpret_result`/`run_data_query` 必须透传 `db`**（AI 网关配置存 app_settings，漏传只读环境变量→生产恒抛「未配置 AI API Key」→前端 502，2026-10-14 修复）；路由把 RuntimeError 映射为 502、ValueError（审计拦截）映射为 400
 - **ai_analyzer.py**（AI 日志分析核心服务，改 AI 链路先读它）：
   - **配置**：`CONFIG_KEY=ai_analyzer_config` 存 AppSetting；默认 enabled=False，base_url/api_key 回落 chat→openai 环境配置；api_key Fernet 加密落库（密钥从 JWT_SECRET sha256 派生，可用 AI_ENCRYPT_KEY 覆盖）；`masked_config` 只露末 4 位
   - **优先级映射**：`SEVERITY_PRIORITY` P0→0/P1→1/P2→6/P3→9（critical/high/warning 别名），celery `apply_async(priority=n)` 关键告警先分析

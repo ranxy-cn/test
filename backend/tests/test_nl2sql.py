@@ -242,7 +242,7 @@ def test_data_query_mock_anomaly(client):
 
 
 def test_data_query_blocked_non_business_table(client, monkeypatch):
-    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s: ("SELECT username, password_hash FROM users LIMIT 5", "llm"))
+    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s, db=None: ("SELECT username, password_hash FROM users LIMIT 5", "llm"))
     resp = client.post("/api/v1/knowledge/data-query", json={"question": "列出所有用户"})
     assert resp.status_code == 400
     assert "安全审计拦截" in resp.json()["detail"]
@@ -250,7 +250,7 @@ def test_data_query_blocked_non_business_table(client, monkeypatch):
 
 
 def test_data_query_blocked_ai_key_table(client, monkeypatch):
-    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s: ("SELECT * FROM app_settings LIMIT 5", "llm"))
+    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s, db=None: ("SELECT * FROM app_settings LIMIT 5", "llm"))
     resp = client.post("/api/v1/knowledge/data-query", json={"question": "AI 配置是什么"})
     assert resp.status_code == 400
     assert "app_settings" in resp.json()["detail"]
@@ -272,11 +272,31 @@ def test_data_query_blocked_write_sql(client, monkeypatch):
 
 def test_data_query_blocked_multi_statement(client, monkeypatch):
     monkeypatch.setattr(
-        nl2sql, "generate_sql", lambda q, s: ("SELECT hostname FROM assets LIMIT 1; DROP TABLE users", "llm")
+        nl2sql, "generate_sql", lambda q, s, db=None: ("SELECT hostname FROM assets LIMIT 1; DROP TABLE users", "llm")
     )
     resp = client.post("/api/v1/knowledge/data-query", json={"question": "随便查点"})
     assert resp.status_code == 400
     assert "单条" in resp.json()["detail"]
+
+
+def test_data_query_passes_db_to_llm(client, monkeypatch):
+    """回归：NL2SQL 必须把 db 透传给 chat_completion。
+
+    AI 网关配置存于 app_settings（系统管理页可改）；不传 db 只读环境变量，
+    生产环境恒抛「未配置 AI API Key」→ 前端 502（2026-10-14 修复）。
+    """
+    captured = {}
+
+    def fake_chat_completion(messages, max_tokens=0, db=None):
+        captured["db"] = db
+        return "SELECT kind, count(*) AS cnt FROM assets GROUP BY kind LIMIT 100"
+
+    monkeypatch.setattr(nl2sql, "chat_completion", fake_chat_completion)
+    # 问题不命中 mock 关键词，走 LLM 生成 SQL 路径
+    resp = client.post("/api/v1/knowledge/data-query", json={"question": "最近一周每台子机的平均负载是多少"})
+    assert resp.status_code == 200, resp.text
+    assert captured["db"] is not None
+    assert "assets" in resp.json()["sql"]
 
 
 def test_data_query_requires_auth():
