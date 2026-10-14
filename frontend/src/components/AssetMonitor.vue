@@ -423,9 +423,8 @@
               <template #prefix><el-icon><Key /></el-icon></template>
             </el-input>
             <el-button type="primary" :loading="gateBusy" :disabled="!gatePassword" @click="sshGateConnect">解锁终端</el-button>
-            <el-button :disabled="gateBusy" @click="sshGateUseSaved">用已保存凭据连接</el-button>
             <div v-if="gateError" class="gate-error">{{ gateError }}</div>
-            <div class="gate-tip">密码仅用于本次会话验证，不落库、不写入审计日志；也可在「编辑资产」中保存后点「用已保存凭据连接」免输入</div>
+            <div class="gate-tip">密码仅用于本次会话验证，不落库、不写入审计日志</div>
           </div>
         </div>
         <template v-else>
