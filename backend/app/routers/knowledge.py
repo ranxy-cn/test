@@ -59,7 +59,7 @@ def upload_document(file: UploadFile, db: Session = Depends(get_db)):
     if not content:
         raise HTTPException(422, "暂不支持读取该文件内容，请上传 PDF、DOCX、Markdown 或文本文件")
     content = content[:300000]
-    analysis = analyze_document(filename, content)
+    analysis = analyze_document(filename, content, db=db)
     document = KnowledgeDocument(
         id=new_document_id(),
         tenant_id=settings.tenant_id,

@@ -146,7 +146,8 @@ def chat_completion_stream(messages: list[dict[str, str]], max_tokens: int = 120
     api_key, base_url, model, timeout = _chat_config(db)
     if not api_key:
         raise RuntimeError("未配置 AI API Key，请在「系统管理 → AI 服务配置」中填写并启用")
-    with httpx.post(
+    with httpx.stream(
+        "POST",
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2, "stream": True},
@@ -169,7 +170,7 @@ def chat_completion_stream(messages: list[dict[str, str]], max_tokens: int = 120
                 yield delta
 
 
-def analyze_document(title: str, content: str) -> dict[str, Any]:
+def analyze_document(title: str, content: str, db: Session | None = None) -> dict[str, Any]:
     prompt = (
         "请分析下面的企业运维文档，输出严格 JSON，不要 Markdown。字段：summary（不超过120字）、"
         "tags（3-8个中文标签数组）、rules（适用的运维规则数组）。只根据文档内容，不要编造。\n"

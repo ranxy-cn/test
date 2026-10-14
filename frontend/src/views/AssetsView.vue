@@ -482,19 +482,6 @@
         <el-form-item label="推送方式">
           <OwnerNotifyEditor v-model="editForm.owner_notify" />
         </el-form-item>
-        <el-form-item label="SSH 密码">
-          <template #label>
-            <HelpLabel label="SSH 密码" tip="用于 SSH 终端登录与卸载 Agent；Fernet 加密保存，不回显明文。留空表示不修改" />
-          </template>
-          <el-input
-            v-model="editForm.ssh_password"
-            type="password"
-            show-password
-            autocomplete="new-password"
-            :placeholder="editForm.ssh_password_set ? '已保存（留空不修改）' : '未配置，填写后保存即可用终端'"
-            style="width: 220px"
-          />
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
@@ -925,7 +912,7 @@ const agentCfgVisible = ref(false)
 // ===== 编辑资产 / 分组 =====
 const editVisible = ref(false)
 const editing = ref(false)
-const editForm = reactive({ id: '', kind: 'child', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '', ssh_password: '', ssh_password_set: false, owner_notify: emptyNotify() })
+const editForm = reactive({ id: '', kind: 'child', hostname: '', group: '', app: '', role: 'app', env: 'prod', owner: '', owner_notify: emptyNotify() })
 const groupNames = computed(() => [...new Set(children.value.map((c) => c.group).filter(Boolean))])
 
 // ===== 告警策略（v2：秒制窗口 + P0-P3 级别，默认值与后端 DEFAULT_POLICY 保持一致） =====
@@ -1569,8 +1556,6 @@ async function submitEdit() {
       env: editForm.env,
       owner: editForm.owner,
     }
-    // SSH 密码留空不传（不修改）；填写才提交（后端 Fernet 加密保存）
-    if (editForm.ssh_password) payload.ssh_password = editForm.ssh_password
     // 子机：负责人 + 推送渠道必填；母机编辑不强制（未配置则不提交渠道）
     if (editForm.kind === 'child') {
       if (!validateOwnerNotify(editForm)) {

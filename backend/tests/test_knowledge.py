@@ -12,7 +12,7 @@ from app.services.knowledge import extract_text, redact_sensitive
 
 
 def test_upload_search_delete(client, monkeypatch):
-    monkeypatch.setattr("app.routers.knowledge.analyze_document", lambda *args: {
+    monkeypatch.setattr("app.routers.knowledge.analyze_document", lambda *args, **kwargs: {
         "summary": "公司的磁盘处置规则", "tags": ["磁盘"], "rules": [], "ai_analyzed": True,
     })
     response = client.post("/api/v1/knowledge/documents/upload", files={

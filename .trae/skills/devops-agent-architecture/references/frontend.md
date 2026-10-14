@@ -20,7 +20,7 @@
 | TicketDetailView | 工单详情：状态流转、红/黄/绿说明、审批/驳回/重试、证据链 |
 | EmployeeView | 数字员工档案（静态档案页） |
 | ReportView | 数字员工日报 |
-| AssetsView | 资产台账：母机/子机/分组、纳管 provision、告警策略、监控入口；SSH 密码配置入口=添加母机/添加子机表单（加密保存）+ 编辑资产对话框（三态：留空不改/填写更新，`ssh_password_set` 驱动 placeholder）；删除子机卸载密码留空回退保存密码；**新增/编辑子机负责人必填**（el-select filterable allow-create 联想 `listOwnerContacts`，选已有负责人自动回填渠道配置 applyContactProfile）+ 推送方式 OwnerNotifyEditor（提交前 validateOwnerNotify：负责人必填→渠道至少一项→所选渠道地址必填；母机编辑不强制） |
+| AssetsView | 资产台账：母机/子机/分组、纳管 provision、告警策略、监控入口；SSH 密码配置入口=添加母机/添加子机表单（加密保存）；**编辑资产对话框已移除 SSH 密码字段**（2026-10-14：SSH 登录一律走监控窗终端的密码门禁会话凭据，不再依赖编辑里保存的密码）；删除子机卸载密码留空回退保存密码；**新增/编辑子机负责人必填**（el-select filterable allow-create 联想 `listOwnerContacts`，选已有负责人自动回填渠道配置 applyContactProfile）+ 推送方式 OwnerNotifyEditor（提交前 validateOwnerNotify：负责人必填→渠道至少一项→所选渠道地址必填；母机编辑不强制） |
 | AgentConfigView | 子机 Agent 配置：全局默认 + 资产级覆盖（拉取式免重启） |
 | StatusView | 集成模式与健康探测面板（requested/effective/ok/latency） |
 | KnowledgeView | 知识库：文档上传、AI 分析标签、关键词检索 |
