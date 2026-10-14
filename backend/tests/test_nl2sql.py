@@ -257,14 +257,14 @@ def test_data_query_blocked_ai_key_table(client, monkeypatch):
 
 
 def test_data_query_blocked_cross_database(client, monkeypatch):
-    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s: ("SELECT * FROM finance_db.assets LIMIT 5", "llm"))
+    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s, db=None: ("SELECT * FROM finance_db.assets LIMIT 5", "llm"))
     resp = client.post("/api/v1/knowledge/data-query", json={"question": "看看财务系统的数据 xyz"})
     assert resp.status_code == 400
     assert "跨库" in resp.json()["detail"]
 
 
 def test_data_query_blocked_write_sql(client, monkeypatch):
-    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s: ("DELETE FROM tickets WHERE id = 1", "llm"))
+    monkeypatch.setattr(nl2sql, "generate_sql", lambda q, s, db=None: ("DELETE FROM tickets WHERE id = 1", "llm"))
     resp = client.post("/api/v1/knowledge/data-query", json={"question": "帮我处理一下那个单据 xyz"})
     assert resp.status_code == 400
     assert "安全审计拦截" in resp.json()["detail"]
@@ -288,14 +288,16 @@ def test_data_query_passes_db_to_llm(client, monkeypatch):
     captured = {}
 
     def fake_chat_completion(messages, max_tokens=0, db=None):
-        captured["db"] = db
+        # 首次调用来自 generate_sql（SQL 生成路径），正是生产 502 的那一次；
+        # setdefault 防止 interpret_result 的第二次调用覆盖取证
+        captured.setdefault("gen_db", db)
         return "SELECT kind, count(*) AS cnt FROM assets GROUP BY kind LIMIT 100"
 
     monkeypatch.setattr(nl2sql, "chat_completion", fake_chat_completion)
     # 问题不命中 mock 关键词，走 LLM 生成 SQL 路径
     resp = client.post("/api/v1/knowledge/data-query", json={"question": "最近一周每台子机的平均负载是多少"})
     assert resp.status_code == 200, resp.text
-    assert captured["db"] is not None
+    assert captured["gen_db"] is not None
     assert "assets" in resp.json()["sql"]
 
 

@@ -394,7 +394,7 @@ def run_data_query(db: Any, question: str, operator: str = "system") -> dict[str
     model = "mock"
     sql = mock_sql_for(question)
     if sql is None:
-        sql, model = generate_sql(question, schema_text)
+        sql, model = generate_sql(question, schema_text, db=db)
 
     guarded, reason = validate_and_guard(sql)
     if reason:
