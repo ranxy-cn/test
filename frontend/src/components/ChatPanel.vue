@@ -47,7 +47,7 @@
           </div>
         </div>
       </div>
-      <div v-if="sending" class="message assistant">
+      <div v-if="sending && !receiving" class="message assistant">
         <div class="message-avatar">AI</div>
         <div class="message-content">
           <div class="message-meta">新知AI-智能巡检</div>
@@ -141,8 +141,10 @@ async function send(text = '') {
       let live = null
       const ensureLive = () => {
         if (!live) {
-          live = { id: `${Date.now()}-a`, role: 'assistant', content: '', source: 'ai', knowledge: [] }
-          messages.value.push(live)
+          messages.value.push({ id: `${Date.now()}-a`, role: 'assistant', content: '', source: 'ai', knowledge: [] })
+          // 必须取回数组里的响应式代理：直接改 push 前的原始对象不会触发视图更新，
+          // 流式增量会攒到最后一次性渲染（打字机效果失效）
+          live = messages.value[messages.value.length - 1]
           receiving.value = true
         }
       }
