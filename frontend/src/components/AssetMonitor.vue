@@ -1321,25 +1321,6 @@ async function sshGateConnect() {
   }
 }
 
-// 不想输入密码时的旁路：走平台已保存凭据（保存密码或免密私钥）
-async function sshGateUseSaved() {
-  if (gateBusy.value || !props.assetId) return
-  gateBusy.value = true
-  gateError.value = ''
-  try {
-    const { data } = await execAssetCommand(props.assetId, { command: 'true', cwd: '~' })
-    applySession(data)
-    sshUnlocked.value = true
-    sshBannerShown = true
-    sshBanner()
-    nextTick(focusSshInput)
-  } catch (err) {
-    gateError.value = err.response?.data?.detail || '已保存凭据不可用，请输入 SSH 密码解锁'
-  } finally {
-    gateBusy.value = false
-  }
-}
-
 // ===== 终端皮肤：白天 / 黑夜 / 跟随系统 =====
 const SSH_THEME_KEY = 'devops_ssh_theme'
 const SSH_THEMES = [
