@@ -22,11 +22,11 @@ AI 日志分析：`AiAnalysis`（anomaly_id FK+index；status pending/running/do
 
 ## config.py
 
-`Settings`（.env + 环境变量，`get_settings` lru_cache）。关键默认：database_url MySQL devops_agent、webhook_secret="dev-webhook-secret"、**webhook_auto_ticket=False**、use_celery=False、demo_mode=True、diagnostics_async=True、jwt_secret 空→进程随机、access_token 720 分钟、lockout 5 次/15 分钟、IP 30 次/10 分钟、admin_initial_password="Admin@123456"、seed_demo_assets=False（生产默认关；tests/conftest.py 强制注入 true，防止空库被种入 ast-order-* 演示资产）、observation_seconds=10、probe_required_passes=3、restart/action_fail 冷却各 1800s、lock_ttl 120s、integration_mode="mock"、policy_version="policy-v1.0.0"、tenant_id="tenant-default"、employee_id="DE-OPS-001"、mother_asset_id="devops-mother-186"、netdata 开 19999、openai/chat 双套 LLM 配置（chat 为企业网关）
+`Settings`（.env + 环境变量，`get_settings` lru_cache）。关键默认：database_url MySQL devops_agent、webhook_secret="dev-webhook-secret"、**webhook_auto_ticket=False**、use_celery=False、demo_mode=True、diagnostics_async=True、jwt_secret 空→进程随机、**secret_encrypt_key 空**（敏感凭据落库加密专用密钥，多环境共库时必须一致；留空回退 JWT_SECRET）、access_token 720 分钟、lockout 5 次/15 分钟、IP 30 次/10 分钟、admin_initial_password="Admin@123456"、seed_demo_assets=False（生产默认关；tests/conftest.py 强制注入 true，防止空库被种入 ast-order-* 演示资产）、observation_seconds=10、probe_required_passes=3、restart/action_fail 冷却各 1800s、lock_ttl 120s、integration_mode="mock"、policy_version="policy-v1.0.0"、tenant_id="tenant-default"、employee_id="DE-OPS-001"、mother_asset_id="devops-mother-186"、netdata 开 19999、openai/chat 双套 LLM 配置（chat 为企业网关）
 
 ## security.py
 
-bcrypt(rounds=12)；密码策略 8-64 位含大小写数字；JWT HS256（iss/aud 固定、jti、leeway 5s）；jwt_secret 未配置用进程随机（重启即失效）；`encrypt_secret/decrypt_secret`：Fernet 可逆加密（密钥口径同 ai_analyzer：AI_ENCRYPT_KEY → JWT_SECRET → fallback），用于资产 SSH 密码落库，空串=未配置语义
+bcrypt(rounds=12)；密码策略 8-64 位含大小写数字；JWT HS256（iss/aud 固定、jti、leeway 5s）；jwt_secret 未配置用进程随机（重启即失效）；`encrypt_secret/decrypt_secret`：Fernet 可逆加密，用于资产 SSH 密码落库，空串=未配置语义；**解密按候选密钥逐个尝试（SECRET_ENCRYPT_KEY → JWT_SECRET → 内置兜底常量），加密固定用首个候选**——JWT_SECRET 轮换/多环境共库时历史密文仍可解，全部候选失败抛 InvalidToken（ai_analyzer 的 api_key 加密同走此口径）
 
 ## 种子（只补缺不覆盖）
 

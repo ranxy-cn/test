@@ -19,13 +19,14 @@ import time
 from datetime import timedelta
 
 import httpx
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models import AiAnalysis, AiAuditLog, AnomalyEvent, AnomalyLog, AppSetting
+from app.security import decrypt_secret, encrypt_secret
 from app.services import metrics_store
 from app.services.knowledge import redact_sensitive
 
@@ -75,14 +76,8 @@ _BLOCK_PATTERNS: list[tuple[re.Pattern, str]] = [
 
 # ---------------------------------------------------------------- 配置存取
 
-def _fernet() -> Fernet:
-    """由 JWT_SECRET（或 AI_ENCRYPT_KEY）派生 Fernet 密钥，用于 api_key 落库加密。"""
-    import base64
-
-    s = get_settings()
-    raw = (getattr(s, "ai_encrypt_key", "") or s.jwt_secret or "devops-agent-fallback-key").encode()
-    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw).digest()))
-
+# api_key 落库加密统一走 app.security 的多候选密钥（SECRET_ENCRYPT_KEY → JWT_SECRET → 兜底），
+# 与资产 SSH 密码同口径；历史密文由候选解密自动兼容。
 
 def get_ai_config(db: Session) -> dict:
     """读取 AI 分析配置（api_key 已解密）。未配置时回退 settings 里的 chat/openai 默认值。"""
@@ -100,9 +95,9 @@ def get_ai_config(db: Session) -> dict:
         saved = dict(row.value)
         if saved.get("api_key_enc"):
             try:
-                saved["api_key"] = _fernet().decrypt(saved["api_key_enc"].encode()).decode()
+                saved["api_key"] = decrypt_secret(saved["api_key_enc"])
             except InvalidToken:
-                log.warning("AI 配置 api_key 解密失败，回退默认 key")
+                log.warning("AI 配置 api_key 解密失败（全部候选密钥均不匹配），回退默认 key")
         saved.pop("api_key_enc", None)
         for k, v in saved.items():
             if v not in (None, ""):
@@ -118,9 +113,9 @@ def save_ai_config(db: Session, data: dict, operator: str = "system") -> dict:
     current = get_ai_config(db)
     enc = None
     if data.get("api_key"):
-        enc = _fernet().encrypt(str(data["api_key"]).encode()).decode()
+        enc = encrypt_secret(str(data["api_key"]))
     elif data.get("keep_api_key") and current.get("api_key"):
-        enc = _fernet().encrypt(current["api_key"].encode()).decode()
+        enc = encrypt_secret(current["api_key"])
 
     saved = {
         "enabled": bool(data.get("enabled")),

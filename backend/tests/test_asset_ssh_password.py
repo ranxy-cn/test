@@ -276,3 +276,61 @@ def test_saved_password_roundtrip_with_special_chars():
         assert enc != pw
         assert decrypt_secret(enc) == pw
     assert encrypt_secret("") == "" and decrypt_secret("") == ""
+
+
+# ===== 加密密钥候选解密（环境变更兼容） =====
+
+
+def test_decrypt_secret_tries_candidate_keys(monkeypatch):
+    """多候选解密：兜底常量/JWT_SECRET 历史密文，在配置新专用密钥后仍可解（免重存）。"""
+    from app.config import get_settings
+
+    s = get_settings()
+    # 旧口径：无专用密钥、无 JWT_SECRET → 兜底常量加密
+    monkeypatch.setattr(s, "secret_encrypt_key", "")
+    monkeypatch.setattr(s, "jwt_secret", "")
+    legacy_enc = encrypt_secret("legacy-pass")
+
+    # 环境变更：新配置专用密钥 + JWT_SECRET 轮换 → 历史密文仍应可解
+    monkeypatch.setattr(s, "secret_encrypt_key", "new-dedicated-key")
+    monkeypatch.setattr(s, "jwt_secret", "rotated-jwt")
+    assert decrypt_secret(legacy_enc) == "legacy-pass"
+
+    # 新密文用专用密钥加密，JWT_SECRET 再怎么轮换都不影响
+    dedicated_enc = encrypt_secret("dedicated-pass")
+    monkeypatch.setattr(s, "jwt_secret", "jwt-again")
+    assert decrypt_secret(dedicated_enc) == "dedicated-pass"
+
+
+def test_decrypt_secret_raises_when_no_candidate_matches(monkeypatch):
+    """全部候选密钥都不匹配（如 JWT_SECRET 轮换且无兜底密文）→ 抛 InvalidToken 由调用方兜底。"""
+    from cryptography.fernet import InvalidToken
+
+    from app.config import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "secret_encrypt_key", "")
+    monkeypatch.setattr(s, "jwt_secret", "jwt-a")
+    enc = encrypt_secret("jwt-pass")
+
+    monkeypatch.setattr(s, "jwt_secret", "jwt-b")
+    with pytest.raises(InvalidToken):
+        decrypt_secret(enc)
+
+
+# ===== SSH 终端：密文损坏/密钥失配的明确报错 =====
+
+
+def test_exec_undecryptable_saved_password_message(auth_token, client, db, api_mod, monkeypatch):
+    """已保存密码但密文无法解密（服务端加密密钥变更）→ 400 区分提示「重新保存」，而非误导「未保存」。"""
+    _add_child(db, ssh_password_enc="not-a-valid-fernet-token")
+    monkeypatch.setattr(api_mod, "_load_private_key_safe", lambda: None)
+
+    r = client.post(
+        "/api/v1/assets/node-10-20-0-1-22/exec",
+        json={"command": "uptime", "cwd": "~"},
+        headers=_h(auth_token),
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "无法解密" in detail and "重新填写" in detail

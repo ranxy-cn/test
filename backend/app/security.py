@@ -64,17 +64,42 @@ def validate_username(username: str) -> list[str]:
 
 # ===== 可逆加密（资产 SSH 密码等落库密文，密钥口径与 AI 配置加密一致） =====
 
+_FALLBACK_RAW_KEY = "devops-agent-fallback-key"
 
-def _secret_fernet():
-    """由 AI_ENCRYPT_KEY（或 JWT_SECRET）派生 Fernet，用于敏感凭据加密落库。"""
+
+def _secret_raw_candidates() -> list[str]:
+    """候选原始密钥（有序去重）：SECRET_ENCRYPT_KEY（专用，推荐）→ JWT_SECRET → 内置兜底。
+
+    历史上密文可能由旧口径（JWT_SECRET 或兜底常量）加密；解密时逐个候选尝试，
+    避免「改过 JWT_SECRET / 本地与服务器共用同一数据库但密钥环境不同」时静默解密失败。
+    """
+    s = get_settings()
+    candidates: list[str] = []
+    for raw in (getattr(s, "secret_encrypt_key", ""), s.jwt_secret):
+        raw = (raw or "").strip()
+        if raw and raw not in candidates:
+            candidates.append(raw)
+    # 内置兜底常量永远排在最后（历史默认口径的密文仍可解）
+    if _FALLBACK_RAW_KEY not in candidates:
+        candidates.append(_FALLBACK_RAW_KEY)
+    return candidates
+
+
+def _secret_fernets() -> list:
     import base64
     import hashlib
 
     from cryptography.fernet import Fernet
 
-    s = get_settings()
-    raw = (getattr(s, "ai_encrypt_key", "") or s.jwt_secret or "devops-agent-fallback-key").encode()
-    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw).digest()))
+    return [
+        Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest()))
+        for raw in _secret_raw_candidates()
+    ]
+
+
+def _secret_fernet():
+    """加密用主密钥（候选列表第一个）。"""
+    return _secret_fernets()[0]
 
 
 def encrypt_secret(plain: str) -> str:
@@ -85,10 +110,19 @@ def encrypt_secret(plain: str) -> str:
 
 
 def decrypt_secret(enc: str) -> str:
-    """密文解密为明文；空串原样返回。解密失败抛 InvalidToken，由调用方兜底。"""
+    """密文解密为明文；空串原样返回。全部候选密钥均失败抛 InvalidToken，由调用方兜底。"""
     if not enc:
         return ""
-    return _secret_fernet().decrypt(enc.encode("utf-8")).decode("utf-8")
+    from cryptography.fernet import InvalidToken
+
+    last_exc: Exception | None = None
+    for fernet in _secret_fernets():
+        try:
+            return fernet.decrypt(enc.encode("utf-8")).decode("utf-8")
+        except InvalidToken as exc:  # noqa: PERF203 密钥不匹配则继续尝试下一候选
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
 
 
 # ===== JWT =====

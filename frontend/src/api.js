@@ -167,7 +167,69 @@ export const uploadKnowledgeDocument = (file) => {
   })
 }
 export const deleteKnowledgeDocument = (id) => http.delete(`/knowledge/documents/${id}`)
-export const sendKnowledgeChat = (message, history = []) => http.post('/knowledge/chat', { message, history }, { timeout: 90000 })
+// 智能问答流式输出（SSE）：axios 浏览器端不支持流式响应，改用 fetch + ReadableStream 手动解析
+// handlers: { onMeta(payload), onDelta(text) }；resolve 值 = { answer, source, model, knowledge, runtime, error? }
+export async function streamKnowledgeChat(message, history = [], handlers = {}) {
+  const token = localStorage.getItem('devops_token')
+  const resp = await fetch('/api/v1/knowledge/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ message, history }),
+  })
+  if (resp.status === 401) {
+    localStorage.removeItem('devops_token')
+    localStorage.removeItem('devops_user')
+    onUnauthorized()
+    throw new Error('登录已过期，请重新登录')
+  }
+  if (!resp.ok || !resp.body) {
+    let detail = `对话请求失败（HTTP ${resp.status}）`
+    try { detail = (await resp.json()).detail || detail } catch { /* 非 JSON 响应保持默认文案 */ }
+    throw new Error(detail)
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  const final = { answer: '', source: 'ai', model: '', knowledge: [], runtime: null }
+  const handleFrame = (frame) => {
+    let event = 'message'
+    const datas = []
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event:')) event = line.slice(6).trim()
+      else if (line.startsWith('data:')) datas.push(line.slice(5).replace(/^ /, ''))
+    }
+    if (!datas.length) return
+    let payload
+    try { payload = JSON.parse(datas.join('\n')) } catch { return }
+    if (event === 'meta') {
+      final.model = payload.model || ''
+      final.knowledge = payload.knowledge || []
+      final.runtime = payload.runtime || null
+      handlers.onMeta?.(payload)
+    } else if (event === 'delta') {
+      final.answer += payload.text || ''
+      handlers.onDelta?.(payload.text || '')
+    } else if (event === 'done') {
+      final.source = payload.source || final.source
+      if (payload.model) final.model = payload.model
+    } else if (event === 'error') {
+      final.error = payload.detail || '对话失败'
+    }
+  }
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      if (frame.trim()) handleFrame(frame)
+    }
+  }
+  if (buffer.trim()) handleFrame(buffer.trim())
+  return final
+}
 // 智能数据问答（NL2SQL）：自然语言 → 只读 SQL（表白名单/单库限定）→ AI 解读
 export const sendDataQuery = (question) => http.post('/knowledge/data-query', { question }, { timeout: 90000 })
 

@@ -70,6 +70,34 @@ def test_chat_rejects_injected_system_role(client):
     assert response.status_code == 422
 
 
+def test_chat_stream_emits_deltas(client, monkeypatch):
+    """流式问答：AI 正常时逐段推送 delta，结束时 source=ai。"""
+    def fake_stream(messages, **kwargs):
+        yield "第一段"
+        yield "第二段"
+    monkeypatch.setattr("app.routers.knowledge.chat_completion_stream", fake_stream)
+    resp = client.post("/api/v1/knowledge/chat/stream", json={"message": "当前状态？"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert "event: meta" in resp.text
+    assert "第一段" in resp.text and "第二段" in resp.text
+    assert "event: done" in resp.text
+    assert '"source": "ai"' in resp.text
+
+
+def test_chat_stream_fallback_when_ai_unavailable(client, monkeypatch):
+    """流式问答：AI 不可用（未配密钥/网关异常）→ 兜底摘要整段经 delta 发出，source=fallback。"""
+    def broken_stream(messages, **kwargs):
+        raise RuntimeError("未配置 AI API Key")
+        yield  # pragma: no cover 使其成为生成器函数
+    monkeypatch.setattr("app.routers.knowledge.chat_completion_stream", broken_stream)
+    resp = client.post("/api/v1/knowledge/chat/stream", json={"message": "当前状态？"})
+    assert resp.status_code == 200
+    assert "event: delta" in resp.text
+    assert "AI 网关" in resp.text
+    assert '"source": "fallback"' in resp.text
+
+
 def test_dashboard_counts_all_active_events(client, db):
     for index in range(12):
         db.add(AnomalyEvent(event_id=f"dashboard-{index}", host="test", status="abnormal"))

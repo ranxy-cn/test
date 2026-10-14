@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # 未设置时每次进程启动随机生成（重启后所有 token 失效，并打印告警）。
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
+    # 敏感凭据（资产 SSH 密码 / AI api_key）落库加密的专用密钥：
+    # 推荐所有共用同一数据库的环境配置相同值；未配置时回退 JWT_SECRET（历史口径，兼容旧密文）。
+    secret_encrypt_key: str = ""
     access_token_expire_minutes: int = 720
     # 登录防爆破：连续失败 lockout_max_attempts 次后锁定 lockout_minutes 分钟
     lockout_max_attempts: int = 5

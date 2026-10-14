@@ -85,10 +85,11 @@
 import { computed, nextTick, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Collection, Monitor, Promotion } from '@element-plus/icons-vue'
-import { sendDataQuery, sendKnowledgeChat } from '../api'
+import { sendDataQuery, streamKnowledgeChat } from '../api'
 
 const draft = ref('')
 const sending = ref(false)
+const receiving = ref(false)
 const messages = ref([])
 const messageBox = ref(null)
 const dataMode = ref(false)
@@ -117,6 +118,7 @@ async function send(text = '') {
   messages.value.push({ id: `${Date.now()}-q`, role: 'user', content: value })
   draft.value = ''
   sending.value = true
+  receiving.value = false
   await scrollBottom()
   try {
     if (dataMode.value) {
@@ -134,21 +136,34 @@ async function send(text = '') {
         },
       })
     } else {
+      // 流式输出：首个增量到达时才创建助手消息，打字点在收到内容后隐藏
       const history = messages.value.slice(-12).map((item) => ({ role: item.role, content: item.content }))
-      const result = (await sendKnowledgeChat(value, history.slice(0, -1))).data
-      messages.value.push({
-        id: `${Date.now()}-a`,
-        role: 'assistant',
-        content: result.answer,
-        source: result.source,
-        knowledge: result.knowledge,
+      let live = null
+      const ensureLive = () => {
+        if (!live) {
+          live = { id: `${Date.now()}-a`, role: 'assistant', content: '', source: 'ai', knowledge: [] }
+          messages.value.push(live)
+          receiving.value = true
+        }
+      }
+      const result = await streamKnowledgeChat(value, history.slice(0, -1), {
+        onDelta: (t) => {
+          ensureLive()
+          live.content += t
+          scrollBottom()
+        },
       })
+      ensureLive()
+      live.source = result.source
+      if (result.knowledge?.length) live.knowledge = result.knowledge
+      if (!live.content.trim()) live.content = result.error || '（AI 未返回内容，请稍后重试）'
     }
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '对话请求失败')
-    messages.value.push({ id: `${Date.now()}-e`, role: 'assistant', content: error.response?.data?.detail || '对话服务暂时不可用，请稍后重试。' })
+    ElMessage.error(error.message || '对话请求失败')
+    messages.value.push({ id: `${Date.now()}-e`, role: 'assistant', content: error.message || '对话服务暂时不可用，请稍后重试。' })
   } finally {
     sending.value = false
+    receiving.value = false
     await scrollBottom()
   }
 }

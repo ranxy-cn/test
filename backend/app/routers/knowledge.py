@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from typing import Literal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -14,7 +16,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import AnomalyEvent, Asset, KnowledgeDocument, Ticket
 from app.routers.deps import CurrentUser, require_perm
-from app.services.knowledge import analyze_document, chat_completion, chat_model_name, extract_text, new_document_id, redact_sensitive, search_knowledge
+from app.services.knowledge import analyze_document, chat_completion, chat_completion_stream, chat_model_name, extract_text, new_document_id, redact_sensitive, search_knowledge
 
 router = APIRouter()
 
@@ -126,9 +128,9 @@ def _runtime_context(db: Session) -> dict[str, Any]:
     }
 
 
-@router.post("/api/v1/knowledge/chat", dependencies=[Depends(require_perm("knowledge:chat"))])
-def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
-    hits = search_knowledge(db, body.message, 6)
+def _chat_messages(db: Session, question: str, history: list[ChatMessage]) -> tuple[list[dict[str, str]], list[dict[str, Any]], dict[str, Any]]:
+    """组装智能问答的上下文消息：知识库检索 + 实时状态 + 脱敏历史。返回 (messages, hits, runtime)。"""
+    hits = search_knowledge(db, question, 6)
     context = _runtime_context(db)
     knowledge_text = "\n\n".join(
         f"【{item['title']}】\n{redact_sensitive(item['snippet'])}" for item in hits
@@ -140,8 +142,14 @@ def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Dep
         f"\n实时状态：{context}\n知识库检索结果：\n{knowledge_text}"
     )
     messages = [{"role": "system", "content": system}]
-    messages.extend({"role": item.role, "content": redact_sensitive(item.content)} for item in body.history[-12:])
-    messages.append({"role": "user", "content": redact_sensitive(body.message)})
+    messages.extend({"role": item.role, "content": redact_sensitive(item.content)} for item in history[-12:])
+    messages.append({"role": "user", "content": redact_sensitive(question)})
+    return messages, hits, context
+
+
+@router.post("/api/v1/knowledge/chat", dependencies=[Depends(require_perm("knowledge:chat"))])
+def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
+    messages, hits, context = _chat_messages(db, body.message, body.history)
     try:
         answer = chat_completion(messages, db=db)
         model = chat_model_name(db)
@@ -156,6 +164,51 @@ def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Dep
         model = "fallback"
         source = "fallback"
     return {"answer": answer, "model": model, "source": source, "knowledge": hits, "runtime": context, "user": current.username}
+
+
+@router.post("/api/v1/knowledge/chat/stream", dependencies=[Depends(require_perm("knowledge:chat"))])
+def chat_stream(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
+    """智能问答流式输出：SSE 逐段推送回答（meta → delta* → done）。
+
+    - meta：模型名 / 知识库命中 / 实时状态（首帧即发，前端可先渲染引用）
+    - delta：回答文本增量
+    - done：结束标记（source=ai|fallback）；网关不可用时兜底摘要整段经 delta 发出
+    - 响应头 X-Accel-Buffering: no 关闭 nginx 代理缓冲，保证逐段到达前端
+    """
+    messages, hits, context = _chat_messages(db, body.message, body.history)
+
+    def _sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def _gen():
+        yield _sse("meta", {"model": chat_model_name(db), "knowledge": hits, "runtime": context, "user": current.username})
+        collected: list[str] = []
+        source, model = "ai", chat_model_name(db)
+        try:
+            for delta in chat_completion_stream(messages, db=db):
+                collected.append(delta)
+                yield _sse("delta", {"text": delta})
+        except Exception:
+            source, model = "fallback", "fallback"
+            if collected:
+                yield _sse("delta", {"text": "\n\n[连接中断，以上为已生成的部分回答]"})
+            else:
+                yield _sse(
+                    "delta",
+                    {"text": (
+                        "当前未成功连接 AI 网关，我先返回可确认的状态摘要："
+                        f"资产 {context['assets']['total']} 台，可达 {context['assets']['reachable']} 台，"
+                        f"活动异常 {len(context['active_anomalies'])} 条，未关闭任务单 {context['open_ticket_count']} 条。"
+                        "请检查 AI 网关配置和连接状态。"
+                    )},
+                )
+        yield _sse("done", {"source": source, "model": model})
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class DataQueryIn(BaseModel):

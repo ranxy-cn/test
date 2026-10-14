@@ -1301,6 +1301,23 @@ def _asset_ssh_password(a: Asset) -> str:
         return ""
 
 
+def _asset_ssh_password_state(a: Asset) -> tuple[str, bool]:
+    """返回 (解密密码, 密文存在但解密失败)。
+
+    第二个返回值用于把「从未保存密码」与「已保存但服务端加密密钥变更导致无法解密」
+    区分开（后者提示重新保存，而不是误导用户以为没填过）。
+    """
+    enc = a.ssh_password_enc or ""
+    if not enc:
+        return "", False
+    from app.security import decrypt_secret
+
+    try:
+        return decrypt_secret(enc), False
+    except Exception:  # noqa: BLE001
+        return "", True
+
+
 def _load_private_key_safe() -> object | None:
     """探测免密巡检私钥是否可用；缺失/损坏一律返回 None（不抛异常）。"""
     from app.services.inspector import INSPECT_KEY_PATH, _load_private_key
@@ -1411,13 +1428,20 @@ def asset_exec(
     if a is None:
         raise HTTPException(404, "资产不存在")
     ip, port, username = _ssh_target_for_asset(a, body)
-    saved_password = _asset_ssh_password(a)
+    saved_password, enc_broken = _asset_ssh_password_state(a)
     if not body.password and not saved_password:
         pkey_probe = _load_private_key_safe()
         if pkey_probe is None:
+            if enc_broken:
+                raise HTTPException(
+                    400,
+                    "该资产已保存的 SSH 密码无法解密（服务端加密密钥可能已变更）："
+                    "请在「编辑资产」中重新填写 SSH 密码保存一次，或使用终端右上角「凭据」临时输入",
+                )
             raise HTTPException(
                 400,
-                "该资产尚未保存 SSH 密码且免密巡检私钥不可用：请在「编辑资产」中填写 SSH 密码后重试",
+                "该资产尚未保存 SSH 密码且免密巡检私钥不可用：请在「编辑资产」中填写 SSH 密码后重试，"
+                "或使用终端右上角「凭据」临时输入",
             )
 
     import re

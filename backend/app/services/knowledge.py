@@ -6,7 +6,7 @@ import re
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from xml.etree import ElementTree
 
 import httpx
@@ -136,6 +136,37 @@ def chat_completion(messages: list[dict[str, str]], max_tokens: int = 1200, db: 
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("AI 网关未返回有效回答")
     return content
+
+
+def chat_completion_stream(messages: list[dict[str, str]], max_tokens: int = 1200, db: Session | None = None) -> Iterator[str]:
+    """流式对话：逐段 yield 回答增量（OpenAI 兼容 SSE）。
+
+    未配置密钥或网关异常时抛 RuntimeError，由调用方走兜底文案。
+    """
+    api_key, base_url, model, timeout = _chat_config(db)
+    if not api_key:
+        raise RuntimeError("未配置 AI API Key，请在「系统管理 → AI 服务配置」中填写并启用")
+    with httpx.post(
+        f"{base_url}/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2, "stream": True},
+        timeout=timeout,
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or [{}]
+            delta = (choices[0].get("delta") or {}).get("content")
+            if isinstance(delta, str) and delta:
+                yield delta
 
 
 def analyze_document(title: str, content: str) -> dict[str, Any]:

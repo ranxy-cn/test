@@ -351,7 +351,7 @@
           </el-card>
         </el-tab-pane>
 
-      <!-- SSH 终端：模拟交互式登录会话，命令经后端免密通道在目标机实时执行并回显 -->
+      <!-- SSH 终端：先密码验证解锁，再进入模拟交互式登录会话（命令经后端在目标机实时执行并回显） -->
       <el-tab-pane name="ssh" lazy>
           <template #label>SSH 终端</template>
           <el-card shadow="never" class="pane-card">
@@ -360,18 +360,75 @@
             <span>
               SSH 终端
               <el-tag v-if="sshConnected" size="small" type="success" effect="plain">{{ sshSessionLabel }}</el-tag>
-              <el-tag v-else size="small" type="info" effect="plain">未连接</el-tag>
-              <el-tooltip content="模拟 SSH 会话：命令经平台免密巡检通道在目标机实时执行并回显；支持 cd 切目录、↑/↓ 历史回溯、Ctrl+L 清屏；每条命令写审计日志" placement="top">
+              <el-tag v-else size="small" type="info" effect="plain">未解锁</el-tag>
+              <el-tooltip content="模拟 SSH 会话：输入密码验证解锁后，命令经平台在目标机实时执行并回显；支持 cd 切目录、↑/↓ 历史回溯、Ctrl+L 清屏；每条命令写审计日志" placement="top">
                 <el-icon><QuestionFilled /></el-icon>
               </el-tooltip>
             </span>
             <div class="row-gap">
+              <el-dropdown trigger="click" @command="setSshTheme">
+                <el-button size="small">
+                  <el-icon><Brush /></el-icon>{{ sshThemeLabel }}
+                  <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-for="t in SSH_THEMES" :key="t.key" :command="t.key">
+                      <el-icon><component :is="t.icon" /></el-icon>{{ t.label }}
+                      <el-icon v-if="sshTheme === t.key" class="theme-check"><Check /></el-icon>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+              <el-popover v-if="sshUnlocked" v-model:visible="sshCredVisible" placement="bottom-end" width="320" trigger="click">
+                <template #reference>
+                  <el-button size="small" :type="sshCredPassword ? 'warning' : 'default'" :disabled="sshBusy">
+                    <el-icon><Key /></el-icon>凭据{{ sshCredPassword ? '·临时密码' : '' }}
+                  </el-button>
+                </template>
+                <div class="ssh-cred-form">
+                  <div class="cred-tip">资产未保存密码 / 私钥不可用时的临时通道：仅当前会话生效，不落库、不写入审计；也可在「编辑资产」中保存后长期使用。</div>
+                  <el-input v-model="sshCredUsername" size="small" clearable placeholder="SSH 用户名（留空按资产登记 / root）" />
+                  <el-input v-model="sshCredPassword" size="small" type="password" show-password clearable placeholder="SSH 密码（留空走平台保存的凭据）" @keyup.enter="sshCredVisible = false" />
+                  <div class="cred-actions">
+                    <el-button size="small" :disabled="sshBusy" @click="clearSshCred">清除</el-button>
+                    <el-button size="small" type="primary" @click="sshCredVisible = false">完成</el-button>
+                  </div>
+                </div>
+              </el-popover>
               <el-button size="small" @click="sshClear">清屏</el-button>
               <el-button size="small" :disabled="sshBusy" @click="sshReconnect">重连</el-button>
             </div>
           </div>
         </template>
 
+        <!-- 访问门禁：输入 SSH 密码验证通过后才能进入终端 -->
+        <div v-if="!sshUnlocked" class="ssh-gate">
+          <div class="ssh-gate-card">
+            <div class="gate-icon"><el-icon :size="22"><Lock /></el-icon></div>
+            <div class="gate-title">SSH 安全验证</div>
+            <div class="gate-sub">{{ sshGateTarget }}</div>
+            <el-input v-model="gateUsername" clearable placeholder="用户名（默认 root）">
+              <template #prefix><el-icon><User /></el-icon></template>
+            </el-input>
+            <el-input
+              ref="gateInput"
+              v-model="gatePassword"
+              type="password"
+              show-password
+              clearable
+              placeholder="请输入 SSH 密码"
+              @keyup.enter="sshGateConnect"
+            >
+              <template #prefix><el-icon><Key /></el-icon></template>
+            </el-input>
+            <el-button type="primary" :loading="gateBusy" :disabled="!gatePassword" @click="sshGateConnect">解锁终端</el-button>
+            <el-button :disabled="gateBusy" @click="sshGateUseSaved">用已保存凭据连接</el-button>
+            <div v-if="gateError" class="gate-error">{{ gateError }}</div>
+            <div class="gate-tip">密码仅用于本次会话验证，不落库、不写入审计日志；也可在「编辑资产」中保存后点「用已保存凭据连接」免输入</div>
+          </div>
+        </div>
+        <template v-else>
         <!-- 快捷命令：常用排障命令一键上屏 -->
         <div class="ssh-chips">
           <button
@@ -384,7 +441,7 @@
           >{{ c.label }}</button>
         </div>
 
-        <div ref="sshTermEl" class="ssh-term" @click="focusSshInput">
+        <div ref="sshTermEl" class="ssh-term" :class="sshThemeDark ? 'term-dark' : 'term-light'" @click="focusSshInput">
           <div v-for="(b, i) in sshBlocks" :key="i" class="ssh-block" :class="b.cls">{{ b.text }}</div>
           <div class="ssh-block ssh-cmd-line">
             <span class="ssh-prompt" v-html="sshPromptHtml"></span><input
@@ -407,6 +464,7 @@
           <span>{{ sshBusy ? '命令执行中…' : '就绪 · ↑/↓ 历史回溯 · Ctrl+L 清屏 · Ctrl+C 放弃当前行' }}</span>
           <span v-if="sshLastMs != null" class="ssh-latency">上次耗时 {{ sshLastMs }} ms</span>
         </div>
+        </template>
           </el-card>
         </el-tab-pane>
 
@@ -799,10 +857,13 @@ watch(navTab, (tab, prev) => {
   if (tab === 'sysinfo' && !sysinfo.value && !sysinfoLoading.value && !sysinfoError.value) {
     loadSysinfo()
   }
-  if (tab === 'ssh' && !sshBannerShown) {
-    sshBannerShown = true
-    sshBanner()
-    nextTick(focusSshInput)
+  if (tab === 'ssh') {
+    // 已解锁：首次进入补横幅；未解锁：聚焦密码输入框
+    if (sshUnlocked.value && !sshBannerShown) {
+      sshBannerShown = true
+      sshBanner()
+    }
+    nextTick(() => (sshUnlocked.value ? focusSshInput() : gateInput.value?.focus?.()))
   }
   if (tab === 'live') {
     nextTick(() => liveChart && liveChart.resize())
@@ -1197,6 +1258,109 @@ const sshHistIdx = ref(-1)
 const sshTermEl = ref(null)
 const sshInputEl = ref(null)
 let sshBannerShown = false
+// 会话级临时凭据：仅本次监控窗内生效，不落库不进审计（资产未保存密码/私钥不可用时的兜底通道）
+const sshCredVisible = ref(false)
+const sshCredUsername = ref('')
+const sshCredPassword = ref('')
+
+function clearSshCred() {
+  sshCredUsername.value = ''
+  sshCredPassword.value = ''
+  sshCredVisible.value = false
+}
+
+// ===== 访问门禁：先验证 SSH 密码，再解锁终端 =====
+const sshUnlocked = ref(false)
+const gateUsername = ref('')
+const gatePassword = ref('')
+const gateBusy = ref(false)
+const gateError = ref('')
+const gateInput = ref(null)
+
+const sshGateTarget = computed(() => {
+  const p = asset.value?.extra?.provision
+  const ip = p?.ip || asset.value?.extra?.deploy?.ip || asset.value?.hostname || props.assetId || 'host'
+  return `${gateUsername.value.trim() || p?.username || 'root'}@${ip}`
+})
+
+// 验证通过后统一落地会话状态（门禁与后续 sshRun 共用）
+function applySession(data) {
+  sshConnected.value = true
+  sshUser.value = data.username || sshUser.value
+  sshIp.value = data.ip || sshIp.value
+  sshCwd.value = data.cwd || sshCwd.value
+  sshHome.value = data.home || sshHome.value
+}
+
+async function sshGateConnect() {
+  if (gateBusy.value || !props.assetId || !gatePassword.value) return
+  gateBusy.value = true
+  gateError.value = ''
+  try {
+    // 用 `true` 做一次轻量验证：拿到真实会话信息，密码错误在这里拦下
+    const { data } = await execAssetCommand(props.assetId, {
+      command: 'true',
+      cwd: '~',
+      username: gateUsername.value.trim(),
+      password: gatePassword.value,
+    })
+    applySession(data)
+    sshCredUsername.value = gateUsername.value.trim()
+    sshCredPassword.value = gatePassword.value
+    sshUnlocked.value = true
+    sshBannerShown = true
+    sshBanner()
+    nextTick(() => {
+      gatePassword.value = ''
+      focusSshInput()
+    })
+  } catch (err) {
+    gateError.value = err.response?.data?.detail || '连接失败，请检查用户名与密码'
+  } finally {
+    gateBusy.value = false
+  }
+}
+
+// 不想输入密码时的旁路：走平台已保存凭据（保存密码或免密私钥）
+async function sshGateUseSaved() {
+  if (gateBusy.value || !props.assetId) return
+  gateBusy.value = true
+  gateError.value = ''
+  try {
+    const { data } = await execAssetCommand(props.assetId, { command: 'true', cwd: '~' })
+    applySession(data)
+    sshUnlocked.value = true
+    sshBannerShown = true
+    sshBanner()
+    nextTick(focusSshInput)
+  } catch (err) {
+    gateError.value = err.response?.data?.detail || '已保存凭据不可用，请输入 SSH 密码解锁'
+  } finally {
+    gateBusy.value = false
+  }
+}
+
+// ===== 终端皮肤：白天 / 黑夜 / 跟随系统 =====
+const SSH_THEME_KEY = 'devops_ssh_theme'
+const SSH_THEMES = [
+  { key: 'light', label: '白天', icon: 'Sunny' },
+  { key: 'dark', label: '黑夜', icon: 'Moon' },
+  { key: 'auto', label: '跟随系统', icon: 'Monitor' },
+]
+const sshTheme = ref(localStorage.getItem(SSH_THEME_KEY) || 'auto')
+const sshMedia = window.matchMedia?.('(prefers-color-scheme: dark)')
+const sshSystemDark = ref(sshMedia?.matches || false)
+if (sshMedia) {
+  const onSchemeChange = (e) => { sshSystemDark.value = e.matches }
+  sshMedia.addEventListener('change', onSchemeChange)
+  onBeforeUnmount(() => sshMedia.removeEventListener('change', onSchemeChange))
+}
+const sshThemeDark = computed(() => sshTheme.value === 'dark' || (sshTheme.value === 'auto' && sshSystemDark.value))
+const sshThemeLabel = computed(() => SSH_THEMES.find((t) => t.key === sshTheme.value)?.label || '跟随系统')
+function setSshTheme(key) {
+  sshTheme.value = key
+  try { localStorage.setItem(SSH_THEME_KEY, key) } catch { /* 隐私模式等存储受限场景忽略 */ }
+}
 
 const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 
@@ -1230,12 +1394,12 @@ function focusSshInput() {
   if (!sshBusy.value) sshInputEl.value?.focus()
 }
 
-// 连接横幅：模拟 ssh 登录首屏
+// 连接横幅：模拟 ssh 登录首屏（门禁验证通过后展示）
 function sshBanner() {
   const host = asset.value?.hostname || props.assetId
-  const ip = asset.value?.extra?.provision?.ip || asset.value?.extra?.deploy?.ip
+  const ip = sshIp.value || asset.value?.extra?.provision?.ip || asset.value?.extra?.deploy?.ip
   sshPush(`Trying ${ip || host}...`, 'dim')
-  sshPush(`Connected to ${host}${ip ? `（${ip}）` : ''} · 凭据：子机保存的 SSH 密码（加密存储），免密私钥兜底`, 'dim')
+  sshPush(`Connected to ${host}${ip ? `（${ip}）` : ''} · 凭据：本次会话验证的 SSH 密码（不落库、不写审计）`, 'dim')
   sshPush(`Last login: ${new Date().toLocaleString('zh-CN', { hour12: false })} from 平台控制台`, 'dim')
   sshPush('输入命令开始操作，快捷命令见上方标签；每条命令将写入审计日志', 'dim')
 }
@@ -1244,7 +1408,12 @@ async function sshRun(cmd) {
   if (sshBusy.value || !props.assetId) return
   sshBusy.value = true
   try {
-    const { data } = await execAssetCommand(props.assetId, { command: cmd, cwd: sshCwd.value })
+    const { data } = await execAssetCommand(props.assetId, {
+      command: cmd,
+      cwd: sshCwd.value,
+      username: sshCredUsername.value.trim(),
+      password: sshCredPassword.value,
+    })
     sshConnected.value = true
     sshUser.value = data.username || sshUser.value
     sshIp.value = data.ip || sshIp.value
@@ -1254,7 +1423,13 @@ async function sshRun(cmd) {
     if (data.output) sshPush(data.output.replace(/\n+$/, ''), 'out')
     if (data.exit_code !== 0) sshPush(`[exit ${data.exit_code}]`, 'err')
   } catch (err) {
-    sshPush(err.response?.data?.detail || '命令执行失败（SSH 通道不可用）', 'err')
+    const detail = err.response?.data?.detail || '命令执行失败（SSH 通道不可用）'
+    sshPush(detail, 'err')
+    // 凭据类错误自动弹出「凭据」面板，引导临时输入或去编辑资产保存
+    if (/SSH 密码|SSH 认证失败|免密/.test(detail)) {
+      sshCredVisible.value = true
+      sshPush('已打开右上角「凭据」面板：可填临时 SSH 密码后重试，或在「编辑资产」中保存密码', 'dim')
+    }
   } finally {
     sshBusy.value = false
     nextTick(focusSshInput)
@@ -1575,9 +1750,18 @@ function resetSsh() {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* ===== 终端皮肤：变量化配色，白天/黑夜/跟随系统由 term-light/term-dark 切换 ===== */
 .ssh-term {
-  background: #0d1117;
-  color: #c9d1d9;
+  --term-bg: #0d1117;
+  --term-fg: #c9d1d9;
+  --term-dim: #8b949e;
+  --term-cmd: #e6edf3;
+  --term-err: #ff7b72;
+  --term-p-user: #7ee787;
+  --term-p-dir: #79c0ff;
+  --term-caret: #7ee787;
+  background: var(--term-bg);
+  color: var(--term-fg);
   border-radius: 10px;
   padding: 12px 14px;
   height: 420px;
@@ -1587,22 +1771,32 @@ function resetSsh() {
   line-height: 1.65;
   cursor: text;
 }
+.ssh-term.term-light {
+  --term-bg: #f6f8fa;
+  --term-fg: #24292f;
+  --term-dim: #6e7781;
+  --term-cmd: #1f2328;
+  --term-err: #cf222e;
+  --term-p-user: #1a7f37;
+  --term-p-dir: #0969da;
+  --term-caret: #1a7f37;
+}
 .ssh-block {
   white-space: pre-wrap;
   word-break: break-all;
 }
 .ssh-dim {
-  color: #8b949e;
+  color: var(--term-dim);
 }
 .ssh-cmd {
-  color: #e6edf3;
+  color: var(--term-cmd);
   font-weight: 600;
 }
 .ssh-out {
-  color: #c9d1d9;
+  color: var(--term-fg);
 }
 .ssh-err {
-  color: #ff7b72;
+  color: var(--term-err);
 }
 .ssh-cmd-line {
   display: flex;
@@ -1610,6 +1804,12 @@ function resetSsh() {
 }
 .ssh-prompt {
   flex: none;
+}
+.ssh-prompt .p-user {
+  color: var(--term-p-user);
+}
+.ssh-prompt .p-dir {
+  color: var(--term-p-dir);
 }
 .ssh-inline-input {
   flex: 1;
@@ -1619,9 +1819,66 @@ function resetSsh() {
   outline: none;
   padding: 0;
   margin: 0;
-  color: #e6edf3;
+  color: var(--term-cmd);
   font: inherit;
-  caret-color: #7ee787;
+  caret-color: var(--term-caret);
+}
+/* ===== SSH 访问门禁：密码验证卡片 ===== */
+.ssh-gate {
+  height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--el-fill-color-lighter);
+}
+.ssh-gate-card {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+  padding: 26px 28px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+.ssh-gate-card .gate-icon {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--el-color-primary-light-8);
+  color: var(--el-color-primary);
+}
+.ssh-gate-card .gate-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.ssh-gate-card .gate-sub {
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.ssh-gate-card .gate-error {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-color-danger);
+  text-align: left;
+}
+.ssh-gate-card .gate-tip {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+.theme-check {
+  margin-left: auto;
+  color: var(--el-color-primary);
 }
 .ssh-status {
   display: flex;
@@ -1630,6 +1887,22 @@ function resetSsh() {
   margin-top: 8px;
   font-size: 12px;
   color: var(--muted);
+}
+/* ===== SSH 终端临时凭据面板 ===== */
+.ssh-cred-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ssh-cred-form .cred-tip {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.ssh-cred-form .cred-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 /* ===== 历史全揽弹窗 ===== */
 .ov-toolbar {
