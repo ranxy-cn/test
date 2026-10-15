@@ -275,7 +275,8 @@ def test_uninstall_via_ssh_success():
     )
     logs: list[str] = []
     dep_mod.uninstall_via_ssh(ssh, logs=logs)
-    assert ssh.chan.commands[1].startswith("pkill -f 'devops-agent/agent'")
+    assert "pkill -f 'devops-agent[/]agent'" in ssh.chan.commands[1]
+    assert "pkill -f '[.]/agent --config'" in ssh.chan.commands[1]
     assert "rm -rf /opt/devops-agent" in ssh.chan.commands[2]
     assert any("已停止 agent 进程并清理 /opt/devops-agent" in ln for ln in logs)
 
@@ -344,7 +345,7 @@ def test_provision_lang_go_dispatch_and_invalid_rejected(client, monkeypatch):
         called.update(kw)
 
     monkeypatch.setattr(dep_mod, "deploy_to_host", fake_deploy)
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.61", "password": "x", "lang": "go"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.61", "password": "x", "lang": "go"})
     assert r.status_code == 200
     for _ in range(40):
         if called:
@@ -352,7 +353,7 @@ def test_provision_lang_go_dispatch_and_invalid_rejected(client, monkeypatch):
         time.sleep(0.05)
     assert called["lang"] == "go"
 
-    r2 = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.62", "password": "x", "lang": "rust"})
+    r2 = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.62", "password": "x", "lang": "rust"})
     assert r2.status_code == 422
 
 
@@ -374,7 +375,7 @@ def test_provision_reuses_existing_asset_for_same_ip_port(client, db, monkeypatc
     db.add(legacy)
     db.commit()
 
-    resp = client.post("/api/v1/assets/provision", json={"ip": "ranxx.cn", "port": 1001, "password": "x"})
+    resp = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "ranxx.cn", "port": 1001, "password": "x"})
     assert resp.status_code == 200
     assert resp.json()["id"] == "node-ranxx-cn", "复用旧资产 id，避免重复建卡"
     assert db.query(Asset).filter(Asset.id.like("node-ranxx-cn%")).count() == 1
@@ -388,7 +389,7 @@ def test_provision_same_ip_different_port_creates_distinct_assets(client, db, mo
     """同 IP 不同 SSH 端口是不同资产，互不覆盖。"""
     monkeypatch.setattr(dep_mod, "deploy_to_host", lambda *a, **kw: None)
     for port in (22, 1001):
-        resp = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.55", "port": port, "password": "x"})
+        resp = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.55", "port": port, "password": "x"})
         assert resp.status_code == 200
     ids = {a.id for a in db.query(Asset).filter(Asset.id.like("node-10-0-0-55%")).all()}
     assert ids == {"node-10-0-0-55-22", "node-10-0-0-55-1001"}
@@ -412,7 +413,7 @@ def test_provision_legacy_without_port_and_new_port_distinct(client, db, monkeyp
     db.commit()
 
     # 同 IP 但端口 1001 → 不能复用旧资产（尽管旧记录端口缺失）
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.0.0.5", "port": 1001, "password": "pw"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.0.0.5", "port": 1001, "password": "pw"})
     assert r.status_code == 200
     assert r.json()["id"] == "node-10-0-0-5-1001"
     assert db.get(Asset, "node-10-0-0-5-1001") is not None
@@ -425,7 +426,7 @@ def test_provision_display_name_duplicate_rejected(client, db):
     db.commit()
     r = client.post(
         "/api/v1/assets/provision",
-        json={"display_name": "订单-网关-01", "ip": "10.9.9.10", "password": "pw"},
+        json={"owner": "ops", "display_name": "订单-网关-01", "ip": "10.9.9.10", "password": "pw"},
     )
     assert r.status_code == 409
 
@@ -449,15 +450,15 @@ def test_provision_mother_validation(client, db, monkeypatch):
     db.add(Asset(id="child-1", hostname="c-1", app="", role="app", env="prod", owner="", tenant_id="t1"))
     db.commit()
 
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.9.9.1", "password": "x", "mother_id": "no-such"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.9.9.1", "password": "x", "mother_id": "no-such"})
     assert r.status_code == 404
     assert "归属母机不存在" in r.json()["detail"]
 
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.9.9.2", "password": "x", "mother_id": "child-1"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.9.9.2", "password": "x", "mother_id": "child-1"})
     assert r.status_code == 400
     assert "不是母机" in r.json()["detail"]
 
-    r = client.post("/api/v1/assets/provision", json={"ip": "10.1.1.1", "password": "x", "mother_id": "m-1"})
+    r = client.post("/api/v1/assets/provision", json={"owner": "ops", "ip": "10.1.1.1", "password": "x", "mother_id": "m-1"})
     assert r.status_code == 200  # 母机本机子机：允许纳管
     assert r.json()["status"] == "running"
 
@@ -567,7 +568,7 @@ def test_remove_endpoint_uninstall_failure_returns_502(client, db, monkeypatch):
 
 
 def test_remove_endpoint_mother_rules(client, db):
-    """母机删除规则：勾卸载 → 400（纯台账级联删除，无需卸载）；仅删记录 → 允许。"""
+    """母机删除规则：勾卸载 → 400（纯台账，不支持卸载）；仅删记录（无子机）→ 允许。"""
     m = Asset(
         id="m-x",
         hostname="mx",
@@ -580,11 +581,32 @@ def test_remove_endpoint_mother_rules(client, db):
         reachable=True,
     )
     db.add(m)
+    db.add(
+        Asset(
+            id="node-mx",
+            hostname="node-mx",
+            kind="node",
+            app="",
+            role="app",
+            env="prod",
+            owner="",
+            mother_id="m-x",
+            tenant_id="t1",
+        )
+    )
     db.commit()
 
-    r = client.post("/api/v1/assets/m-x/remove", json={"uninstall": True, "ssh_password": "pw"})
+    # 有子机 → 先删子机
+    r = client.post("/api/v1/assets/m-x/remove", json={})
     assert r.status_code == 400
-    assert "母机" in r.json()["detail"]
+    assert "先删除" in r.json()["detail"]
+    assert db.get(Asset, "m-x") is not None
+
+    # 删净子机后：勾卸载 → 400（母机纯台账，不支持卸载）
+    assert client.post("/api/v1/assets/node-mx/remove", json={"uninstall": False}).status_code == 200
+    r1 = client.post("/api/v1/assets/m-x/remove", json={"uninstall": True, "ssh_password": "pw"})
+    assert r1.status_code == 400
+    assert "不支持卸载" in r1.json()["detail"]
 
     r2 = client.post("/api/v1/assets/m-x/remove", json={})
     assert r2.status_code == 200

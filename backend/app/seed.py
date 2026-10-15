@@ -33,6 +33,12 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("knowledge:read", "知识库查看", "查看运维知识文档与检索结果"),
     ("knowledge:write", "知识库维护", "上传、分析与删除运维文档"),
     ("knowledge:chat", "智能对话", "使用知识库和实时状态进行 AI 对话"),
+    ("ai:view", "AI 分析查看", "查看 AI 日志分析结果与审计"),
+    ("ai:config", "AI 服务配置", "维护 AI 服务配置（密钥/端点/模型）并连接测试"),
+    ("ai:feedback", "AI 结果处理", "人工处理 AI 分析结果并手动触发重新分析"),
+    ("recovery:view", "恢复任务查看", "查看告警恢复任务与恢复脚本"),
+    ("recovery:execute", "恢复任务执行", "人工执行/取消告警恢复任务（脚本上机执行）"),
+    ("recovery:manage", "恢复脚本管理", "维护自定义恢复脚本（命令/风险等级/规则匹配）"),
 ]
 
 READ_PERMS = [c for c, _, _ in PERMISSIONS if c.endswith(":read")]
@@ -41,7 +47,7 @@ SELF_SERVICE_PERMS = ["knowledge:chat"]
 
 ROLES: list[tuple[str, str, str, list[str]]] = [
     ("viewer", "只读用户", "仅查看各类页面", READ_PERMS + SELF_SERVICE_PERMS),
-    ("operator", "运维操作员", "查看 + 审批/工具/备份操作", READ_PERMS + OPERATE_PERMS + SELF_SERVICE_PERMS + ["knowledge:write"]),
+    ("operator", "运维操作员", "查看 + 审批/工具/备份操作", READ_PERMS + OPERATE_PERMS + SELF_SERVICE_PERMS + ["knowledge:write", "ai:feedback", "recovery:execute"]),
     ("admin", "管理员", "全部权限，含用户管理", [c for c, _, _ in PERMISSIONS]),
 ]
 

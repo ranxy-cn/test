@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import timedelta, timezone
 from typing import Any
@@ -22,6 +23,8 @@ from app.services.locks import acquire_asset_lock, heartbeat_lock, record_lock_c
 from app.services.notify import notify_ticket
 from app.services.tickets import next_ticket_number
 from sqlalchemy import select
+
+log = logging.getLogger("devops.pipeline")
 
 
 def _set_status(ticket: Ticket, target: TicketStatus) -> None:
@@ -474,6 +477,7 @@ def run_execution(ticket_id: int, db: Session | None = None) -> None:
         notify_ticket(db, ticket, "recovered", f"{ticket.number} 已自动恢复")
         db.commit()
     except Exception as exc:  # noqa: BLE001
+        log.exception("执行管线失败 ticket=%s", ticket_id)
         db.rollback()
         ticket = db.get(Ticket, ticket_id)
         if ticket and ticket.status not in {TicketStatus.recovered.value, TicketStatus.escalated.value}:

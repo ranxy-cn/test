@@ -116,7 +116,14 @@ def deploy_to_host(
             if lang == "py"
             else f"{AGENT_DIR}/agent --config {AGENT_DIR}/config.json"
         )
-        _run(ssh, f"pkill -f 'devops-agent/agent' 2>/dev/null; true", 15, steps)
+        # pkill 模式用 [] 括号技巧防自匹配（命中 sshd 派生的 sh 自身会话自杀中断）；
+        # 第二条覆盖历史残留的相对路径启动（如 ./agent --config config.json，见 2026-10-09 子机双进程事故）
+        _run(
+            ssh,
+            "pkill -f 'devops-agent[/]agent' 2>/dev/null; pkill -f '[.]/agent --config' 2>/dev/null; true",
+            15,
+            steps,
+        )
         # 拉起必须 pty=False：deployer 各步骤经 PTY 会话执行，会话关闭时 sshd 清理会话内
         # 全部进程，nohup/setsid 均无法幸免（实测复现）；无 PTY 会话关闭则不影响后台进程。
         # nohup setsid 仍保留作双保险（stdin 断开 + 脱离进程组，防其它来源的 HUP）。
@@ -178,7 +185,12 @@ def uninstall_via_ssh(ssh: Any, logs: list[str] | None = None) -> None:
     """停止目标机上的自研 agent 进程并删除安装目录（删除资产时的远程清理）。"""
     out: list[str] = logs if logs is not None else []
     sudo = _detect_sudo(ssh, out)
-    _run(ssh, "pkill -f 'devops-agent/agent' 2>/dev/null; true", 15, out)
+    _run(
+        ssh,
+        "pkill -f 'devops-agent[/]agent' 2>/dev/null; pkill -f '[.]/agent --config' 2>/dev/null; true",
+        15,
+        out,
+    )
     code, text = _run(ssh, f"{sudo} rm -rf {AGENT_DIR} && echo REMOVED".strip(), 30, out)
     if code != 0 or "REMOVED" not in text:
         raise ProvisionError(f"清理安装目录失败：{text[-200:]}")

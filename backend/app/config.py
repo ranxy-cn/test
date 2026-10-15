@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # 未设置时每次进程启动随机生成（重启后所有 token 失效，并打印告警）。
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
+    # 敏感凭据（资产 SSH 密码 / AI api_key）落库加密的专用密钥：
+    # 推荐所有共用同一数据库的环境配置相同值；未配置时回退 JWT_SECRET（历史口径，兼容旧密文）。
+    secret_encrypt_key: str = ""
     access_token_expire_minutes: int = 720
     # 登录防爆破：连续失败 lockout_max_attempts 次后锁定 lockout_minutes 分钟
     lockout_max_attempts: int = 5
@@ -35,8 +38,9 @@ class Settings(BaseSettings):
     # 初始管理员密码（首次 seed 时使用），生产必须通过环境变量覆盖
     admin_initial_password: str = "Admin@123456"
     # 是否种入演示资产/维护窗口（订单系统等示例数据）；
-    # 生产环境设 SEED_DEMO_ASSETS=0 只保留真实登记的资产
-    seed_demo_assets: bool = True
+    # 仅开发/测试环境开启（tests/conftest.py 强制注入），生产默认关闭，
+    # 如需演示可显式设 SEED_DEMO_ASSETS=1 且仅在资产表为空时生效
+    seed_demo_assets: bool = False
 
     @field_validator("seed_demo_assets", mode="before")
     @classmethod
@@ -76,6 +80,15 @@ class Settings(BaseSettings):
     ansible_timeout_seconds: int = 120
     ansible_host_key_checking: bool = True
     notify_webhook_url: str = ""
+    # 负责人告警推送：邮箱走 SMTP（未配置时邮箱渠道降级失败并记录原因）；
+    # 电话短信渠道正常生成消息，sms_provider 为空表示供应商未对接（跳过实际发送，记录留痕）。
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_sender: str = ""
+    smtp_use_ssl: bool = True
+    sms_provider: str = ""  # 空=供应商未对接（stub）；预留 aliyun/tencent 等接入点
     # 真实 CPU 压测工具：仅服务器部署时打开
     stress_tools_enabled: bool = False
     stress_max_seconds: int = 1200
@@ -91,6 +104,13 @@ class Settings(BaseSettings):
     chat_model: str = "glm-4.7-channel-cg"
     chat_timeout_seconds: float = 60.0
     knowledge_max_upload_bytes: int = 20 * 1024 * 1024
+
+    # Netdata 只读采集：默认从资产登记的 IP 访问 Agent 的 19999 端口。
+    # 单资产可在 extra.netdata 中覆盖 url/port/enabled。
+    netdata_enabled: bool = True
+    netdata_port: int = 19999
+    netdata_timeout_seconds: float = 2.5
+    netdata_max_assets: int = 12
 
     policy_version: str = "policy-v1.0.0"
     mock_model_version: str = "mock-diagnoser-v1"

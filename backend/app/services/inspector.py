@@ -412,6 +412,11 @@ def collect_sysinfo(ip: str, port: int, username: str, password: str, key_path: 
     finally:
         client.close()
 
+    return parse_sysinfo_raw(raw, ip, username)
+
+
+def parse_sysinfo_raw(raw: str, ip: str = "", username: str = "") -> dict[str, Any]:
+    """把 SYSINFO_CMD 原始输出解析为全景 JSON（agent 本地采集亦可复用此解析）。"""
     s = _split_sections(raw)
     lines = {k: [l for l in v.splitlines() if l.strip()] for k, v in s.items()}
 

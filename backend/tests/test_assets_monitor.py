@@ -8,8 +8,10 @@ from app.models import Asset
 from app.services.probe import run_probe_cycle
 
 
-def _mk(aid: str, ip: str = "", port: int = 22) -> Asset:
+def _mk(aid: str, ip: str = "", port: int = 22, agent_token: str = "") -> Asset:
     extra = {"provision": {"ip": ip, "port": port, "status": "registered"}} if ip else {}
+    if agent_token:
+        extra = {**extra, "agent_token": agent_token}
     return Asset(
         id=aid,
         hostname=aid,
@@ -75,9 +77,10 @@ def test_probe_via_api_and_list_fields(client, db):
         db.add(_mk("ast-api-01", ip="127.0.0.1", port=port))
         db.commit()
 
-        r = client.post("/api/v1/assets/probe")
-        assert r.status_code == 200
-        body = r.json()
+        # 手动探查入口已移除；后台探活周期直接调用服务验证
+        from app.services.probe import run_probe_cycle
+
+        body = run_probe_cycle(db)
         assert body["total"] >= 1 and "reachable" in body
 
         row = client.get("/api/v1/assets", params={"keyword": "ast-api-01"}).json()["items"][0]
@@ -135,26 +138,52 @@ def test_asset_metrics_mock_series(client, db):
         assert series[-1]["v"] == body["latest"][key]
 
 
-def test_asset_inspect_requires_ip(client, db):
+def test_asset_inspect_no_agent_data(client, db):
+    # 数据采集已走 agent：无 agent 上报数据 → 503（与 IP 登记无关）
     db.add(_mk("ast-no-ip"))
     db.commit()
     r = client.post(
         "/api/v1/assets/ast-no-ip/inspect",
         json={"username": "root", "password": "x", "port": 22},
     )
-    assert r.status_code == 400
-    assert "IP" in r.json()["detail"]
+    assert r.status_code == 503
+    assert "Agent" in r.json()["detail"]
 
 
-def test_asset_inspect_auth_failure(client, db):
-    # 127.0.0.1 无 SSH → 连接失败（502 而非 5xx 崩溃）
-    db.add(_mk("ast-ssh-fail", ip="127.0.0.1"))
+def test_asset_inspect_from_agent_frames(client, db):
+    # agent 上报最新帧后，inspect 从缓存组装（不再 SSH）
+    from app.routers.agent_api import LATEST, _LATEST_LOCK
+
+    db.add(_mk("ast-insp-agent", agent_token="tok-insp"))
     db.commit()
-    r = client.post(
-        "/api/v1/assets/ast-ssh-fail/inspect",
-        json={"username": "root", "password": "x", "port": 1},
-    )
-    assert r.status_code in (401, 502)
+    with _LATEST_LOCK:
+        LATEST["ast-insp-agent"] = {
+            "ts": 1.0,
+            "cpu": 12.3,
+            "mem": 45.6,
+            "disk": 30.0,
+            "load1": 0.5, "load5": 0.4, "load15": 0.3,
+            "ncpu": 4, "mem_total_mb": 8000, "mem_used_mb": 3600,
+            "procs": [
+                {"pid": 1, "comm": "java", "user": "app", "args": "java -jar app.jar", "cpu": 30.0, "mem": 20.0},
+                {"pid": 2, "comm": "nginx", "user": "www", "args": "nginx", "cpu": 5.0, "mem": 8.0},
+            ],
+        }
+    try:
+        r = client.post("/api/v1/assets/ast-insp-agent/inspect", json={})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["load"]["load1"] == 0.5
+        assert data["load"]["cores"] == 4
+        assert data["mem"]["total_mb"] == 8000
+        assert data["mem"]["pct"] == 45.6
+        assert data["top_cpu"][0]["comm"] == "java"
+        assert data["top_cpu"][0]["user"] == "app"
+        assert "app.jar" in data["top_cpu"][0]["args"]
+        assert data["top_mem"][0]["comm"] == "java"
+    finally:
+        with _LATEST_LOCK:
+            LATEST.pop("ast-insp-agent", None)
 
 
 # ---------------------------------------------------------------------------
@@ -236,30 +265,10 @@ devops-agent version 1.0.0
 """
 
 
-class _FakeStream2:
-    def read(self) -> bytes:
-        return _SYSINFO_RAW.encode()
-
-
-class _FakeSysSSH:
-    def set_missing_host_key_policy(self, policy) -> None:  # noqa: ARG002
-        return None
-
-    def connect(self, *args, **kwargs) -> None:  # noqa: ARG002
-        return None
-
-    def exec_command(self, cmd: str, timeout: int | None = None):  # noqa: ARG002
-        return None, _FakeStream2(), _FakeStream2()
-
-    def close(self) -> None:
-        return None
-
-
-def test_collect_sysinfo_parses_all_sections(monkeypatch):
+def test_collect_sysinfo_parses_all_sections():
     from app.services import inspector
 
-    monkeypatch.setattr(inspector.paramiko, "SSHClient", _FakeSysSSH)
-    data = inspector.collect_sysinfo("10.0.0.5", 22, "root", "")
+    data = inspector.parse_sysinfo_raw(_SYSINFO_RAW, ip="10.0.0.5", username="root")
 
     # 基础信息
     assert data["basic"]["hostname"] == "web-app-01"
@@ -308,16 +317,33 @@ def test_collect_sysinfo_parses_all_sections(monkeypatch):
     assert "1.0.0" in data["agent"]["version"]
 
 
-def test_asset_sysinfo_requires_ip(client, db):
+def test_asset_sysinfo_no_agent_report(client, db):
     db.add(_mk("ast-sys-noip"))
     db.commit()
     r = client.post("/api/v1/assets/ast-sys-noip/sysinfo", json={})
-    assert r.status_code == 400
-    assert "IP" in r.json()["detail"]
+    assert r.status_code == 503
+    assert "Agent" in r.json()["detail"]
 
 
-def test_asset_sysinfo_connect_failure(client, db):
-    db.add(_mk("ast-sys-fail", ip="127.0.0.1"))
+def test_asset_sysinfo_from_agent_report(client, db):
+    # agent 低频附带 sysinfo 原始文本 → 平台解析缓存 → sysinfo 端点直接返回（不再 SSH）
+    db.add(_mk("ast-sys-agent", agent_token="tok-sys"))
     db.commit()
-    r = client.post("/api/v1/assets/ast-sys-fail/sysinfo", json={"port": 1, "password": "x"})
-    assert r.status_code in (502, 503)
+    r = client.post(
+        "/api/v1/agent/report",
+        json={
+            "asset_id": "ast-sys-agent",
+            "agent_version": "1.1.0-go",
+            "samples": [{"ts": 1, "cpu": 1.0, "mem": 2.0, "disk": 3.0, "load1": 0.1}],
+            "sysinfo": _SYSINFO_RAW,
+        },
+        headers={"X-Agent-Token": "tok-sys"},
+    )
+    assert r.status_code == 200
+    r = client.post("/api/v1/assets/ast-sys-agent/sysinfo", json={})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["basic"]["hostname"] == "web-app-01"
+    assert data["virt"]["label"] == "KVM 虚拟机"
+    assert data["cpu"]["cores_logical"] == "8"
+    assert data["memory"]["mem"]["used_mb"] == 3900
