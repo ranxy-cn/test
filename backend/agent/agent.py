@@ -584,6 +584,8 @@ class Agent:
         self.buffer: collections.deque = collections.deque(maxlen=int(cfg.get("buffer_max", 600)))
         self.pending = 0  # 已入队待发条数（含补发）
         self.sysinfo_pending = ""  # 低频附带的服务器详情原始文本
+        self.pw_ver = ""  # 进程监听配置指纹（上报响应回带，变更即热拉配置）
+        self.cfg_dirty = False
 
     # ---- HTTP ----
     def _req(self, method: str, path: str, body: "dict | None" = None, timeout: float = 5.0):
@@ -603,6 +605,8 @@ class Agent:
             if cfg:
                 self.cfg = {**self.cfg, **cfg}
                 self.buffer = collections.deque(self.buffer, maxlen=int(self.cfg.get("buffer_max", 600)))
+            self.pw_ver = str(data.get("pw_ver") or "")
+            self.cfg_dirty = False
         except (urllib.error.URLError, OSError, ValueError):
             pass
 
@@ -618,11 +622,14 @@ class Agent:
         if sysinfo:
             payload["sysinfo"] = sysinfo
         try:
-            self._req("POST", "/api/v1/agent/report", payload)
+            resp = self._req("POST", "/api/v1/agent/report", payload)
             self.buffer.clear()
             self.pending = 0
             if sysinfo:
                 self.sysinfo_pending = ""
+            # 监听配置指纹变化 → 下轮立即热拉配置（平台增删监听后秒级生效）
+            if str(resp.get("pw_ver") or "") != self.pw_ver:
+                self.cfg_dirty = True
         except (urllib.error.URLError, OSError, ValueError):
             for s in extra or []:
                 self.buffer.append(s)
@@ -649,9 +656,12 @@ class Agent:
                 self.flush(ready)
                 ready = []
                 next_report = now + max(1, int(self.cfg.get("report_interval", 5)))
-            if now >= next_config:
+            if self.cfg_dirty or now >= next_config:
+                dirty = self.cfg_dirty
                 self.sync_config()
                 next_config = now + max(30, int(self.cfg.get("config_refresh", 300)))
+                if dirty:
+                    next_collect = 0.0  # 新监听配置到手，立即采集一轮
             if now >= next_sysinfo:
                 raw = _sysinfo_raw()
                 if raw:

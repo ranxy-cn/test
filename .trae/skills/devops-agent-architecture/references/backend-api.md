@@ -42,8 +42,9 @@
 - **knowledge.py**：文档列表/上传/删除、`GET /knowledge/search` 检索、`POST /knowledge/chat` AI 对话（`knowledge:chat`）、`POST /knowledge/chat/stream` **流式问答（SSE）**：`_chat_messages` 与同步版共享上下文组装，事件流 meta（模型/知识命中/实时状态）→ delta（文本增量）→ done（source=ai|fallback）；AI 网关异常时兜底摘要整段经 delta 发出，响应头 `X-Accel-Buffering: no` 关 nginx 缓冲（services/knowledge.chat_completion_stream 为 **async 生成器**：httpx.AsyncClient stream=True 逐行 aiter_lines，直通事件循环免逐 chunk 线程池调度抖动；路由端点保持同步——知识检索/实时状态在线程池做，推流 `_agen` 为异步生成器，`analyze_document` 可传 db 以读取全局 AI 配置）、`POST /knowledge/data-query` 智能数据问答（`knowledge:chat`；见 services/nl2sql.py 四层安全：业务表白名单——users/roles/permissions/menus/user_tokens/login_logs/app_settings(AI 密钥) 等非业务表拒绝；单库限定——库名前缀必须等于本系统库、系统库拒绝；只读——sqlglot AST 校验仅 SELECT + 拦写语法/多语句/危险函数(SLEEP/BENCHMARK/LOAD_FILE)/INTO OUTFILE/FOR UPDATE/占位符 + MySQL `START TRANSACTION READ ONLY` 只读事务兜底（结束自动还原不残留）；资源保护——LIMIT 自动补/收敛（裸浏览 200、带过滤 1000）+ `MAX_EXECUTION_TIME(8000)` hint；LLM 生成 SQL + 结果解读两段复用 chat_completion，无 AI 时关键词 mock 兜底（资产/告警/工单/通知/负责人））
 - **system_metrics.py**：`GET /system/metrics/realtime`（无 asset_id=本机 /proc；带 asset_id=agent 最新帧，母机解析到本机子机）、`GET /system/metrics/history`（≤2h 原始 5s / ≤2 天 5 分钟桶 / 更长 1 小时桶）
 - **agent_api.py**（自研子机 Agent 接入）：
-  - `POST /agent/report`：`X-Agent-Token` 认证（compare_digest），支持断网补发批量；最新帧存进程内 `LATEST` 字典（整帧原始 dict，含 agent 随帧带回的 `process_watch` 采集结果，不落库）
-  - `GET /agent/config`：配置三级合并（内置默认 ← app_settings 全局 ← 资产 `extra.agent_config`），改后免重启；资产 `extra["process_watch"]` 非空时注入 `cfg["process_watch"]` 下发（进程监听条目，Agent 30s config_refresh 热生效后本地采集）
+  - `POST /agent/report`：`X-Agent-Token` 认证（compare_digest），支持断网补发批量；最新帧存进程内 `LATEST` 字典（整帧原始 dict，含 agent 随帧带回的 `process_watch` 采集结果，不落库）；响应回带 `pw_ver`（`pw_version_of` 对 process_watch 条目的 md5 指纹）
+  - `GET /agent/config`：配置三级合并（内置默认 ← app_settings 全局 ← 资产 `extra.agent_config`），改后免重启；资产 `extra["process_watch"]` 非空时注入 `cfg["process_watch"]` 下发（进程监听条目），响应同样带 `pw_ver`
+  - 指纹热生效：Agent 比对上报响应 `pw_ver`，变更即拉配置并立即采集一轮（增删监听后 ~10-20 秒回填，不必等 30s config_refresh）
   - 资产级 token/status/config 管理、全局默认配置读写、`POST /assets/{id}/agent/deploy`
   - ext 扩展字段白名单收敛防注入
 - **ai.py**：AI 日志分析全端点（配置加密/连接测试/分析列表详情/人工处理/手动触发），详见上方 api.py 段；权限点 `ai:view`(SELF_SERVICE) / `ai:config`(admin) / `ai:feedback`(operator+admin)

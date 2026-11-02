@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 from app.models import Asset
-from app.routers.agent_api import LATEST, _LATEST_LOCK
+from app.routers.agent_api import LATEST, _LATEST_LOCK, pw_version_of
 from app.services import process_watch as svc
 
 
@@ -205,3 +205,52 @@ def test_agent_config_injects_process_watch(client, db):
     db.commit()
     resp = client.get("/api/v1/agent/config", params={"asset_id": "ast-pw-5"}, headers={"X-Agent-Token": "tok-pw2"})
     assert "process_watch" not in resp.json()["config"]
+
+
+# ---------- 指纹热生效：上报/配置响应回带 pw_ver，变更后 agent 立即热拉 ----------
+
+def test_pw_version_of_fingerprint():
+    assert pw_version_of([]) == ""
+    pw = [{"id": "pw_a", "ptype": "external", "match": "name", "name": "nginx"}]
+    v1 = pw_version_of(pw)
+    assert len(v1) == 12 and pw_version_of(list(reversed(pw))) == v1  # 与顺序无关
+    assert pw_version_of([{**pw[0], "name": "redis"}]) != v1  # 内容变化 → 指纹变化
+
+
+def test_report_and_config_carry_pw_ver(client, db):
+    db.add(_mk("ast-pw-6", agent_token="tok-pw6"))
+    db.commit()
+    hdr = {"X-Agent-Token": "tok-pw6"}
+
+    # 无监听配置：上报/配置响应 pw_ver 均为空
+    resp = client.post("/api/v1/agent/report", headers=hdr, json={
+        "asset_id": "ast-pw-6", "samples": [{"ts": time.time(), "cpu": 1.0}],
+    })
+    assert resp.status_code == 200 and resp.json()["pw_ver"] == ""
+    resp = client.get("/api/v1/agent/config", params={"asset_id": "ast-pw-6"}, headers=hdr)
+    assert resp.json()["pw_ver"] == ""
+
+    # 添加监听后：两个响应都带新指纹，且与 process_watch 内容一致
+    resp = client.post("/api/v1/assets/ast-pw-6/process-watch", json={
+        "ptype": "external", "match": "name", "name": "nginx",
+    })
+    assert resp.status_code == 200
+    stored = db.get(Asset, "ast-pw-6").extra["process_watch"]
+    expect = pw_version_of(stored)
+    assert len(stored) == 1 and stored[0]["name"] == "nginx" and stored[0]["ptype"] == "external"
+
+    resp = client.post("/api/v1/agent/report", headers=hdr, json={
+        "asset_id": "ast-pw-6", "samples": [{"ts": time.time(), "cpu": 2.0}],
+    })
+    assert resp.json()["pw_ver"] == expect
+    resp = client.get("/api/v1/agent/config", params={"asset_id": "ast-pw-6"}, headers=hdr)
+    assert resp.json()["pw_ver"] == expect
+    assert resp.json()["config"]["process_watch"] == stored
+
+    # 删除后指纹回到空
+    wid = resp.json()["config"]["process_watch"][0]["id"]
+    client.delete(f"/api/v1/assets/ast-pw-6/process-watch/{wid}")
+    resp = client.post("/api/v1/agent/report", headers=hdr, json={
+        "asset_id": "ast-pw-6", "samples": [{"ts": time.time(), "cpu": 3.0}],
+    })
+    assert resp.json()["pw_ver"] == ""

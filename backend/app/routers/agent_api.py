@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
 import threading
 from datetime import timedelta
@@ -137,6 +139,14 @@ def agent_cfg_of(asset: Asset, db: Session | None = None) -> dict:
     return cfg
 
 
+def pw_version_of(pw_list: list) -> str:
+    """进程监听配置指纹：随上报/配置响应回带，变更后 agent 立即热拉配置（秒级生效）。"""
+    if not pw_list:
+        return ""
+    raw = json.dumps(pw_list, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+
+
 def _sanitize_cfg(patch: dict) -> dict:
     """管理端配置项收敛：数值 clamp 到 [1, 86400]，采集项白名单过滤（空则全集）。"""
     out: dict = {}
@@ -224,7 +234,7 @@ def agent_report(
         },
     }
     db.commit()
-    return {"accepted": len(rows)}
+    return {"accepted": len(rows), "pw_ver": pw_version_of((asset.extra or {}).get("process_watch") or [])}
 
 
 def _f(v):
@@ -249,7 +259,7 @@ def agent_config(
     pw = list((asset.extra or {}).get("process_watch") or [])
     if pw:
         cfg["process_watch"] = pw
-    return {"config": cfg, "alert_policy": policy}
+    return {"config": cfg, "alert_policy": policy, "pw_ver": pw_version_of(pw)}
 
 
 def agent_status_of(asset: Asset, db: Session | None = None) -> dict:

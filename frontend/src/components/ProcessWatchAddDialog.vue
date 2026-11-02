@@ -6,7 +6,7 @@
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-alert type="info" :closable="false" class="pw-tip">
-      保存后由该子机的自研 Agent 自动采集识别，约 30–60 秒内回填进程信息，无需登录服务器。
+      保存后由该子机的自研 Agent 自动采集识别，约 10–20 秒内回填进程信息，无需登录服务器。
     </el-alert>
     <el-form label-width="90" style="margin-top: 12px">
       <el-form-item label="进程类型">
@@ -120,7 +120,7 @@ async function submit() {
   submitting.value = true
   try {
     await addProcessWatch(props.asset?.id, payload)
-    ElMessage.success('已添加监听，Agent 将自动采集并在 30–60 秒内回填进程信息')
+    ElMessage.success('已添加监听，Agent 将自动采集并在 10–20 秒内回填进程信息')
     emit('update:modelValue', false)
     emit('saved')
   } catch (err) {

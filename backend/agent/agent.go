@@ -1432,6 +1432,9 @@ type Agent struct {
 	lastTx         float64
 	sysinfoMu      sync.Mutex
 	pendingSysinfo string
+	// 进程监听配置指纹（上报响应回带，变更即热拉配置；仅在 run goroutine 读写）
+	pwVer    string
+	cfgDirty bool
 }
 
 func (a *Agent) do(method, path string, body []byte) ([]byte, error) {
@@ -1465,10 +1468,13 @@ func (a *Agent) syncConfig() {
 	var out struct {
 		Config      AgentCfg    `json:"config"`
 		AlertPolicy AlertPolicy `json:"alert_policy"`
+		PwVer       string      `json:"pw_ver"`
 	}
 	if json.Unmarshal(data, &out) == nil && out.Config.ReportInterval > 0 {
 		a.cfg = out.Config
 		a.policy = out.AlertPolicy
+		a.pwVer = out.PwVer
+		a.cfgDirty = false
 	}
 }
 
@@ -1497,7 +1503,7 @@ func (a *Agent) flush(ready []map[string]interface{}) {
 		log.Printf("[agent] marshal report failed: %v (samples=%d dropped)", err, len(samples))
 		return
 	}
-	if _, err := a.do("POST", "/api/v1/agent/report", payload); err != nil {
+	if data, err := a.do("POST", "/api/v1/agent/report", payload); err != nil {
 		log.Printf("[agent] report failed: %v (samples=%d buffered)", err, len(samples))
 		a.bufLock.Lock()
 		a.buf = append(samples, a.buf...)
@@ -1505,13 +1511,22 @@ func (a *Agent) flush(ready []map[string]interface{}) {
 			a.buf = a.buf[len(a.buf)-a.cfg.BufferMax:]
 		}
 		a.bufLock.Unlock()
-	} else if sys != "" {
-		// 仅成功上报后清空，失败保留待下次补发
-		a.sysinfoMu.Lock()
-		if a.pendingSysinfo == sys {
-			a.pendingSysinfo = ""
+	} else {
+		if sys != "" {
+			// 仅成功上报后清空，失败保留待下次补发
+			a.sysinfoMu.Lock()
+			if a.pendingSysinfo == sys {
+				a.pendingSysinfo = ""
+			}
+			a.sysinfoMu.Unlock()
 		}
-		a.sysinfoMu.Unlock()
+		// 监听配置指纹变化 → 下轮立即热拉配置（平台增删监听后秒级生效）
+		var rr struct {
+			PwVer string `json:"pw_ver"`
+		}
+		if json.Unmarshal(data, &rr) == nil && rr.PwVer != a.pwVer {
+			a.cfgDirty = true
+		}
 	}
 }
 
@@ -1549,9 +1564,13 @@ func (a *Agent) run(stop <-chan struct{}) {
 			ready = ready[:0]
 			nextReport = now.Add(time.Duration(a.cfg.ReportInterval) * time.Second)
 		}
-		if !now.Before(nextCfg) {
+		if a.cfgDirty || !now.Before(nextCfg) {
+			dirty := a.cfgDirty
 			a.syncConfig()
 			nextCfg = now.Add(time.Duration(a.cfg.ConfigRefresh) * time.Second)
+			if dirty {
+				nextCollect = time.Time{} // 新监听配置到手，立即采集一轮
+			}
 		}
 		if !now.Before(nextSysinfo) {
 			if s := collectSysinfo(); s != "" {

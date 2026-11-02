@@ -308,7 +308,7 @@
     <!-- ===== 详情 / 监控大弹窗 ===== -->
     <AssetMonitor v-model="monitorVisible" :asset-id="monitorId" />
     <AgentConfigDialog v-model="agentCfgVisible" />
-    <ProcessWatchAddDialog v-model="procAddVisible" :asset="procAddAsset" @saved="loadProcWatch" />
+    <ProcessWatchAddDialog v-model="procAddVisible" :asset="procAddAsset" @saved="procFastRefresh" />
 
     <!-- 添加母机：SSH 验证 + 自动纳管本机子机 -->
     <el-dialog v-model="addMotherVisible" title="添加母机" width="560">
@@ -1347,13 +1347,14 @@ onMounted(() => {
   }, 10000)
   // 分组卡片实时轮询：1 秒/次批量拉 Agent 最新帧（与监控详情实时面板同源同频）
   realtimeTimer = setInterval(loadChildrenRealtime, 1000)
-  // 进程监听状态轮询：Agent 采集回填较慢（配置 30s 热生效 + 采集缓存），60s/次足够
+  // 进程监听状态轮询：Agent 已按指纹秒级热生效，常规 60s/次兜底即可
   procWatchTimer = setInterval(loadProcWatch, 60000)
 })
 onBeforeUnmount(() => {
   if (overviewTimer) clearInterval(overviewTimer)
   if (realtimeTimer) clearInterval(realtimeTimer)
   if (procWatchTimer) clearInterval(procWatchTimer)
+  procFastTimers.forEach(clearTimeout)
 })
 
 // 分组卡片实时刷新：仅轻量指标，在线态翻转时触发一次全量 overview 同步徽标/分组统计
@@ -1416,6 +1417,13 @@ const procWatchMap = ref({}) // assetId -> 展示条目列表（后端合并 Age
 const procAddVisible = ref(false)
 const procAddAsset = ref(null)
 let procWatchTimer = null
+let procFastTimers = []
+
+// 增删监听后的快速补刷：Agent 秒级热采集，5-40 秒内分段拉几次，让状态尽快从「待采集」回填
+function procFastRefresh() {
+  procFastTimers.forEach(clearTimeout)
+  procFastTimers = [5, 10, 15, 25, 40].map((s) => setTimeout(loadProcWatch, s * 1000))
+}
 
 // 母机卡片是合成 id（mother-xxx:self），监听配置实际存在母机资产上
 function procAssetId(c) {
@@ -1456,7 +1464,7 @@ async function removeProcWatch(c, it) {
   try {
     await deleteProcessWatch(procAssetId(c), it.id)
     ElMessage.success('已移除监听')
-    loadProcWatch()
+    procFastRefresh()
   } catch (err) {
     ElMessage.error(err?.response?.data?.detail || '移除失败，请稍后重试')
   }
