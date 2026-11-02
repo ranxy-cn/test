@@ -118,8 +118,8 @@ export const updateAgentConfigDefaults = (patch) => http.put('/agent-config/defa
 export const updateAgentAssetConfig = (id, patch) => http.put(`/assets/${id}/agent/config`, patch)
 export const resetAgentAssetConfig = (id) => http.delete(`/assets/${id}/agent/config`)
 export const fetchAgentStatus = (id) => http.get(`/assets/${id}/agent/status`)
+// 一键重部 agent：升级 agent 脚本后页面上点一下（密码缺省用纳管落库的加密密码，可传新密码覆盖）
 export const deployAgent = (id, payload) => http.post(`/assets/${id}/agent/deploy`, payload, { timeout: 30000 })
-export const fetchAgentDeployStatus = (id) => http.get(`/assets/${id}/agent/deploy`)
 export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, payload, { timeout: 20000 })
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
 // SSH 终端：在资产上实时执行一条命令并回显（凭据：资产保存的 SSH 密码 > 免密巡检私钥兜底）

@@ -1906,6 +1906,84 @@ def provision_asset(
     }
 
 
+class AgentRedeployIn(BaseModel):
+    """页面一键重部 agent 入参：语言缺省沿用上次部署；密码缺省用纳管落库的加密密码。"""
+
+    lang: str = Field(default="", pattern="^(|py|go)$", description="空=沿用上次部署的语言")
+    password: str = Field(default="", max_length=128, description="可选：覆盖已存 SSH 密码（目标机改过密码时输入）")
+
+
+@router.post("/api/v1/assets/{asset_id}/agent/deploy")
+def redeploy_agent(
+    asset_id: str,
+    body: AgentRedeployIn,
+    request: Request,
+    current: CurrentUser = Depends(require_perm("assets:write")),
+    db: Session = Depends(get_db),
+):
+    """重部目标机上的自研 agent：升级 agent 脚本后在页面上点一下即可，无需重跑纳管。
+
+    母机自动落到其本机子机（母机 agent 数据走本机子机）。流程与纳管一致：
+    上传新版 agent 与配置 → 停旧进程 → 拉起 → 首帧上报确认，进度见卡片「安装详情」。
+    """
+    from app.routers.agent_api import agent_cfg_of
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(404, "资产不存在")
+    if (a.kind or "") == "mother":
+        sc = str((a.extra or {}).get("self_child_id") or "")
+        a = db.get(Asset, sc) if sc else None
+        if a is None:
+            raise HTTPException(400, "母机尚未完成本机 Agent 纳管，无本机子机可部署")
+    prov = (a.extra or {}).get("provision") or {}
+    ip = str(prov.get("ip") or "")
+    if not ip:
+        raise HTTPException(400, "该资产未登记纳管 IP，无法远程部署 agent")
+    port = int(prov.get("port") or 22)
+    username = str(prov.get("username") or "root")
+    # 密码：显式传入（顺带刷新落库，与纳管幂等重跑同语义）> 纳管落库的加密密码
+    pwd = body.password.strip()
+    if pwd:
+        a.ssh_password_enc = encrypt_secret(pwd)
+    else:
+        pwd = _asset_ssh_password(a)
+    if not pwd:
+        raise HTTPException(
+            400,
+            "没有可用的 SSH 密码（未保存或已无法解密）。请输入当前密码重部，将自动保存供终端/卸载复用",
+        )
+    dep_old = (a.extra or {}).get("agent_deploy") or {}
+    lang = body.lang or str(dep_old.get("lang") or "go")
+    token = str((a.extra or {}).get("agent_token") or "")
+    server_url = (get_settings().platform_public_url or str(request.base_url).rstrip("/")).strip()
+    cfg = agent_cfg_of(a, db)
+    # 置「安装中」，前端轮询总览/安装详情即可看到进度与结果
+    extra = dict(a.extra or {})
+    extra["provision"] = {**prov, "status": "running"}
+    extra["agent_deploy"] = {**dep_old, "state": "running", "error": "", "requested_by": current.username}
+    a.extra = extra
+    db.commit()
+    _spawn_agent_deploy(
+        a.id,
+        ip=ip,
+        port=port,
+        username=username,
+        password=pwd,
+        lang=lang,
+        token=token,
+        server_url=server_url,
+        cfg=cfg,
+        requested_by=f"redeploy:{current.username}",
+    )
+    return {
+        "id": a.id,
+        "status": "running",
+        "lang": lang,
+        "message": "开始重新部署 agent（约 1 分钟），完成后自动上报首帧",
+    }
+
+
 def _find_asset_for_alert(db: Session, body: ZabbixWebhookIn) -> Asset | None:
     """按 asset_id → hostname（大小写不敏感）→ external_id 解析告警归属资产。"""
     if (body.asset_id or "").strip():

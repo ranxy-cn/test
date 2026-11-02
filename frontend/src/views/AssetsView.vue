@@ -208,6 +208,9 @@
                     <el-tooltip v-if="c.provision_status" content="安装详情（状态 / 语言 / pid / 安装日志）" placement="top">
                       <el-icon class="node-op" @click="openChildInstall(c)"><InfoFilled /></el-icon>
                     </el-tooltip>
+                    <el-tooltip content="重新部署 Agent（升级 agent 后点此生效）" placement="top">
+                      <el-icon v-perm="'assets:write'" class="node-op" @click="openRedeploy(c)"><RefreshRight /></el-icon>
+                    </el-tooltip>
                     <el-tooltip v-if="!c.is_mother" content="删除" placement="top">
                       <el-icon v-perm="'assets:write'" class="node-op danger" @click="confirmDelete(c)"><Delete /></el-icon>
                     </el-tooltip>
@@ -559,6 +562,37 @@
       </div>
     </el-dialog>
 
+    <!-- 重新部署 Agent：升级 agent 脚本后页面上点一下即可（无需重跑纳管） -->
+    <el-dialog v-model="redeployVisible" title="重新部署 Agent" width="480">
+      <el-alert
+        type="info"
+        :closable="false"
+        :title="`将向 ${redeployForm.hostname}（${redeployForm.ip || '未登记 IP'}）重新上传 Agent 并重启采集进程，约 1 分钟`"
+      />
+      <el-form label-width="100" style="margin-top: 12px">
+        <el-form-item label="Agent 语言">
+          <el-radio-group v-model="redeployForm.lang">
+            <el-radio-button value="">沿用上次</el-radio-button>
+            <el-radio-button value="go">Go</el-radio-button>
+            <el-radio-button value="py">Python</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="SSH 密码">
+          <el-input
+            v-model="redeployForm.password"
+            type="password"
+            show-password
+            clearable
+            placeholder="留空使用已保存密码；目标机改过密码时输入新密码"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="redeployVisible = false">取消</el-button>
+        <el-button type="primary" :loading="redeploying" @click="doRedeploy">开始重部</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 删除子机：默认联动卸载服务器上的自研 Agent（go/py）；服务器已失联可跳过 -->
     <el-dialog v-model="childDeleteVisible" title="删除子机" width="500">
       <el-alert type="warning" :closable="false" title="此操作不可恢复">
@@ -903,9 +937,9 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection, QuestionFilled, CirclePlus } from '@element-plus/icons-vue'
+import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, RefreshRight, Bell, Connection, QuestionFilled, CirclePlus } from '@element-plus/icons-vue'
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
 import AgentConfigDialog from '../components/AgentConfigDialog.vue'
@@ -916,6 +950,7 @@ import {
   deleteAsset,
   deleteGroup as deleteGroupApi,
   deleteProcessWatch,
+  deployAgent,
   fetchAlertPolicy,
   fetchMotherOverview,
   fetchMotherOverviewById,
@@ -1355,6 +1390,7 @@ onBeforeUnmount(() => {
   if (realtimeTimer) clearInterval(realtimeTimer)
   if (procWatchTimer) clearInterval(procWatchTimer)
   procFastTimers.forEach(clearTimeout)
+  stopInstallPolling()
 })
 
 // 分组卡片实时刷新：仅轻量指标，在线态翻转时触发一次全量 overview 同步徽标/分组统计
@@ -1742,6 +1778,70 @@ async function openChildInstall(c) {
     childProvision.value = null
   } finally {
     childProvisionLoading.value = false
+  }
+  startInstallPolling()
+}
+
+// 安装/重部进行中每 5s 轮询安装详情，结束后停表并刷新总览让卡片状态跟上
+let installPollTimer = null
+
+function startInstallPolling() {
+  stopInstallPolling()
+  installPollTimer = setInterval(async () => {
+    if (!childInstallVisible.value || !childInstallAsset.value) return stopInstallPolling()
+    try {
+      const { data } = await fetchAssetProvision(childInstallAsset.value.id)
+      childProvision.value = data
+      if (data.status !== 'running') {
+        stopInstallPolling()
+        loadOverview()
+      }
+    } catch {
+      // 详情拉取失败保持当前展示，下一轮再试
+    }
+  }, 5000)
+}
+
+function stopInstallPolling() {
+  if (installPollTimer) {
+    clearInterval(installPollTimer)
+    installPollTimer = null
+  }
+}
+
+watch(childInstallVisible, (v) => {
+  if (!v) stopInstallPolling()
+})
+
+// ===== 重新部署 Agent（升级 agent 脚本后页面上点一下，无需重跑纳管） =====
+const redeployVisible = ref(false)
+const redeploying = ref(false)
+const redeployForm = reactive({ id: '', hostname: '', ip: '', lang: '', password: '' })
+
+function openRedeploy(c) {
+  // 母机的 agent 数据走本机子机：重部目标与 procAssetId 口径一致
+  const targetId = procAssetId(c)
+  if (!targetId) {
+    ElMessage.warning('母机尚未完成本机 Agent 纳管，无可部署目标')
+    return
+  }
+  Object.assign(redeployForm, { id: targetId, hostname: c.hostname || c.id, ip: c.ip || '', lang: '', password: '' })
+  redeployVisible.value = true
+}
+
+async function doRedeploy() {
+  if (redeploying.value) return
+  redeploying.value = true
+  try {
+    const { data } = await deployAgent(redeployForm.id, { lang: redeployForm.lang, password: redeployForm.password })
+    redeployVisible.value = false
+    ElMessage.success(data?.message || '开始重新部署 Agent')
+    // 打开安装详情跟踪进度（进行中每 5s 轮询，完成后自动刷新总览）
+    openChildInstall({ id: redeployForm.id, hostname: redeployForm.hostname, ip: redeployForm.ip, provision_status: 'running' })
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || '重部任务启动失败')
+  } finally {
+    redeploying.value = false
   }
 }
 
