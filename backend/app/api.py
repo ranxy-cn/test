@@ -116,6 +116,8 @@ def _asset_row(a: Asset) -> dict:
         "group": a.group,
         "kind": a.kind,
         "mother_id": a.mother_id,
+        # 母机的 Agent 数据走「本机子机」（新增母机自动纳管产生），前端按它拉帧/存监听配置
+        "self_child_id": str((a.extra or {}).get("self_child_id") or ""),
         "db_mode": a.db_mode,
         "tenant_id": a.tenant_id,
         "reachable": a.reachable,

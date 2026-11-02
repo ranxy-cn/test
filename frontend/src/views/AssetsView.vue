@@ -1425,9 +1425,11 @@ function procFastRefresh() {
   procFastTimers = [5, 10, 15, 25, 40].map((s) => setTimeout(loadProcWatch, s * 1000))
 }
 
-// 母机卡片是合成 id（mother-xxx:self），监听配置实际存在母机资产上
+// 母机卡的 Agent 数据走「本机子机」（mother.extra.self_child_id，新增母机自动纳管产生）：
+// 监听配置与采集帧都以本机子机资产为准；无本机子机（未纳管）时母机无 Agent，不加 id
 function procAssetId(c) {
-  return c.is_mother ? mother.value?.id || c.mother_id || '' : c.id
+  if (!c.is_mother) return c.id
+  return mother.value?.self_child_id || ''
 }
 
 function procWatchOf(c) {
@@ -1447,6 +1449,11 @@ async function loadProcWatch() {
 }
 
 function openProcAdd(c) {
+  // 母机未完成本机 Agent 纳管时没有 Agent 采集，避免加一条永远「待采集」的死配置
+  if (c.is_mother && !mother.value?.self_child_id) {
+    ElMessage.warning('母机尚未完成本机 Agent 纳管，暂无法监听进程')
+    return
+  }
   procAddAsset.value = { id: procAssetId(c), hostname: c.hostname || c.id }
   procAddVisible.value = true
 }
