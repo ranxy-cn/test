@@ -243,6 +243,46 @@
                 </div>
                 <!-- 网络实时速率：与资产监控页同口径（↓ 下载 / ↑ 上传，B/s→KB/s→MB/s） -->
                 <div class="nm-net" v-html="netCell(c)"></div>
+                <!-- 进程监听：配置由子机自研 Agent 本地采集随帧回填（无 SSH），虚线分隔置于网速行下方 -->
+                <div v-if="authHasWrite || procWatchOf(c).length" class="np-wrap">
+                  <template v-if="procWatchOf(c).length">
+                    <div class="np-head">
+                      <span class="np-title">进程监听</span>
+                      <span class="np-count">{{ procWatchOf(c).length }}</span>
+                      <el-tooltip v-if="authHasWrite" content="添加进程监听" placement="top">
+                        <el-icon class="np-add" @click.stop="openProcAdd(c)"><CirclePlus /></el-icon>
+                      </el-tooltip>
+                    </div>
+                    <div class="np-list">
+                      <el-tooltip v-for="it in procWatchOf(c)" :key="it.id" placement="top" :show-after="150">
+                        <template #content>
+                          <div class="np-tip">
+                            <div>{{ it.ptype_label }} · {{ it.display_name }}</div>
+                            <div>PID：{{ it.pid || '—' }}　状态：{{ it.status_text }}</div>
+                            <div>端口：{{ it.ports.length ? it.ports.join(', ') : '—' }}</div>
+                            <div v-if="it.elapsed">运行时长：{{ it.elapsed }}</div>
+                            <div v-if="it.image">镜像：{{ it.image }}</div>
+                            <div v-if="it.catalina">CATALINA_BASE：{{ it.catalina }}</div>
+                            <div v-if="it.args" class="np-tip-args">命令：{{ it.args }}</div>
+                            <div v-if="it.error" style="color: #ff7875">{{ it.error }}</div>
+                            <div class="np-tip-dim">采集时间：{{ it.checked_at || '待 Agent 上报' }}</div>
+                          </div>
+                        </template>
+                        <div class="np-item">
+                          <span class="np-dot" :class="`s-${it.status}`" />
+                          <span class="np-name">{{ it.display_name }}</span>
+                          <span v-if="it.pid" class="np-meta">#{{ it.pid }}</span>
+                          <span v-if="it.ports.length" class="np-meta">:{{ it.ports.join(',') }}</span>
+                          <el-icon v-if="authHasWrite" class="np-del" title="移除监听" @click.stop="removeProcWatch(c, it)"><Delete /></el-icon>
+                        </div>
+                      </el-tooltip>
+                    </div>
+                  </template>
+                  <div v-else class="np-add-row" title="添加进程监听" @click.stop="openProcAdd(c)">
+                    <el-icon><CirclePlus /></el-icon>
+                    <span>添加进程监听</span>
+                  </div>
+                </div>
                 <div class="node-foot">
                   <span>{{ c.owner || '未指定负责人' }}</span>
                   <span :class="{ stale: !c.reachable }">{{ relTime(c.last_seen_at) }}</span>
@@ -268,6 +308,7 @@
     <!-- ===== 详情 / 监控大弹窗 ===== -->
     <AssetMonitor v-model="monitorVisible" :asset-id="monitorId" />
     <AgentConfigDialog v-model="agentCfgVisible" />
+    <ProcessWatchAddDialog v-model="procAddVisible" :asset="procAddAsset" @saved="loadProcWatch" />
 
     <!-- 添加母机：SSH 验证 + 自动纳管本机子机 -->
     <el-dialog v-model="addMotherVisible" title="添加母机" width="560">
@@ -864,20 +905,23 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection, QuestionFilled } from '@element-plus/icons-vue'
+import { Folder, FolderAdd, Cpu, ArrowRight, ArrowLeft, Plus, EditPen, Delete, View, InfoFilled, Refresh, Bell, Connection, QuestionFilled, CirclePlus } from '@element-plus/icons-vue'
 import HelpLabel from '../components/HelpLabel.vue'
 import AssetMonitor from '../components/AssetMonitor.vue'
 import AgentConfigDialog from '../components/AgentConfigDialog.vue'
 import OwnerNotifyEditor from '../components/OwnerNotifyEditor.vue'
+import ProcessWatchAddDialog from '../components/ProcessWatchAddDialog.vue'
 import {
   createMother,
   deleteAsset,
   deleteGroup as deleteGroupApi,
+  deleteProcessWatch,
   fetchAlertPolicy,
   fetchMotherOverview,
   fetchMotherOverviewById,
   fetchChildrenRealtime,
   fetchMothers,
+  fetchProcessWatchStatus,
   listOwnerContacts,
   provisionAsset,
   fetchAssetProvision,
@@ -888,6 +932,7 @@ import {
   updateAlertPolicy,
   updateAsset,
 } from '../api'
+import { auth } from '../auth'
 const query = reactive({ keyword: '' })
 
 const detailView = ref(false) // 总览两层：false=母机记录列表，true=某台母机内部（子机视图）
@@ -1302,10 +1347,13 @@ onMounted(() => {
   }, 10000)
   // 分组卡片实时轮询：1 秒/次批量拉 Agent 最新帧（与监控详情实时面板同源同频）
   realtimeTimer = setInterval(loadChildrenRealtime, 1000)
+  // 进程监听状态轮询：Agent 采集回填较慢（配置 30s 热生效 + 采集缓存），60s/次足够
+  procWatchTimer = setInterval(loadProcWatch, 60000)
 })
 onBeforeUnmount(() => {
   if (overviewTimer) clearInterval(overviewTimer)
   if (realtimeTimer) clearInterval(realtimeTimer)
+  if (procWatchTimer) clearInterval(procWatchTimer)
 })
 
 // 分组卡片实时刷新：仅轻量指标，在线态翻转时触发一次全量 overview 同步徽标/分组统计
@@ -1362,10 +1410,63 @@ function netCell(c) {
   )
 }
 
+// ===== 进程监听（母机/子机卡片）：配置存资产，Agent 本地采集随帧回填（无 SSH） =====
+const authHasWrite = computed(() => auth.has('assets:write'))
+const procWatchMap = ref({}) // assetId -> 展示条目列表（后端合并 Agent 最新帧）
+const procAddVisible = ref(false)
+const procAddAsset = ref(null)
+let procWatchTimer = null
+
+// 母机卡片是合成 id（mother-xxx:self），监听配置实际存在母机资产上
+function procAssetId(c) {
+  return c.is_mother ? mother.value?.id || c.mother_id || '' : c.id
+}
+
+function procWatchOf(c) {
+  return procWatchMap.value[procAssetId(c)] || []
+}
+
+async function loadProcWatch() {
+  if (document.hidden || !detailView.value || !selectedMotherId.value) return
+  const ids = [...new Set(children.value.map(procAssetId).filter(Boolean))]
+  if (!ids.length) return
+  try {
+    const { data } = await fetchProcessWatchStatus(ids)
+    procWatchMap.value = data.items || {}
+  } catch {
+    /* 单次拉取失败静默，下轮重试 */
+  }
+}
+
+function openProcAdd(c) {
+  procAddAsset.value = { id: procAssetId(c), hostname: c.hostname || c.id }
+  procAddVisible.value = true
+}
+
+async function removeProcWatch(c, it) {
+  try {
+    await ElMessageBox.confirm(
+      `移除对「${it.display_name}」的监听？（仅删除监听配置，不影响进程运行）`,
+      '移除进程监听',
+      { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteProcessWatch(procAssetId(c), it.id)
+    ElMessage.success('已移除监听')
+    loadProcWatch()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.detail || '移除失败，请稍后重试')
+  }
+}
+
 function openMotherDetail(m) {
   selectedMotherId.value = m.id
   detailView.value = true
   loadOverview()
+  loadProcWatch()
 }
 
 function backToMothers() {
@@ -2141,6 +2242,141 @@ async function resetAlertPolicy() {
 }
 .nm-net:empty {
   display: none;
+}
+
+/* ===== 进程监听（卡片网速行下方） ===== */
+.np-wrap {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+}
+/* 空态：虚线幽灵行添加入口 */
+.np-add-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 0;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+  user-select: none;
+}
+.np-add-row:hover {
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+}
+/* 条目态：标题行 + 列表 */
+.np-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.np-title {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+}
+.np-count {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 8px;
+  background: var(--el-fill-color);
+  color: var(--muted);
+}
+.np-add {
+  margin-left: auto;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+.np-add:hover {
+  color: var(--el-color-primary);
+}
+.np-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.np-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.15s;
+}
+.np-item:hover {
+  background: var(--el-fill-color-light);
+}
+/* 状态点：running 绿色发光 / 停止类橙色 / 异常类红色 / 待采集与未知灰色 */
+.np-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--el-text-color-disabled);
+}
+.np-dot.s-running {
+  background: #34c759;
+  box-shadow: 0 0 4px rgba(52, 199, 89, 0.7);
+}
+.np-dot.s-stopped,
+.np-dot.s-exited,
+.np-dot.s-paused,
+.np-dot.s-restarting,
+.np-dot.s-created {
+  background: #ff9500;
+}
+.np-dot.s-zombie,
+.np-dot.s-dead,
+.np-dot.s-not_found,
+.np-dot.s-abnormal {
+  background: #ff3b30;
+}
+.np-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.np-meta {
+  flex: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+.np-del {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s, color 0.15s;
+}
+.np-item:hover .np-del {
+  opacity: 1;
+}
+.np-del:hover {
+  color: var(--danger, #ff3b30);
+}
+/* tooltip 内容 */
+.np-tip {
+  line-height: 1.7;
+  max-width: 320px;
+}
+.np-tip-args {
+  word-break: break-all;
+}
+.np-tip-dim {
+  opacity: 0.7;
 }
 .nm-net :deep(.nm-net-dot) {
   color: var(--muted);

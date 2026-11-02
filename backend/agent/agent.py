@@ -283,7 +283,233 @@ def _procs() -> "list[dict]":
     return out
 
 
-def collect(items: "list[str]") -> dict:
+# ---------------------------------------------------------------------------
+# 进程监听：平台经 /agent/config 下发监听条目（资产 extra["process_watch"]），
+# 本地 /proc 扫描 + docker CLI 采集后随帧带回（sample["process_watch"]），无 SSH。
+# ---------------------------------------------------------------------------
+
+_PW_TTL = 30.0  # 采集结果缓存秒数（配置变更立即失效）
+_pw_cache = {"key": None, "ts": 0.0, "data": None}
+_docker_ps_cache = {"ts": 0.0, "rows": None, "err": ""}
+
+
+def _pw_listen_ports(pid: str) -> "list[str]":
+    """反查进程监听端口：/proc/net/tcp(6) LISTEN inode ↔ /proc/<pid>/fd socket。"""
+    inodes = set()
+    try:
+        for name in os.listdir(PROC + "/" + pid + "/fd"):
+            try:
+                link = os.readlink(PROC + "/" + pid + "/fd/" + name)
+            except OSError:
+                continue
+            if link.startswith("socket:[") and link.endswith("]"):
+                inodes.add(link[8:-1])
+    except OSError:
+        return []
+    if not inodes:
+        return []
+    ports: "list[str]" = []
+    for table in ("/net/tcp", "/net/tcp6"):
+        try:
+            lines = _read(PROC + table).splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            f = line.split()
+            # 第 4 列 0A = TCP_LISTEN；第 2 列地址:十六进制端口；第 10 列 inode
+            if len(f) < 10 or f[3] != "0A" or f[9] not in inodes:
+                continue
+            try:
+                port = str(int(f[1].split(":")[1], 16))
+            except (ValueError, IndexError):
+                continue
+            if port and port not in ports:
+                ports.append(port)
+    return ports[:32]
+
+
+def _pw_host_entry(entry: dict) -> dict:
+    """host 进程（外部程序/Tomcat）单条采集：PID 直查或 /proc cmdline 子串匹配。"""
+    out = {"id": entry.get("id", ""), "found": False, "error": ""}
+    match = str(entry.get("match") or "")
+    pid = str(entry.get("pid") or "").strip()
+    name = str(entry.get("name") or "").strip()
+    if match == "pid":
+        if not pid or not os.path.isdir(PROC + "/" + pid):
+            return out
+        cands = [pid]
+    else:
+        if not name:
+            out["error"] = "配置缺少程序名称"
+            return out
+        try:
+            ids = sorted((n for n in os.listdir(PROC) if n.isdigit()), key=int)
+        except OSError:
+            return out
+        # cmdline 子串匹配（等价 pgrep -f）；跳过自身防自匹配，pid 升序取最早启动的主进程
+        cands = [n for n in ids if n != str(os.getpid()) and name in _proc_args(n)]
+    if not cands:
+        return out
+    pid = cands[0]
+    out.update(found=True, pid=pid, args=_proc_args(pid), ports=_pw_listen_ports(pid))
+    try:
+        stat = _read(PROC + "/" + pid + "/stat")
+        l, r = stat.index("("), stat.rindex(")")
+        out["comm"] = stat[l + 1:r]
+        rest = stat[r + 2:].split()  # 从 state（第 3 字段）开始
+        out["stat"] = rest[0] if rest else ""
+        try:
+            hz = float(os.sysconf("SC_CLK_TCK")) or 100.0
+        except (ValueError, OSError):
+            hz = 100.0
+        if len(rest) > 19:
+            elapsed = (_uptime_sec() or 0.0) - float(rest[19]) / hz
+            if elapsed > 0:
+                out["elapsed"] = _fmt_elapsed(elapsed)
+    except (OSError, ValueError, IndexError):
+        pass
+    if str(entry.get("ptype") or "") == "tomcat":
+        try:
+            with open(PROC + "/" + pid + "/environ", "rb") as fh:
+                env = fh.read().replace(b"\x00", b"\n").decode("utf-8", errors="replace")
+            for line in env.splitlines():
+                if line.startswith("CATALINA_BASE="):
+                    out["catalina"] = line.split("=", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+    return out
+
+
+def _docker_ps_lines() -> "tuple[list[str], str]":
+    """docker ps -a 行（30s 缓存）。docker 不可用时返回 ([], 错误文案)。"""
+    now = time.time()
+    if _docker_ps_cache["rows"] is not None and now - _docker_ps_cache["ts"] < _PW_TTL:
+        return _docker_ps_cache["rows"], _docker_ps_cache["err"]
+    import subprocess
+
+    rows: "list[str]" = []
+    err = ""
+    try:
+        out = subprocess.run(
+            ["docker", "ps", "-a", "--format",
+             "{{.ID}}|{{.Names}}|{{.State}}|{{.Image}}|{{.Ports}}"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8,
+        )
+        text = out.stdout.decode("utf-8", errors="replace") if out.stdout else ""
+        rows = [ln for ln in text.splitlines() if "|" in ln]
+        if not rows:
+            err = "docker ps 无输出（docker 未安装或当前用户无权限）"
+    except FileNotFoundError:
+        err = "docker 命令不可用"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        err = "docker ps 执行失败"
+    _docker_ps_cache.update(ts=now, rows=rows, err=err)
+    return rows, err
+
+
+def _cgroup_container_id(pid: str) -> str:
+    """从 /proc/<pid>/cgroup 提取容器 ID（v1 docker/<id>；v2 docker-<id>.scope）。"""
+    try:
+        for line in _read(PROC + "/" + pid + "/cgroup").splitlines():
+            for seg in line.split("/"):
+                if seg.startswith("docker-") and seg.endswith(".scope"):
+                    return seg[7:-6]
+                if seg.startswith("docker/") and len(seg) > 7:
+                    return seg[7:]
+    except OSError:
+        pass
+    return ""
+
+
+def _container_main_pid(cid: str) -> str:
+    """容器主进程 PID：与该容器 cgroup 相同的所有进程中取最小 pid。"""
+    best = ""
+    try:
+        for n in os.listdir(PROC):
+            if not n.isdigit():
+                continue
+            try:
+                cg = _read(PROC + "/" + n + "/cgroup")
+            except OSError:
+                continue
+            if ("docker/" + cid) in cg or ("docker-" + cid) in cg:
+                if not best or int(n) < int(best):
+                    best = n
+    except OSError:
+        pass
+    return best
+
+
+def _parse_docker_ports(s: str) -> "list[str]":
+    """docker ps Ports 列 → 宿主侧发布端口（"0.0.0.0:8080->80/tcp" → "8080"）。"""
+    ports: "list[str]" = []
+    for part in (s or "").split(","):
+        if "->" not in part:
+            continue
+        hp = part.split("->")[0].strip().rsplit(":", 1)[-1]
+        if hp.isdigit() and hp not in ports:
+            ports.append(hp)
+    return ports[:32]
+
+
+def _pw_docker_entry(entry: dict, rows: "list[str]", err: str) -> dict:
+    """Docker 容器单条采集：docker ps 匹配容器名/ID（或 PID 经 cgroup 反查容器）。"""
+    out = {"id": entry.get("id", ""), "found": False, "error": ""}
+    if err and not rows:
+        out["error"] = err
+        return out
+    want = str(entry.get("container") or "").strip().lstrip("/")
+    if str(entry.get("match") or "") == "pid":
+        want = _cgroup_container_id(str(entry.get("pid") or ""))
+        if not want:
+            return out
+    if not want:
+        out["error"] = "配置缺少容器名称/ID"
+        return out
+    row = ""
+    for ln in rows:
+        f = ln.split("|")
+        if len(f) >= 4 and (f[1] == want or f[0].startswith(want) or want.startswith(f[0])):
+            row = ln
+            break
+    if not row:
+        return out
+    f = row.split("|")
+    out.update(found=True, name=f[1], status_raw=f[2], image=f[3],
+               ports=_parse_docker_ports(f[4] if len(f) > 4 else ""))
+    if f[2] == "running":
+        out["pid"] = _container_main_pid(f[0])
+    return out
+
+
+def _watch_key(entries: "list[dict]") -> tuple:
+    return tuple(sorted(
+        "|".join(str(e.get(k) or "") for k in ("id", "match", "pid", "name", "container"))
+        for e in entries
+    ))
+
+
+def _process_watch(entries: "list[dict]") -> "list[dict]":
+    """进程监听采集（配置未变更时 TTL 缓存），结果随帧带回 sample["process_watch"]。"""
+    if not entries:
+        return []
+    key = _watch_key(entries)
+    now = time.time()
+    if _pw_cache["data"] is not None and _pw_cache["key"] == key and now - _pw_cache["ts"] < _PW_TTL:
+        return _pw_cache["data"]
+    rows, err = _docker_ps_lines()
+    out: "list[dict]" = []
+    for e in entries:
+        if str(e.get("ptype") or "") == "docker":
+            out.append(_pw_docker_entry(e, rows, err))
+        else:
+            out.append(_pw_host_entry(e))
+    _pw_cache.update(key=key, ts=now, data=out)
+    return out
+
+
+def collect(items: "list[str]", pw_entries: "list[dict] | None" = None) -> dict:
     sample: dict = {"ts": time.time()}
     if "cpu" in items:
         sample["cpu"] = _cpu()
@@ -308,6 +534,9 @@ def collect(items: "list[str]") -> dict:
     procs = _procs()  # 进程归因：所有告警场景通用
     if procs:
         sample["procs"] = procs
+    wd = _process_watch(pw_entries or [])  # 进程监听：随帧带回
+    if wd:
+        sample["process_watch"] = wd
     return sample
 
 
@@ -411,7 +640,10 @@ class Agent:
         while not _stop.is_set():
             now = time.time()
             if now >= next_collect:
-                ready.append(collect(list(self.cfg.get("collect_items", ["cpu", "mem", "disk", "load", "net"]))))
+                ready.append(collect(
+                    list(self.cfg.get("collect_items", ["cpu", "mem", "disk", "load", "net"])),
+                    self.cfg.get("process_watch") or [],
+                ))
                 next_collect = now + collect_iv
             if now >= next_report:
                 self.flush(ready)

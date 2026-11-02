@@ -244,7 +244,12 @@ def agent_config(
     _get_asset_by_token(db, asset_id, x_agent_token)
     asset = db.get(Asset, asset_id)
     policy, _source = effective_policy(db, asset)
-    return {"config": agent_cfg_of(asset, db), "alert_policy": policy}
+    cfg = agent_cfg_of(asset, db)
+    # 进程监听配置随配置拉取下发（Asset.extra["process_watch"]，空列表不下发）
+    pw = list((asset.extra or {}).get("process_watch") or [])
+    if pw:
+        cfg["process_watch"] = pw
+    return {"config": cfg, "alert_policy": policy}
 
 
 def agent_status_of(asset: Asset, db: Session | None = None) -> dict:

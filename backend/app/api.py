@@ -31,11 +31,13 @@ from app.models import (
     TicketStatus,
     utcnow,
 )
+from app.routers.agent_api import LATEST, _LATEST_LOCK
 from app.routers.deps import CurrentUser, require_perm
 from app.schemas import AnomalyOut, ApprovalIn, TicketEventOut, TicketOut, ZabbixWebhookIn
 from app.security import encrypt_secret
 from app.services import provision as provision_svc
 from app.services import diagnostics as diagnostics_svc
+from app.services import process_watch as process_watch_svc
 from app.services.alert_policy import (
     ALERT_LEVELS,
     DEFAULT_POLICY,
@@ -1530,6 +1532,119 @@ def asset_exec(
     )
     db.commit()
     return result
+
+
+# ---------------------------------------------------------------------------
+# 进程监听（资产卡片进程看护）：配置存 Asset.extra["process_watch"]，经子机自研
+# Agent 配置拉取下发、Agent 本地采集随帧上报，平台读最新帧合并——全程无 SSH
+# ---------------------------------------------------------------------------
+
+class ProcessWatchAddIn(BaseModel):
+    """新增进程监听：外部程序/Tomcat 按 PID 或程序名称；Docker 按容器名/ID 或主进程 PID。"""
+
+    ptype: str = Field(default="external", max_length=16)
+    match: str = Field(default="name", max_length=16)
+    pid: str = Field(default="", max_length=16)
+    name: str = Field(default="", max_length=128)
+    container: str = Field(default="", max_length=128)
+
+
+class ProcessWatchStatusIn(BaseModel):
+    """批量状态查询：读子机 Agent 最新上报帧（Agent 离线时条目呈待采集态）。"""
+
+    asset_ids: list[str] = Field(default_factory=list, max_length=64)
+
+
+@router.post("/api/v1/assets/process-watch/status", dependencies=[Depends(require_perm("assets:read"))])
+def process_watch_status(body: ProcessWatchStatusIn, db: Session = Depends(get_db)):
+    """批量拉取进程监听条目与 Agent 最新采集状态：未配置监听的资产直接返回空。"""
+    ids = [i for i in body.asset_ids if i][:64]
+    out: dict[str, dict] = {aid: {"items": [], "error": ""} for aid in ids}
+    if not ids:
+        return {"items": out, "checked_at": datetime.now(BEIJING_TZ).isoformat(timespec="seconds")}
+    rows = db.scalars(select(Asset).where(Asset.id.in_(ids))).all()
+    assets = {a.id: a for a in rows}
+    for aid in ids:
+        a = assets.get(aid)
+        if a is None:
+            out[aid] = {"items": [], "error": "资产不存在"}
+            continue
+        entries = list((a.extra or {}).get("process_watch") or [])
+        if not entries:
+            continue
+        with _LATEST_LOCK:
+            frame = dict(LATEST.get(aid) or {})
+        out[aid] = {"items": process_watch_svc.merge_items(entries, frame), "error": ""}
+    return {"items": out, "checked_at": datetime.now(BEIJING_TZ).isoformat(timespec="seconds")}
+
+
+@router.post("/api/v1/assets/{asset_id}/process-watch", dependencies=[Depends(require_perm("assets:write"))])
+def add_process_watch(
+    asset_id: str,
+    body: ProcessWatchAddIn,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(require_perm("assets:write")),
+):
+    """新增进程监听：入参收敛与查重后落库，由子机 Agent 拉取配置自动采集回填。"""
+    import uuid
+
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(404, "资产不存在")
+    entry, err = process_watch_svc.normalize_new(body.ptype, body.match, body.pid, body.name, body.container)
+    if err:
+        raise HTTPException(400, err)
+
+    watches = list((a.extra or {}).get("process_watch") or [])
+    for w in watches:
+        if (
+            w.get("ptype") == entry["ptype"]
+            and w.get("pid") == entry["pid"]
+            and w.get("name") == entry["name"]
+            and w.get("container") == entry["container"]
+        ):
+            raise HTTPException(409, "该进程已在监听列表中，无需重复添加")
+    now = datetime.now(BEIJING_TZ).isoformat(timespec="seconds")
+    entry.update({"id": f"pw_{uuid.uuid4().hex[:10]}", "created_by": current.username, "created_at": now})
+    watches.append(entry)
+    a.extra = {**(a.extra or {}), "process_watch": watches}
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="asset.process_watch_add",
+        actor=current.username,
+        result={"asset_id": asset_id, "watch_id": entry["id"], "ptype": entry["ptype"], "match": entry["match"]},
+    )
+    db.commit()
+    # Agent 尚未采集到该条目：返回 pending 态（待采集），前端 60s 轮询自动回填
+    return {"item": process_watch_svc.entry_item(entry, None)}
+
+
+@router.delete("/api/v1/assets/{asset_id}/process-watch/{watch_id}", dependencies=[Depends(require_perm("assets:write"))])
+def delete_process_watch(
+    asset_id: str,
+    watch_id: str,
+    db: Session = Depends(get_db),
+    current: CurrentUser = Depends(require_perm("assets:write")),
+):
+    """移除进程监听条目（仅删除配置，不影响目标进程）。"""
+    a = db.get(Asset, asset_id)
+    if a is None:
+        raise HTTPException(404, "资产不存在")
+    watches = list((a.extra or {}).get("process_watch") or [])
+    remain = [w for w in watches if w.get("id") != watch_id]
+    if len(remain) == len(watches):
+        raise HTTPException(404, "监听条目不存在或已被移除")
+    a.extra = {**(a.extra or {}), "process_watch": remain}
+    add_audit(
+        db,
+        ticket_id=None,
+        event_type="asset.process_watch_delete",
+        actor=current.username,
+        result={"asset_id": asset_id, "watch_id": watch_id},
+    )
+    db.commit()
+    return {"deleted": watch_id, "items": remain}
 
 
 class AssetUpsertIn(BaseModel):

@@ -124,6 +124,11 @@ export const inspectAsset = (id, payload) => http.post(`/assets/${id}/inspect`, 
 export const fetchAssetSysinfo = (id, payload = {}) => http.post(`/assets/${id}/sysinfo`, payload, { timeout: 25000 })
 // SSH 终端：在资产上实时执行一条命令并回显（凭据：资产保存的 SSH 密码 > 免密巡检私钥兜底）
 export const execAssetCommand = (id, payload) => http.post(`/assets/${id}/exec`, payload, { timeout: 30000 })
+// 进程监听：配置存资产 extra、由子机自研 Agent 本地采集随帧上报（全程无 SSH）
+export const fetchProcessWatchStatus = (assetIds) =>
+  http.post('/assets/process-watch/status', { asset_ids: assetIds }, { timeout: 30000 })
+export const addProcessWatch = (id, payload) => http.post(`/assets/${id}/process-watch`, payload, { timeout: 30000 })
+export const deleteProcessWatch = (id, watchId) => http.delete(`/assets/${id}/process-watch/${watchId}`)
 export const runAction = (payload) => http.post('/actions/run', payload)
 export const fetchPlaybooks = () => http.get('/playbooks')
 export const postWebhook = (payload, secret = 'dev-webhook-secret') =>

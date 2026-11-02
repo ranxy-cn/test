@@ -47,12 +47,13 @@ type Config struct {
 }
 
 type AgentCfg struct {
-	ReportInterval  int      `json:"report_interval"`
-	CollectInterval int      `json:"collect_interval"`
-	CollectItems    []string `json:"collect_items"`
-	BufferMax       int      `json:"buffer_max"`
-	ConfigRefresh   int      `json:"config_refresh"`
-	OfflineAfter    int      `json:"offline_after"`
+	ReportInterval  int                      `json:"report_interval"`
+	CollectInterval int                      `json:"collect_interval"`
+	CollectItems    []string                 `json:"collect_items"`
+	BufferMax       int                      `json:"buffer_max"`
+	ConfigRefresh   int                      `json:"config_refresh"`
+	OfflineAfter    int                      `json:"offline_after"`
+	ProcessWatch    []map[string]interface{} `json:"process_watch"` // 进程监听条目（平台下发）
 }
 
 // AlertPolicy 生效告警策略（平台下发的 v2 策略，agent 只读采集相关字段）。
@@ -484,6 +485,341 @@ func memTotalKB() float64 {
 		}
 	}
 	return 0
+}
+
+// ---------- 进程监听（平台经 /agent/config 下发条目，本地采集随帧带回，无 SSH） ----------
+
+const pwTTL = 30 * time.Second // 采集结果缓存（配置条目变更立即失效）
+
+var (
+	pwMu        sync.Mutex
+	pwCacheKey  string
+	pwCacheTS   time.Time
+	pwCacheData []map[string]interface{}
+	dockerMu    sync.Mutex
+	dockerRows  []string
+	dockerErr   string
+	dockerTS    time.Time
+)
+
+func sOf(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// listenPorts：/proc/net/tcp(6) LISTEN inode ↔ /proc/<pid>/fd socket 反查监听端口。
+func listenPorts(pidDir string) []string {
+	entries, err := os.ReadDir(filepath.Join(procDir, pidDir, "fd"))
+	if err != nil {
+		return nil
+	}
+	inodes := map[string]bool{}
+	for _, e := range entries {
+		if link, err := os.Readlink(filepath.Join(procDir, pidDir, "fd", e.Name())); err == nil {
+			if strings.HasPrefix(link, "socket:[") && strings.HasSuffix(link, "]") {
+				inodes[link[8:len(link)-1]] = true
+			}
+		}
+	}
+	if len(inodes) == 0 {
+		return nil
+	}
+	var ports []string
+	for _, table := range []string{"net/tcp", "net/tcp6"} {
+		for _, line := range strings.Split(readFile(table), "\n")[1:] {
+			f := strings.Fields(line)
+			// 第 4 列 0A = TCP_LISTEN；第 2 列冒号后是十六进制端口；第 10 列 inode
+			if len(f) < 10 || f[3] != "0A" || !inodes[f[9]] {
+				continue
+			}
+			parts := strings.Split(f[1], ":")
+			if len(parts) < 2 {
+				continue
+			}
+			if v, err := strconv.ParseInt(parts[1], 16, 64); err == nil {
+				p := strconv.FormatInt(v, 10)
+				dup := false
+				for _, x := range ports {
+					if x == p {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					ports = append(ports, p)
+				}
+			}
+		}
+	}
+	if len(ports) > 32 {
+		ports = ports[:32]
+	}
+	return ports
+}
+
+// watchHostEntry：host 进程（外部程序/Tomcat）单条采集：PID 直查或 /proc cmdline 子串匹配。
+func watchHostEntry(e map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{"id": sOf(e["id"]), "found": false, "error": ""}
+	match := sOf(e["match"])
+	pid := strings.TrimSpace(sOf(e["pid"]))
+	name := strings.TrimSpace(sOf(e["name"]))
+	var cands []string
+	if match == "pid" {
+		if pid == "" {
+			return out
+		}
+		if st, err := os.Stat(filepath.Join(procDir, pid)); err != nil || !st.IsDir() {
+			return out
+		}
+		cands = []string{pid}
+	} else {
+		if name == "" {
+			out["error"] = "配置缺少程序名称"
+			return out
+		}
+		entries, err := os.ReadDir(procDir)
+		if err != nil {
+			return out
+		}
+		ids := []int{}
+		for _, de := range entries {
+			if n, err := strconv.Atoi(de.Name()); err == nil {
+				ids = append(ids, n)
+			}
+		}
+		sort.Ints(ids)
+		self := os.Getpid()
+		for _, n := range ids {
+			if n == self { // 跳过自身防自匹配（cmdline 可能包含配置全文）
+				continue
+			}
+			if strings.Contains(procArgs(strconv.Itoa(n)), name) {
+				cands = append(cands, strconv.Itoa(n))
+			}
+		}
+	}
+	if len(cands) == 0 {
+		return out
+	}
+	pid = cands[0] // pid 升序取最早启动的主进程
+	out["found"] = true
+	out["pid"] = pid
+	out["args"] = procArgs(pid)
+	out["ports"] = listenPorts(pid)
+	data := readFile(pid + "/stat")
+	if l, r := strings.Index(data, "("), strings.LastIndex(data, ")"); l >= 0 && r > l {
+		out["comm"] = data[l+1 : r]
+		rest := strings.Fields(data[r+2:]) // 从 state（第 3 字段）开始
+		if len(rest) > 0 {
+			out["stat"] = rest[0]
+		}
+		const hz = 100.0 // Linux USER_HZ
+		if up, ok := uptimeSec(); ok && len(rest) > 19 {
+			if start, err := strconv.ParseFloat(rest[19], 64); err == nil {
+				if elapsed := up - start/hz; elapsed > 0 {
+					out["elapsed"] = fmtElapsed(elapsed)
+				}
+			}
+		}
+	}
+	if sOf(e["ptype"]) == "tomcat" {
+		if env, err := os.ReadFile(filepath.Join(procDir, pid, "environ")); err == nil {
+			for _, kv := range strings.Split(strings.ReplaceAll(string(env), "\x00", "\n"), "\n") {
+				if strings.HasPrefix(kv, "CATALINA_BASE=") {
+					out["catalina"] = strings.TrimSpace(strings.TrimPrefix(kv, "CATALINA_BASE="))
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// dockerPsLines：docker ps -a 行（30s 缓存）。docker 不可用时返回错误文案。
+func dockerPsLines() ([]string, string) {
+	dockerMu.Lock()
+	defer dockerMu.Unlock()
+	if !dockerTS.IsZero() && time.Since(dockerTS) < pwTTL {
+		return dockerRows, dockerErr
+	}
+	dockerRows, dockerErr = nil, ""
+	out, err := exec.Command("docker", "ps", "-a", "--format",
+		"{{.ID}}|{{.Names}}|{{.State}}|{{.Image}}|{{.Ports}}").Output()
+	if err != nil {
+		if _, ok := err.(*exec.Error); ok {
+			dockerErr = "docker 命令不可用"
+		} else {
+			dockerErr = "docker ps 执行失败"
+		}
+	} else {
+		for _, ln := range strings.Split(string(out), "\n") {
+			if strings.Contains(ln, "|") {
+				dockerRows = append(dockerRows, ln)
+			}
+		}
+		if len(dockerRows) == 0 {
+			dockerErr = "docker ps 无输出（docker 未安装或当前用户无权限）"
+		}
+	}
+	dockerTS = time.Now()
+	return dockerRows, dockerErr
+}
+
+// cgroupContainerID：从 /proc/<pid>/cgroup 提取容器 ID（v1 docker/<id>；v2 docker-<id>.scope）。
+func cgroupContainerID(pidDir string) string {
+	for _, line := range strings.Split(readFile(filepath.Join(pidDir, "cgroup")), "\n") {
+		for _, seg := range strings.Split(line, "/") {
+			if strings.HasPrefix(seg, "docker-") && strings.HasSuffix(seg, ".scope") {
+				return seg[7 : len(seg)-6]
+			}
+			if strings.HasPrefix(seg, "docker/") && len(seg) > 7 {
+				return seg[7:]
+			}
+		}
+	}
+	return ""
+}
+
+// containerMainPID：容器主进程 PID = 与该容器 cgroup 相同的所有进程中取最小 pid。
+func containerMainPID(cid string) string {
+	best := 0
+	entries, err := os.ReadDir(procDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		n, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		cg := readFile(filepath.Join(e.Name(), "cgroup"))
+		if strings.Contains(cg, "docker/"+cid) || strings.Contains(cg, "docker-"+cid) {
+			if best == 0 || n < best {
+				best = n
+			}
+		}
+	}
+	if best > 0 {
+		return strconv.Itoa(best)
+	}
+	return ""
+}
+
+// parseDockerPorts：docker ps Ports 列 → 宿主侧发布端口（"0.0.0.0:8080->80/tcp" → "8080"）。
+func parseDockerPorts(s string) []string {
+	var ports []string
+	for _, part := range strings.Split(s, ",") {
+		idx := strings.Index(part, "->")
+		if idx < 0 {
+			continue
+		}
+		host := strings.TrimSpace(part[:idx])
+		if i := strings.LastIndex(host, ":"); i >= 0 {
+			host = host[i+1:]
+		}
+		if _, err := strconv.Atoi(host); err == nil {
+			dup := false
+			for _, x := range ports {
+				if x == host {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				ports = append(ports, host)
+			}
+		}
+	}
+	if len(ports) > 32 {
+		ports = ports[:32]
+	}
+	return ports
+}
+
+// watchDockerEntry：Docker 容器单条采集：docker ps 匹配容器名/ID（或 PID 经 cgroup 反查容器）。
+func watchDockerEntry(e map[string]interface{}, rows []string, psErr string) map[string]interface{} {
+	out := map[string]interface{}{"id": sOf(e["id"]), "found": false, "error": ""}
+	if psErr != "" && len(rows) == 0 {
+		out["error"] = psErr
+		return out
+	}
+	want := strings.TrimSpace(strings.TrimPrefix(sOf(e["container"]), "/"))
+	if sOf(e["match"]) == "pid" {
+		want = cgroupContainerID(strings.TrimSpace(sOf(e["pid"])))
+		if want == "" {
+			return out
+		}
+	}
+	if want == "" {
+		out["error"] = "配置缺少容器名称/ID"
+		return out
+	}
+	row := ""
+	for _, ln := range rows {
+		f := strings.SplitN(ln, "|", 5)
+		if len(f) >= 4 && (f[1] == want || strings.HasPrefix(f[0], want) || strings.HasPrefix(want, f[0])) {
+			row = ln
+			break
+		}
+	}
+	if row == "" {
+		return out
+	}
+	f := strings.SplitN(row, "|", 5)
+	out["found"] = true
+	out["name"] = f[1]
+	out["status_raw"] = f[2]
+	out["image"] = f[3]
+	if len(f) > 4 {
+		out["ports"] = parseDockerPorts(f[4])
+	}
+	if f[2] == "running" {
+		out["pid"] = containerMainPID(f[0])
+	}
+	return out
+}
+
+// watchKey：配置条目指纹（任一字段变更即缓存失效）。
+func watchKey(entries []map[string]interface{}) string {
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		keys = append(keys, strings.Join([]string{
+			sOf(e["id"]), sOf(e["match"]), sOf(e["pid"]), sOf(e["name"]), sOf(e["container"]),
+		}, "|"))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ";")
+}
+
+// processWatch：进程监听采集（配置未变更时 TTL 缓存），结果随帧带回 s["process_watch"]。
+func (a *Agent) processWatch() []map[string]interface{} {
+	entries := a.cfg.ProcessWatch
+	if len(entries) == 0 {
+		return nil
+	}
+	key := watchKey(entries)
+	pwMu.Lock()
+	if pwCacheData != nil && pwCacheKey == key && time.Since(pwCacheTS) < pwTTL {
+		data := pwCacheData
+		pwMu.Unlock()
+		return data
+	}
+	pwMu.Unlock()
+	rows, psErr := dockerPsLines()
+	out := make([]map[string]interface{}, 0, len(entries))
+	for _, e := range entries {
+		if sOf(e["ptype"]) == "docker" {
+			out = append(out, watchDockerEntry(e, rows, psErr))
+		} else {
+			out = append(out, watchHostEntry(e))
+		}
+	}
+	pwMu.Lock()
+	pwCacheKey, pwCacheTS, pwCacheData = key, time.Now(), out
+	pwMu.Unlock()
+	return out
 }
 
 // ---------- v1.1 扩展采集（按告警策略开关） ----------
@@ -1036,6 +1372,10 @@ func (a *Agent) collect(items []string) map[string]interface{} {
 				s["metrics"] = m
 			}
 		}
+	}
+	// 进程监听：平台下发条目本地采集后随帧带回（不依赖 collect_items 开关）
+	if wd := a.processWatch(); len(wd) > 0 {
+		s["process_watch"] = wd
 	}
 	return s
 }
