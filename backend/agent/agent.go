@@ -220,6 +220,67 @@ func diskPct() (float64, bool) {
 	return round2((total - free) / total * 100), true
 }
 
+// 视为真实磁盘的文件系统（排除 tmpfs/devtmpfs/overlay/proc 等内存或伪文件系统）
+var realFS = map[string]bool{
+	"ext2": true, "ext3": true, "ext4": true, "xfs": true, "btrfs": true,
+	"f2fs": true, "jfs": true, "reiserfs": true, "vfat": true, "exfat": true,
+	"ntfs": true, "ntfs3": true, "zfs": true,
+}
+
+// diskParts 真实磁盘分区容量（/proc/mounts 枚举 + statfs 取数，无外部命令）。
+// 根分区（系统盘）排首，其余按总容量降序，最多 8 个；随帧带回 s["disk_parts"]。
+func diskParts() []map[string]interface{} {
+	out := []map[string]interface{}{}
+	data, err := os.ReadFile(procDir + "/mounts")
+	if err != nil {
+		return out
+	}
+	type dp struct {
+		item   map[string]interface{}
+		total  float64
+	}
+	var root *dp
+	var others []dp
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || !realFS[f[2]] {
+			continue
+		}
+		var st syscall.Statfs_t
+		if err := syscall.Statfs(f[1], &st); err != nil || st.Blocks == 0 {
+			continue
+		}
+		total := float64(st.Blocks) * float64(st.Bsize)
+		free := float64(st.Bavail) * float64(st.Bsize)
+		used := total - free
+		item := map[string]interface{}{
+			"mnt":      f[1],
+			"fs":       f[2],
+			"total_gb": round2(total / 1073741824),
+			"used_gb":  round2(used / 1073741824),
+			"free_gb":  round2(free / 1073741824),
+			"pct":      round2(used / total * 100),
+		}
+		p := dp{item: item, total: total}
+		if f[1] == "/" {
+			root = &p
+		} else {
+			others = append(others, p)
+		}
+	}
+	if root != nil {
+		out = append(out, root.item)
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i].total > others[j].total })
+	for i := range others {
+		if len(out) >= 8 {
+			break
+		}
+		out = append(out, others[i].item)
+	}
+	return out
+}
+
 func load1() (float64, bool) {
 	fields := strings.Fields(readFile("loadavg"))
 	if len(fields) == 0 {
@@ -1308,6 +1369,7 @@ func (a *Agent) collect(items []string) map[string]interface{} {
 			if v, ok := diskPct(); ok {
 				s["disk"] = v
 			}
+			s["disk_parts"] = diskParts() // 各分区容量明细（系统盘置顶），卡片磁盘区块展示
 		case "load":
 			if l1, l5, l15, ncpu, ok := loadAvg(); ok {
 				s["load1"], s["load5"], s["load15"] = l1, l5, l15

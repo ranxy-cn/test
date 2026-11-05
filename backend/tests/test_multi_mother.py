@@ -152,6 +152,7 @@ def test_mother_overview_children_and_agent_metrics(auth_token, client, db, monk
         "cpu": 23.46,
         "mem": 38.8,
         "disk": 45.1,
+        "disk_parts": None,
         "load": 0.42,
         "net_rx_bps": None,
         "net_tx_bps": None,
@@ -260,6 +261,7 @@ def test_children_agent_summary_mapping(monkeypatch):
             "cpu": 23.46,
             "mem": 38.8,
             "disk": 45.1,
+            "disk_parts": None,
             "load": 0.42,
             "net_rx_bps": None,
             "net_tx_bps": None,
@@ -268,5 +270,13 @@ def test_children_agent_summary_mapping(monkeypatch):
 
     out2 = _children_agent_summary([{"id": "node-load"}, {"id": "node-x"}])
     assert out2 == {
-        "node-load": {"cpu": 1.0, "mem": 2.0, "disk": 3.0, "load": 5.5, "net_rx_bps": None, "net_tx_bps": None}
+        "node-load": {
+            "cpu": 1.0,
+            "mem": 2.0,
+            "disk": 3.0,
+            "disk_parts": None,
+            "load": 5.5,
+            "net_rx_bps": None,
+            "net_tx_bps": None,
+        }
     }

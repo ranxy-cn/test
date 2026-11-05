@@ -290,6 +290,10 @@ def test_children_realtime_batch(auth_token, client, db, monkeypatch):
                 "cpu": 11.1,
                 "mem": 22.2,
                 "disk": 33.3,
+                "disk_parts": [
+                    {"mnt": "/", "fs": "ext4", "total_gb": 40.0, "used_gb": 13.32, "free_gb": 26.68, "pct": 33.3},
+                    {"mnt": "/data", "fs": "xfs", "total_gb": 100.0, "used_gb": 10.0, "free_gb": 90.0, "pct": 10.0},
+                ],
                 "load1": 0.5,
                 "net_rx_bps": 2048.0,
                 "net_tx_bps": 1024.0,
@@ -307,6 +311,9 @@ def test_children_realtime_batch(auth_token, client, db, monkeypatch):
     assert m["cpu"] == 11.1 and m["load"] == 0.5
     assert m["net_rx_bps"] == 2048.0 and m["net_tx_bps"] == 1024.0
     assert m["online"] is True
+    # 磁盘分区明细透传（卡片磁盘区块数据源，系统盘置顶）
+    assert len(m["disk_parts"]) == 2
+    assert m["disk_parts"][0]["mnt"] == "/" and m["disk_parts"][0]["pct"] == 33.3
 
     r404 = client.get("/api/v1/assets/mothers/no-such/children/realtime", headers=_h(auth_token))
     assert r404.status_code == 404

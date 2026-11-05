@@ -98,6 +98,62 @@ def _disk() -> "float | None":
     return None
 
 
+# 视为真实磁盘的文件系统（排除 tmpfs/devtmpfs/overlay/proc 等内存或伪文件系统）
+_REAL_FS = {
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "jfs",
+    "reiserfs", "vfat", "exfat", "ntfs", "ntfs3", "zfs",
+}
+
+
+def _disk_parts() -> "list[dict]":
+    """真实磁盘分区容量（/proc/mounts 枚举 + os.statvfs 取数，无外部命令）。
+
+    根分区（系统盘）排首，其余按总容量降序，最多返回 8 个；字段：
+    {mnt, fs, total_gb, used_gb, free_gb, pct}。不可用环境返回空列表。
+    """
+    try:
+        with open("/proc/mounts", "r") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    root = None
+    others: "list[dict]" = []
+    for line in lines:
+        cols = line.split()
+        if len(cols) < 3:
+            continue
+        mnt, fs = cols[1], cols[2]
+        if fs not in _REAL_FS:
+            continue
+        try:
+            st = os.statvfs(mnt)
+        except OSError:
+            continue
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        if total <= 0:
+            continue
+        used = total - free
+        item = {
+            "mnt": mnt,
+            "fs": fs,
+            "total_gb": round(total / 1024 ** 3, 2),
+            "used_gb": round(used / 1024 ** 3, 2),
+            "free_gb": round(free / 1024 ** 3, 2),
+            "pct": round(used / total * 100, 2),
+        }
+        if mnt == "/":
+            root = item
+        else:
+            others.append(item)
+    parts: "list[dict]" = []
+    if root is not None:
+        parts.append(root)
+    others.sort(key=lambda x: -x["total_gb"])
+    parts.extend(others)
+    return parts[:8]
+
+
 def _load() -> "float | None":
     try:
         return float(_read(PROC + "/loadavg").split()[0])
@@ -521,6 +577,7 @@ def collect(items: "list[str]", pw_entries: "list[dict] | None" = None) -> dict:
             sample["mem_used_mb"] = round(kb[1] / 1024, 2)
     if "disk" in items:
         sample["disk"] = _disk()
+        sample["disk_parts"] = _disk_parts()  # 各分区容量明细（系统盘置顶），卡片磁盘区块展示
     if "load" in items:
         lf = _load_full()
         if lf:

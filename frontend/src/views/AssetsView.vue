@@ -291,6 +291,35 @@
                     <span>添加进程监听</span>
                   </div>
                 </div>
+                <!-- 磁盘分区：Agent 随帧上报容量明细（系统盘置顶），使用率 <70 绿 / 70–90 橙 / ≥90 红 -->
+                <div v-if="diskPartsOf(c).length" class="dk-wrap">
+                  <div class="dk-head">
+                    <span class="dk-title">磁盘</span>
+                    <span class="dk-count">{{ diskPartsOf(c).length }}</span>
+                  </div>
+                  <div class="dk-list">
+                    <el-tooltip
+                      v-for="p in diskPartsOf(c)"
+                      :key="p.mnt"
+                      placement="top"
+                      :show-after="150"
+                      :content="`${p.mnt === '/' ? '系统盘' : p.mnt}（${p.fs}）已用 ${p.used_gb}G / 共 ${p.total_gb}G，可用 ${p.free_gb}G`"
+                    >
+                      <div class="dk-row">
+                        <span class="dk-mnt" :class="{ sys: p.mnt === '/' }">{{ p.mnt === '/' ? '系统盘' : p.mnt }}</span>
+                        <span class="dk-bar">
+                          <span
+                            class="dk-fill"
+                            :class="p.pct >= 90 ? 'd-danger' : p.pct >= 70 ? 'd-warn' : 'd-ok'"
+                            :style="{ width: Math.min(100, p.pct) + '%' }"
+                          />
+                        </span>
+                        <span class="dk-meta">{{ p.used_gb }}G/{{ p.total_gb }}G</span>
+                        <span class="dk-pct" :class="{ 'd-danger-text': p.pct >= 90, 'd-warn-text': p.pct >= 70 && p.pct < 90 }">{{ p.pct }}%</span>
+                      </div>
+                    </el-tooltip>
+                  </div>
+                </div>
                 <div class="node-foot">
                   <span>{{ c.owner || '未指定负责人' }}</span>
                   <span :class="{ stale: !c.reachable }">{{ relTime(c.last_seen_at) }}</span>
@@ -1481,6 +1510,11 @@ function procWatchOf(c) {
   return (v && v.items) || []
 }
 
+// 磁盘分区明细：随 1s 实时轮询落进 c.metrics（Agent 帧内 disk_parts，系统盘置顶）
+function diskPartsOf(c) {
+  return (c.metrics || {}).disk_parts || []
+}
+
 async function loadProcWatch() {
   if (document.hidden || !detailView.value || !selectedMotherId.value) return
   const ids = [...new Set(children.value.map(procAssetId).filter(Boolean))]
@@ -2439,6 +2473,108 @@ async function resetAlertPolicy() {
 .np-list::-webkit-scrollbar-thumb {
   background: var(--el-border-color-darker);
   border-radius: 2px;
+}
+/* ===== 卡片磁盘分区区块（进程监听下方） ===== */
+.dk-wrap {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+}
+.dk-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.dk-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.dk-count {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted);
+  background: var(--el-fill-color-light);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+.dk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* 与进程监听一致：最多露出 3 行，超出列表内滚动 */
+  max-height: 78px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--el-border-color-darker) transparent;
+}
+.dk-list::-webkit-scrollbar {
+  width: 4px;
+}
+.dk-list::-webkit-scrollbar-thumb {
+  background: var(--el-border-color-darker);
+  border-radius: 2px;
+}
+.dk-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.dk-mnt {
+  flex: 0 0 auto;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.dk-mnt.sys {
+  color: var(--ink);
+  font-weight: 600;
+}
+.dk-bar {
+  flex: 1 1 auto;
+  min-width: 30px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--el-fill-color-dark);
+  overflow: hidden;
+}
+.dk-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+.d-ok {
+  background: #34c759;
+}
+.d-warn {
+  background: #ff9500;
+}
+.d-danger {
+  background: #ff3b30;
+}
+.dk-meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.dk-pct {
+  flex: 0 0 40px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+}
+.d-warn-text {
+  color: #ff9500;
+}
+.d-danger-text {
+  color: #ff3b30;
 }
 .np-item {
   display: flex;
