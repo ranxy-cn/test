@@ -269,6 +269,10 @@
                             <div v-if="it.args" class="np-tip-args">命令：{{ it.args }}</div>
                             <div v-if="it.error" style="color: #ff7875">{{ it.error }}</div>
                             <div class="np-tip-dim">采集时间：{{ it.checked_at || '待 Agent 上报' }}</div>
+                            <div v-if="it.status === 'pending'" class="np-tip-dim">
+                              已保存监听配置，Agent 采集后自动回填（约 10–20 秒）；若长时间停留在此状态，请在卡片右上角「重新部署
+                              Agent」升级到新版（旧版 Agent 无采集能力）
+                            </div>
                           </div>
                         </template>
                         <div class="np-item">
@@ -276,6 +280,7 @@
                           <span class="np-name">{{ it.display_name }}</span>
                           <span v-if="it.pid" class="np-meta">#{{ it.pid }}</span>
                           <span v-if="it.ports.length" class="np-meta">:{{ it.ports.join(',') }}</span>
+                          <span v-if="it.status === 'pending'" class="np-meta">等待采集…</span>
                           <el-icon v-if="authHasWrite" class="np-del" title="移除监听" @click.stop="removeProcWatch(c, it)"><Delete /></el-icon>
                         </div>
                       </el-tooltip>
@@ -1455,8 +1460,10 @@ const procAddAsset = ref(null)
 let procWatchTimer = null
 let procFastTimers = []
 
-// 增删监听后的快速补刷：Agent 秒级热采集，5-40 秒内分段拉几次，让状态尽快从「待采集」回填
+// 增删监听后的快速补刷：先立即刷一次（条目马上以「待采集」出现，不空窗），
+// 再 5-40 秒分段拉几次——Agent 指纹热生效 ~10-20 秒回填真实进程信息
 function procFastRefresh() {
+  loadProcWatch()
   procFastTimers.forEach(clearTimeout)
   procFastTimers = [5, 10, 15, 25, 40].map((s) => setTimeout(loadProcWatch, s * 1000))
 }
@@ -2439,6 +2446,19 @@ async function resetAlertPolicy() {
   height: 7px;
   border-radius: 50%;
   background: var(--el-text-color-disabled);
+}
+/* 待采集：灰点呼吸动画，表示「已保存、等待 Agent 回填」 */
+.np-item .np-dot.s-pending {
+  animation: np-pulse 1.6s ease-in-out infinite;
+}
+@keyframes np-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 .np-dot.s-running {
   background: #34c759;
