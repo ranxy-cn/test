@@ -2426,6 +2426,18 @@ async function resetAlertPolicy() {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* 最多露出 3 个条目，超出后列表内上下滚动 */
+  max-height: 78px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--el-border-color-darker) transparent;
+}
+.np-list::-webkit-scrollbar {
+  width: 4px;
+}
+.np-list::-webkit-scrollbar-thumb {
+  background: var(--el-border-color-darker);
+  border-radius: 2px;
 }
 .np-item {
   display: flex;
