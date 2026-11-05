@@ -1476,7 +1476,9 @@ function procAssetId(c) {
 }
 
 function procWatchOf(c) {
-  return procWatchMap.value[procAssetId(c)] || []
+  // 接口返回 items[资产id] = { items: [...], error }，取内层条目列表
+  const v = procWatchMap.value[procAssetId(c)]
+  return (v && v.items) || []
 }
 
 async function loadProcWatch() {
