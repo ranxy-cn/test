@@ -1522,10 +1522,11 @@ async function removeProcWatch(c, it) {
   }
 }
 
-function openMotherDetail(m) {
+async function openMotherDetail(m) {
   selectedMotherId.value = m.id
   detailView.value = true
-  loadOverview()
+  // 先等子机列表就绪再拉监听（loadProcWatch 依赖 children 计算 ids，提前调会空跑）
+  await loadOverview()
   loadProcWatch()
 }
 
