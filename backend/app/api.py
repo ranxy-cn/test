@@ -1544,13 +1544,14 @@ def asset_exec(
 # ---------------------------------------------------------------------------
 
 class ProcessWatchAddIn(BaseModel):
-    """新增进程监听：外部程序/Tomcat 按 PID 或程序名称；Docker 按容器名/ID 或主进程 PID。"""
+    """新增进程监听：外部程序/Tomcat 按 PID、程序名称或监听端口；Docker 按容器名/ID、主进程 PID 或发布端口。"""
 
     ptype: str = Field(default="external", max_length=16)
     match: str = Field(default="name", max_length=16)
     pid: str = Field(default="", max_length=16)
     name: str = Field(default="", max_length=128)
     container: str = Field(default="", max_length=128)
+    port: str = Field(default="", max_length=8)
 
 
 class ProcessWatchStatusIn(BaseModel):
@@ -1595,7 +1596,7 @@ def add_process_watch(
     a = db.get(Asset, asset_id)
     if a is None:
         raise HTTPException(404, "资产不存在")
-    entry, err = process_watch_svc.normalize_new(body.ptype, body.match, body.pid, body.name, body.container)
+    entry, err = process_watch_svc.normalize_new(body.ptype, body.match, body.pid, body.name, body.container, body.port)
     if err:
         raise HTTPException(400, err)
 
@@ -1606,6 +1607,7 @@ def add_process_watch(
             and w.get("pid") == entry["pid"]
             and w.get("name") == entry["name"]
             and w.get("container") == entry["container"]
+            and w.get("port", "") == entry.get("port", "")
         ):
             raise HTTPException(409, "该进程已在监听列表中，无需重复添加")
     now = datetime.now(BEIJING_TZ).isoformat(timespec="seconds")

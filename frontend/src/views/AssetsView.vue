@@ -262,6 +262,7 @@
                           <div class="np-tip">
                             <div>{{ it.ptype_label }} · {{ it.display_name }}</div>
                             <div>PID：{{ it.pid || '—' }}　状态：{{ it.status_text }}</div>
+                            <div v-if="it.match === 'port'">定位端口：{{ it.config_port }}</div>
                             <div>端口：{{ it.ports.length ? it.ports.join(', ') : '—' }}</div>
                             <div v-if="it.elapsed">运行时长：{{ it.elapsed }}</div>
                             <div v-if="it.image">镜像：{{ it.image }}</div>

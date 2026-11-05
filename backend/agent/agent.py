@@ -384,8 +384,54 @@ def _pw_listen_ports(pid: str) -> "list[str]":
     return ports[:32]
 
 
+def _pw_pid_by_port(port: str) -> str:
+    """按监听端口反查宿主进程 PID：/proc/net/tcp(6) LISTEN inode ↔ /proc/*/fd socket。"""
+    try:
+        want = int(port)
+    except ValueError:
+        return ""
+    inodes = set()
+    for table in ("/net/tcp", "/net/tcp6"):
+        try:
+            lines = _read(PROC + table).splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            f = line.split()
+            # 第 4 列 0A = TCP_LISTEN；第 2 列地址:十六进制端口；第 10 列 inode
+            if len(f) < 10 or f[3] != "0A":
+                continue
+            try:
+                if int(f[1].split(":")[1], 16) != want:
+                    continue
+            except (ValueError, IndexError):
+                continue
+            inodes.add(f[9])
+    if not inodes:
+        return ""
+    me = str(os.getpid())
+    try:
+        ids = sorted((n for n in os.listdir(PROC) if n.isdigit()), key=int)
+    except OSError:
+        return ""
+    for pid in ids:
+        if pid == me:
+            continue
+        try:
+            for name in os.listdir(PROC + "/" + pid + "/fd"):
+                try:
+                    link = os.readlink(PROC + "/" + pid + "/fd/" + name)
+                except OSError:
+                    continue
+                if link.startswith("socket:[") and link[8:-1] in inodes:
+                    return pid
+        except OSError:
+            continue
+    return ""
+
+
 def _pw_host_entry(entry: dict) -> dict:
-    """host 进程（外部程序/Tomcat）单条采集：PID 直查或 /proc cmdline 子串匹配。"""
+    """host 进程（外部程序/Tomcat）单条采集：PID 直查 / 端口反查 / cmdline 子串匹配。"""
     out = {"id": entry.get("id", ""), "found": False, "error": ""}
     match = str(entry.get("match") or "")
     pid = str(entry.get("pid") or "").strip()
@@ -394,6 +440,13 @@ def _pw_host_entry(entry: dict) -> dict:
         if not pid or not os.path.isdir(PROC + "/" + pid):
             return out
         cands = [pid]
+    elif match == "port":
+        pport = str(entry.get("port") or "").strip()
+        resolved = _pw_pid_by_port(pport) if pport else ""
+        if not resolved:
+            out["error"] = "端口 " + (pport or "?") + " 无监听进程"
+            return out
+        cands = [resolved]
     else:
         if not name:
             out["error"] = "配置缺少程序名称"
@@ -510,25 +563,40 @@ def _parse_docker_ports(s: str) -> "list[str]":
 
 
 def _pw_docker_entry(entry: dict, rows: "list[str]", err: str) -> dict:
-    """Docker 容器单条采集：docker ps 匹配容器名/ID（或 PID 经 cgroup 反查容器）。"""
+    """Docker 容器单条采集：docker ps 匹配容器名/ID、PID 经 cgroup 反查、或宿主端口映射。"""
     out = {"id": entry.get("id", ""), "found": False, "error": ""}
     if err and not rows:
         out["error"] = err
         return out
+    match = str(entry.get("match") or "")
     want = str(entry.get("container") or "").strip().lstrip("/")
-    if str(entry.get("match") or "") == "pid":
+    row = ""
+    if match == "pid":
         want = _cgroup_container_id(str(entry.get("pid") or ""))
         if not want:
             return out
-    if not want:
-        out["error"] = "配置缺少容器名称/ID"
-        return out
-    row = ""
-    for ln in rows:
-        f = ln.split("|")
-        if len(f) >= 4 and (f[1] == want or f[0].startswith(want) or want.startswith(f[0])):
-            row = ln
-            break
+    if match == "port":
+        # 按宿主发布端口定位：docker ps Ports 列包含该端口即命中
+        pport = str(entry.get("port") or "").strip()
+        if not pport:
+            out["error"] = "配置缺少监听端口"
+            return out
+        for ln in rows:
+            f = ln.split("|")
+            if len(f) >= 5 and pport in _parse_docker_ports(f[4]):
+                row = ln
+                break
+        if not row:
+            out["error"] = "端口 " + pport + " 无监听容器"
+    else:
+        if not want:
+            out["error"] = "配置缺少容器名称/ID"
+            return out
+        for ln in rows:
+            f = ln.split("|")
+            if len(f) >= 4 and (f[1] == want or f[0].startswith(want) or want.startswith(f[0])):
+                row = ln
+                break
     if not row:
         return out
     f = row.split("|")
@@ -541,7 +609,7 @@ def _pw_docker_entry(entry: dict, rows: "list[str]", err: str) -> dict:
 
 def _watch_key(entries: "list[dict]") -> tuple:
     return tuple(sorted(
-        "|".join(str(e.get(k) or "") for k in ("id", "match", "pid", "name", "container"))
+        "|".join(str(e.get(k) or "") for k in ("id", "match", "pid", "name", "container", "port"))
         for e in entries
     ))
 

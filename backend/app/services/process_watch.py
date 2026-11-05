@@ -6,11 +6,13 @@ Agent 在子机本地采集进程信息（/proc 扫描 + docker CLI），随上�
 平台从最新帧（agent_api.LATEST）读取并合并展示——全程不经平台 SSH 直连。
 
 识别与采集适配（Agent 侧实现，见 backend/agent/agent.py / agent.go）：
-- 外部独立程序 / Tomcat 服务：按 PID 直查或按程序名称扫描 /proc cmdline
-  子串匹配；运行状态取 /proc/<pid>/stat 状态位；监听端口经 /proc/net/tcp(6)
+- 外部独立程序 / Tomcat 服务：按 PID 直查、按程序名称扫描 /proc cmdline
+  子串匹配，或按监听端口反查（/proc/net LISTEN inode ↔ fd socket → PID）；
+  运行状态取 /proc/<pid>/stat 状态位；监听端口经 /proc/net/tcp(6)
   LISTEN inode 与 /proc/<pid>/fd socket 反查；Tomcat 尽力回读 CATALINA_BASE。
-- Docker 容器内部进程：docker ps -a 匹配容器名/ID（或按主进程 PID 经
-  /proc/<pid>/cgroup 反查容器），状态取容器 State，端口取发布映射。
+- Docker 容器内部进程：docker ps -a 匹配容器名/ID、按主进程 PID 经
+  /proc/<pid>/cgroup 反查容器，或按宿主发布端口映射定位容器；
+  状态取容器 State，端口取发布映射。
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from app.models import BEIJING_TZ
 
 PTYPE_LABELS = {"external": "外部程序", "tomcat": "Tomcat 服务", "docker": "Docker 容器"}
 PTYPES = set(PTYPE_LABELS)
-_MATCHES = {"pid", "name", "container"}
+_MATCHES = {"pid", "name", "container", "port"}
 
 _PID_RE = re.compile(r"^\d{1,16}$")
 
@@ -69,7 +71,9 @@ def docker_status(raw: str) -> tuple[str, str]:
 # 新增配置：入参收敛（平台侧只做格式校验，进程存在性由 Agent 采集回填）
 # ---------------------------------------------------------------------------
 
-def normalize_new(ptype: str, match: str, pid: str, name: str, container: str) -> tuple[dict[str, str], str]:
+def normalize_new(
+    ptype: str, match: str, pid: str, name: str, container: str, port: str = ""
+) -> tuple[dict[str, str], str]:
     """收敛新增入参 → (entry, err)。err 非空表示参数不合法。"""
     ptype = (ptype or "").strip()
     if ptype not in PTYPES:
@@ -77,22 +81,27 @@ def normalize_new(ptype: str, match: str, pid: str, name: str, container: str) -
     pid = (pid or "").strip()
     name = (name or "").strip()
     container = (container or "").strip()
+    port = (port or "").strip()
     entry: dict[str, str] = {"ptype": ptype, "match": "", "pid": "", "name": "", "container": ""}
     if match == "pid" and _PID_RE.fullmatch(pid):
         entry["match"] = "pid"
         entry["pid"] = pid
+        return entry, ""
+    if match == "port" and _PID_RE.fullmatch(port) and 1 <= int(port) <= 65535:
+        entry["match"] = "port"
+        entry["port"] = str(int(port))
         return entry, ""
     if ptype == "docker":
         if container:
             entry["match"] = "container"
             entry["container"] = container[:128]
             return entry, ""
-        return {}, "请填写容器名称/ID，或容器主进程 PID"
+        return {}, "请填写容器名称/ID、容器主进程 PID 或宿主发布端口"
     if name:
         entry["match"] = "name"
         entry["name"] = name[:128]
         return entry, ""
-    return {}, "请填写进程 PID 或程序名称"
+    return {}, "请填写进程 PID、程序名称或监听端口"
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +113,7 @@ def _display_name(entry: dict[str, Any], report: dict[str, Any] | None) -> str:
         return (
             (report or {}).get("name")
             or str(entry.get("container") or "").lstrip("/")
+            or ("端口 " + str(entry["port"]) if entry.get("match") == "port" and entry.get("port") else "")
             or "容器进程"
         )
     if entry.get("name"):
@@ -115,6 +125,8 @@ def _display_name(entry: dict[str, Any], report: dict[str, Any] | None) -> str:
         args = str(report.get("args") or "")
         if args:
             return args.split(" ")[0]
+    if entry.get("match") == "port" and entry.get("port"):
+        return "端口 " + str(entry["port"])
     return str(entry.get("pid") or "进程")
 
 
@@ -147,6 +159,7 @@ def entry_item(entry: dict[str, Any], report: dict[str, Any] | None, frame_ts: f
         "match": entry.get("match", ""),
         "config_pid": entry.get("pid", ""),
         "config_name": entry.get("name", ""),
+        "config_port": entry.get("port", ""),
         "container": entry.get("container", ""),
         "pid": "",
         "display_name": _display_name(entry, report),

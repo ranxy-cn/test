@@ -620,7 +620,68 @@ func listenPorts(pidDir string) []string {
 	return ports
 }
 
-// watchHostEntry：host 进程（外部程序/Tomcat）单条采集：PID 直查或 /proc cmdline 子串匹配。
+// pidByPort：按监听端口反查宿主进程 PID（/proc/net LISTEN inode → /proc/*/fd socket）。
+func pidByPort(port string) string {
+	want, err := strconv.Atoi(port)
+	if err != nil {
+		return ""
+	}
+	inodes := map[string]bool{}
+	for _, table := range []string{"net/tcp", "net/tcp6"} {
+		for _, line := range strings.Split(readFile(table), "\n")[1:] {
+			f := strings.Fields(line)
+			// 第 4 列 0A = TCP_LISTEN；第 2 列冒号后是十六进制端口；第 10 列 inode
+			if len(f) < 10 || f[3] != "0A" {
+				continue
+			}
+			parts := strings.SplitN(f[1], ":", 2)
+			if len(parts) < 2 {
+				continue
+			}
+			if v, err := strconv.ParseInt(parts[1], 16, 64); err != nil || int(v) != want {
+				continue
+			}
+			inodes[f[9]] = true
+		}
+	}
+	if len(inodes) == 0 {
+		return ""
+	}
+	entries, err := os.ReadDir(procDir)
+	if err != nil {
+		return ""
+	}
+	ids := []int{}
+	for _, de := range entries {
+		if n, err := strconv.Atoi(de.Name()); err == nil {
+			ids = append(ids, n)
+		}
+	}
+	sort.Ints(ids)
+	self := os.Getpid()
+	for _, n := range ids {
+		if n == self { // 跳过自身
+			continue
+		}
+		pidDir := strconv.Itoa(n)
+		fds, err := os.ReadDir(filepath.Join(procDir, pidDir, "fd"))
+		if err != nil {
+			continue
+		}
+		for _, de := range fds {
+			link, err := os.Readlink(filepath.Join(procDir, pidDir, "fd", de.Name()))
+			if err != nil || !strings.HasPrefix(link, "socket:[") || !strings.HasSuffix(link, "]") {
+				continue
+			}
+			if inodes[link[8:len(link)-1]] {
+				return pidDir
+			}
+		}
+	}
+	return ""
+}
+
+// watchHostEntry：host 进程（外部程序/Tomcat）单条采集：PID 直查 / 端口反查 / cmdline 子串匹配。
 func watchHostEntry(e map[string]interface{}) map[string]interface{} {
 	out := map[string]interface{}{"id": sOf(e["id"]), "found": false, "error": ""}
 	match := sOf(e["match"])
@@ -635,6 +696,20 @@ func watchHostEntry(e map[string]interface{}) map[string]interface{} {
 			return out
 		}
 		cands = []string{pid}
+	} else if match == "port" {
+		pport := strings.TrimSpace(sOf(e["port"]))
+		resolved := ""
+		if pport != "" {
+			resolved = pidByPort(pport)
+		}
+		if resolved == "" {
+			if pport == "" {
+				pport = "?"
+			}
+			out["error"] = "端口 " + pport + " 无监听进程"
+			return out
+		}
+		cands = []string{resolved}
 	} else {
 		if name == "" {
 			out["error"] = "配置缺少程序名称"
@@ -799,30 +874,57 @@ func parseDockerPorts(s string) []string {
 	return ports
 }
 
-// watchDockerEntry：Docker 容器单条采集：docker ps 匹配容器名/ID（或 PID 经 cgroup 反查容器）。
+// watchDockerEntry：Docker 容器单条采集：docker ps 匹配容器名/ID、PID 经 cgroup 反查、或宿主端口映射。
 func watchDockerEntry(e map[string]interface{}, rows []string, psErr string) map[string]interface{} {
 	out := map[string]interface{}{"id": sOf(e["id"]), "found": false, "error": ""}
 	if psErr != "" && len(rows) == 0 {
 		out["error"] = psErr
 		return out
 	}
+	match := sOf(e["match"])
 	want := strings.TrimSpace(strings.TrimPrefix(sOf(e["container"]), "/"))
-	if sOf(e["match"]) == "pid" {
+	row := ""
+	if match == "pid" {
 		want = cgroupContainerID(strings.TrimSpace(sOf(e["pid"])))
 		if want == "" {
 			return out
 		}
 	}
-	if want == "" {
-		out["error"] = "配置缺少容器名称/ID"
-		return out
-	}
-	row := ""
-	for _, ln := range rows {
-		f := strings.SplitN(ln, "|", 5)
-		if len(f) >= 4 && (f[1] == want || strings.HasPrefix(f[0], want) || strings.HasPrefix(want, f[0])) {
-			row = ln
-			break
+	if match == "port" {
+		// 按宿主发布端口定位：docker ps Ports 列包含该端口即命中
+		pport := strings.TrimSpace(sOf(e["port"]))
+		if pport == "" {
+			out["error"] = "配置缺少监听端口"
+			return out
+		}
+		for _, ln := range rows {
+			f := strings.SplitN(ln, "|", 5)
+			if len(f) >= 5 {
+				for _, p := range parseDockerPorts(f[4]) {
+					if p == pport {
+						row = ln
+						break
+					}
+				}
+			}
+			if row != "" {
+				break
+			}
+		}
+		if row == "" {
+			out["error"] = "端口 " + pport + " 无监听容器"
+		}
+	} else {
+		if want == "" {
+			out["error"] = "配置缺少容器名称/ID"
+			return out
+		}
+		for _, ln := range rows {
+			f := strings.SplitN(ln, "|", 5)
+			if len(f) >= 4 && (f[1] == want || strings.HasPrefix(f[0], want) || strings.HasPrefix(want, f[0])) {
+				row = ln
+				break
+			}
 		}
 	}
 	if row == "" {
@@ -847,7 +949,7 @@ func watchKey(entries []map[string]interface{}) string {
 	keys := make([]string, 0, len(entries))
 	for _, e := range entries {
 		keys = append(keys, strings.Join([]string{
-			sOf(e["id"]), sOf(e["match"]), sOf(e["pid"]), sOf(e["name"]), sOf(e["container"]),
+			sOf(e["id"]), sOf(e["match"]), sOf(e["pid"]), sOf(e["name"]), sOf(e["container"]), sOf(e["port"]),
 		}, "|"))
 	}
 	sort.Strings(keys)

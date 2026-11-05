@@ -15,14 +15,16 @@
         </el-radio-group>
       </el-form-item>
       <el-form-item label="定位方式">
-        <el-radio-group v-model="form.match">
+        <el-radio-group v-model="form.match" @change="onMatchChange">
           <template v-if="form.ptype === 'docker'">
             <el-radio-button value="container">按容器名/ID</el-radio-button>
             <el-radio-button value="pid">按主进程 PID</el-radio-button>
+            <el-radio-button value="port">按端口号</el-radio-button>
           </template>
           <template v-else>
             <el-radio-button value="name">按程序名称</el-radio-button>
             <el-radio-button value="pid">按 PID</el-radio-button>
+            <el-radio-button value="port">按端口号</el-radio-button>
           </template>
         </el-radio-group>
       </el-form-item>
@@ -32,6 +34,15 @@
           placeholder="如 1234（纯数字）"
           style="width: 260px"
           maxlength="16"
+          @keyup.enter="submit"
+        />
+      </el-form-item>
+      <el-form-item v-else-if="form.match === 'port'" label="监听端口" required>
+        <el-input
+          v-model="form.port"
+          placeholder="进程监听的端口号，如 8080"
+          style="width: 260px"
+          maxlength="5"
           @keyup.enter="submit"
         />
       </el-form-item>
@@ -63,7 +74,7 @@
 </template>
 
 <script setup>
-// 添加进程监听弹窗：三类进程（外部程序 / Tomcat / Docker 容器）× 两种定位方式。
+// 添加进程监听弹窗：三类进程（外部程序 / Tomcat / Docker 容器）× 定位方式（名称/PID/端口/容器名）。
 // 仅保存监听配置到资产，进程识别与信息采集由子机自研 Agent 完成后随帧回填（无 SSH）。
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -76,24 +87,29 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'saved'])
 
 const PTYPE_OPTIONS = [
-  { value: 'external', label: '外部程序', tip: '宿主机上的独立进程（nginx、redis 等）：Agent 按命令行匹配或 PID 定位，采集运行状态与监听端口' },
+  { value: 'external', label: '外部程序', tip: '宿主机上的独立进程（nginx、redis 等）：按命令行关键字、PID 或监听端口定位，Agent 采集运行状态与监听端口' },
   { value: 'tomcat', label: 'Tomcat 服务', tip: 'Java/Tomcat 服务进程：定位方式与外部程序一致，额外识别 CATALINA_BASE 部署目录' },
-  { value: 'docker', label: 'Docker 容器', tip: '容器内主进程：按容器名/ID 跟踪（推荐，容器重启不失效），或按主进程 PID 反查容器' },
+  { value: 'docker', label: 'Docker 容器', tip: '容器内主进程：按容器名/ID 跟踪（推荐，容器重启不失效），或按主进程 PID / 宿主发布端口反查容器' },
 ]
 const currentTip = computed(() => (PTYPE_OPTIONS.find((p) => p.value === form.ptype) || {}).tip || '')
 
-const form = reactive({ ptype: 'external', match: 'name', pid: '', name: '', container: '' })
+const form = reactive({ ptype: 'external', match: 'name', pid: '', name: '', container: '', port: '' })
 const submitting = ref(false)
 
 watch(
   () => props.modelValue,
   (v) => {
-    if (v) Object.assign(form, { ptype: 'external', match: 'name', pid: '', name: '', container: '' })
+    if (v) Object.assign(form, { ptype: 'external', match: 'name', pid: '', name: '', container: '', port: '' })
   },
 )
 
 function onPtypeChange() {
   form.match = form.ptype === 'docker' ? 'container' : 'name'
+}
+
+function onMatchChange() {
+  // 切换定位方式时清空无关输入，避免残留值误提交
+  Object.assign(form, { pid: '', name: '', container: '', port: '' })
 }
 
 async function submit() {
@@ -102,6 +118,13 @@ async function submit() {
     payload.pid = form.pid.trim()
     if (!/^\d{1,16}$/.test(payload.pid)) {
       ElMessage.warning('请填写正确的进程 PID（纯数字）')
+      return
+    }
+  } else if (form.match === 'port') {
+    payload.port = form.port.trim()
+    const n = Number(payload.port)
+    if (!/^\d{1,5}$/.test(payload.port) || n < 1 || n > 65535) {
+      ElMessage.warning('请填写正确的端口号（1-65535）')
       return
     }
   } else if (form.ptype === 'docker') {

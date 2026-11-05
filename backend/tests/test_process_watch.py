@@ -50,11 +50,38 @@ def test_normalize_new_invalid():
     _, err = svc.normalize_new("bad", "name", "", "x", "")
     assert "进程类型不合法" in err
     _, err = svc.normalize_new("external", "name", "", "", "")
-    assert "PID 或程序名称" in err
+    assert "程序名称" in err
     _, err = svc.normalize_new("docker", "", "", "", "")
     assert "容器名称/ID" in err
     _, err = svc.normalize_new("external", "pid", "12ab", "", "")
-    assert "PID 或程序名称" in err
+    assert "程序名称" in err
+
+
+def test_normalize_new_port():
+    # 合法端口：收敛为十进制字符串
+    entry, err = svc.normalize_new("external", "port", "", "", "", " 8080 ")
+    assert err == ""
+    assert entry == {"ptype": "external", "match": "port", "pid": "", "name": "", "container": "", "port": "8080"}
+
+    # 边界：0 / 65536 非法，1 / 65535 合法
+    _, err = svc.normalize_new("tomcat", "port", "", "", "", "0")
+    assert "监听端口" in err
+    _, err = svc.normalize_new("tomcat", "port", "", "", "", "65536")
+    assert "监听端口" in err
+    entry, err = svc.normalize_new("tomcat", "port", "", "", "", "1")
+    assert err == "" and entry["port"] == "1"
+    entry, err = svc.normalize_new("tomcat", "port", "", "", "", "65535")
+    assert err == "" and entry["port"] == "65535"
+
+    # 前导零归一化
+    entry, err = svc.normalize_new("external", "port", "", "", "", "0080")
+    assert err == "" and entry["port"] == "80"
+
+    # 非法端口且无其他定位信息 → 提示补全
+    _, err = svc.normalize_new("external", "port", "", "", "", "abc")
+    assert "监听端口" in err
+    _, err = svc.normalize_new("docker", "port", "", "", "", "abc")
+    assert "容器名称/ID" in err
 
 
 # ---------- 服务层：配置 + 帧合并 ----------
@@ -154,6 +181,34 @@ def test_add_and_delete_watch_api(client, db):
     assert resp.status_code == 200 and resp.json()["deleted"] == wid
     resp = client.delete(f"/api/v1/assets/ast-pw-1/process-watch/{wid}")
     assert resp.status_code == 404
+
+
+def test_add_watch_by_port_api(client, db):
+    db.add(_mk("ast-pw-port"))
+    db.commit()
+
+    # 按端口添加 → 落库 entry 含 match=port
+    resp = client.post("/api/v1/assets/ast-pw-port/process-watch", json={
+        "ptype": "external", "match": "port", "port": " 22 ",
+    })
+    assert resp.status_code == 200
+    item = resp.json()["item"]
+    assert item["match"] == "port" and item["config_port"] == "22" and item["display_name"] == "端口 22"
+
+    stored = db.get(Asset, "ast-pw-port").extra["process_watch"]
+    assert len(stored) == 1 and stored[0]["port"] == "22" and stored[0]["match"] == "port"
+
+    # 同端口重复添加 → 409
+    resp = client.post("/api/v1/assets/ast-pw-port/process-watch", json={
+        "ptype": "external", "match": "port", "port": "22",
+    })
+    assert resp.status_code == 409
+
+    # 非法端口 → 400
+    resp = client.post("/api/v1/assets/ast-pw-port/process-watch", json={
+        "ptype": "external", "match": "port", "port": "99999",
+    })
+    assert resp.status_code == 400
 
 
 def test_status_reads_agent_latest_frame(client, db):
