@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import setup_logging as celery_setup_logging
 
 from app.config import get_settings
 
@@ -10,6 +11,31 @@ celery_app = Celery(
     backend=settings.redis_url,
     include=["app.workers.tasks"],
 )
+
+
+@celery_setup_logging.connect
+def _setup_worker_logging(**_):
+    """接管 worker/beat 日志：与 API 同一套结构化格式（含 pid/tid/task 上下文）。"""
+    from app.logging_setup import setup_logging
+
+    setup_logging("devops-worker")
+    return True  # 阻断 celery 默认日志安装
+
+
+class LoggedTask(celery_app.Task):
+    """任务基类：任何任务抛出未捕获异常时输出结构化堆栈（含 task_id 与参数）。"""
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        import logging
+
+        logging.getLogger("devops.tasks").error(
+            "任务失败 %s task_id=%s args=%r kwargs=%r",
+            self.name, task_id, args, kwargs,
+            exc_info=(type(exc), exc, None),
+        )
+        super().on_failure(exc, task_id, args, kwargs, einfo)
+
+
 celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,

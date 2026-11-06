@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from typing import Literal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -14,7 +16,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import AnomalyEvent, Asset, KnowledgeDocument, Ticket
 from app.routers.deps import CurrentUser, require_perm
-from app.services.knowledge import analyze_document, chat_completion, extract_text, new_document_id, redact_sensitive, search_knowledge
+from app.services.knowledge import analyze_document, chat_completion, chat_completion_stream, chat_model_name, extract_text, new_document_id, redact_sensitive, search_knowledge
 
 router = APIRouter()
 
@@ -57,7 +59,7 @@ def upload_document(file: UploadFile, db: Session = Depends(get_db)):
     if not content:
         raise HTTPException(422, "暂不支持读取该文件内容，请上传 PDF、DOCX、Markdown 或文本文件")
     content = content[:300000]
-    analysis = analyze_document(filename, content)
+    analysis = analyze_document(filename, content, db=db)
     document = KnowledgeDocument(
         id=new_document_id(),
         tenant_id=settings.tenant_id,
@@ -126,9 +128,9 @@ def _runtime_context(db: Session) -> dict[str, Any]:
     }
 
 
-@router.post("/api/v1/knowledge/chat", dependencies=[Depends(require_perm("knowledge:chat"))])
-def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
-    hits = search_knowledge(db, body.message, 6)
+def _chat_messages(db: Session, question: str, history: list[ChatMessage]) -> tuple[list[dict[str, str]], list[dict[str, Any]], dict[str, Any]]:
+    """组装智能问答的上下文消息：知识库检索 + 实时状态 + 脱敏历史。返回 (messages, hits, runtime)。"""
+    hits = search_knowledge(db, question, 6)
     context = _runtime_context(db)
     knowledge_text = "\n\n".join(
         f"【{item['title']}】\n{redact_sensitive(item['snippet'])}" for item in hits
@@ -140,11 +142,17 @@ def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Dep
         f"\n实时状态：{context}\n知识库检索结果：\n{knowledge_text}"
     )
     messages = [{"role": "system", "content": system}]
-    messages.extend({"role": item.role, "content": redact_sensitive(item.content)} for item in body.history[-12:])
-    messages.append({"role": "user", "content": redact_sensitive(body.message)})
+    messages.extend({"role": item.role, "content": redact_sensitive(item.content)} for item in history[-12:])
+    messages.append({"role": "user", "content": redact_sensitive(question)})
+    return messages, hits, context
+
+
+@router.post("/api/v1/knowledge/chat", dependencies=[Depends(require_perm("knowledge:chat"))])
+def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
+    messages, hits, context = _chat_messages(db, body.message, body.history)
     try:
-        answer = chat_completion(messages)
-        model = get_settings().chat_model if get_settings().chat_api_key else get_settings().openai_model
+        answer = chat_completion(messages, db=db)
+        model = chat_model_name(db)
         source = "ai"
     except Exception:
         answer = (
@@ -156,3 +164,72 @@ def chat(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Dep
         model = "fallback"
         source = "fallback"
     return {"answer": answer, "model": model, "source": source, "knowledge": hits, "runtime": context, "user": current.username}
+
+
+@router.post("/api/v1/knowledge/chat/stream", dependencies=[Depends(require_perm("knowledge:chat"))])
+def chat_stream(body: ChatIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
+    """智能问答流式输出：SSE 逐段推送回答（meta → delta* → done）。
+
+    - 端点保持同步：知识检索/实时状态查询在线程池完成，不阻塞事件循环
+    - 推流用异步生成器直通事件循环，消除每 chunk 一次的线程池调度抖动
+    - meta：模型名 / 知识库命中 / 实时状态（首帧即发，前端可先渲染引用）
+    - delta：回答文本增量
+    - done：结束标记（source=ai|fallback）；网关不可用时兜底摘要整段经 delta 发出
+    - 响应头 X-Accel-Buffering: no 关闭 nginx 代理缓冲，保证逐段到达前端
+    """
+    messages, hits, context = _chat_messages(db, body.message, body.history)
+    model = chat_model_name(db)
+
+    def _sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    async def _agen():
+        yield _sse("meta", {"model": model, "knowledge": hits, "runtime": context, "user": current.username})
+        collected: list[str] = []
+        source = "ai"
+        try:
+            async for delta in chat_completion_stream(messages, db=db):
+                collected.append(delta)
+                yield _sse("delta", {"text": delta})
+        except Exception:
+            source = "fallback"
+            if collected:
+                yield _sse("delta", {"text": "\n\n[连接中断，以上为已生成的部分回答]"})
+            else:
+                yield _sse(
+                    "delta",
+                    {"text": (
+                        "当前未成功连接 AI 网关，我先返回可确认的状态摘要："
+                        f"资产 {context['assets']['total']} 台，可达 {context['assets']['reachable']} 台，"
+                        f"活动异常 {len(context['active_anomalies'])} 条，未关闭任务单 {context['open_ticket_count']} 条。"
+                        "请检查 AI 网关配置和连接状态。"
+                    )},
+                )
+        yield _sse("done", {"source": source, "model": model})
+
+    return StreamingResponse(
+        _agen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class DataQueryIn(BaseModel):
+    question: str = Field(min_length=1, max_length=1000, description="自然语言数据问题")
+
+
+@router.post("/api/v1/knowledge/data-query", dependencies=[Depends(require_perm("knowledge:chat"))])
+def data_query(body: DataQueryIn, db: Session = Depends(get_db), current: CurrentUser = Depends(require_perm("knowledge:chat"))):
+    """智能数据问答：自然语言 → 只读 SQL（表白名单/单库限定/只读事务）→ AI 解读。"""
+    from app.services import nl2sql
+
+    try:
+        result = nl2sql.run_data_query(db, body.question, operator=current.username)
+    except ValueError as e:
+        raise HTTPException(400, f"SQL 安全审计拦截：{e}")
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    except Exception as e:
+        raise HTTPException(503, f"数据问答暂不可用：{e}")
+    result["user"] = current.username
+    return result

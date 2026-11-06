@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DevOpsAgent 演示：绿灯 / 黄灯 / 红灯 + 资源锁冲突 + mock 备份
+# 新知AI-智能巡检 演示：绿灯 / 黄灯 / 红灯 + 资源锁冲突 + mock 备份
 set -euo pipefail
 BASE="${BASE:-http://127.0.0.1:8000}"
 SECRET="${WEBHOOK_SECRET:-dev-webhook-secret}"

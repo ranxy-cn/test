@@ -19,6 +19,7 @@ pypdf==5.1.0
 langgraph==0.2.60
 langchain-core==0.3.28
 python-dotenv==1.0.1
+sqlglot==25.24.5
 ansible-core==2.17.3
 ansible-runner==2.4.0
 pytest==8.3.4

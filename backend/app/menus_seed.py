@@ -18,14 +18,18 @@ from app.models import Menu, RoleMenu
 MENU_TREE: list[tuple] = [
     ("menu:dashboard", "运维大屏", "menu", "/dashboard", "dashboard:read", "data-analysis", 1, []),
     ("menu:anomalies", "异常告警", "menu", "/anomalies", "anomalies:read", "warning", 5, []),
+    ("menu:ai-analyses", "AI 日志分析", "menu", "/ai-analyses", "ai:view", "magic-stick", 6, [
+        ("btn:ai-feedback", "人工处理结果", "button", "", "ai:feedback", "", 10, []),
+        ("btn:ai-reanalyze", "手动重新分析", "button", "", "ai:feedback", "", 20, []),
+    ]),
     ("menu:tickets", "任务单", "menu", "/tickets", "tickets:read", "tickets", 10, [
         ("btn:ticket-approve", "审批通过/驳回", "button", "", "tickets:operate", "", 10, []),
         ("btn:ticket-retry", "重试执行", "button", "", "tickets:operate", "", 20, []),
         ("btn:ticket-webhook", "模拟告警接入", "button", "", "tickets:operate", "", 30, []),
+        ("btn:recovery-execute", "执行/取消恢复任务", "button", "", "recovery:execute", "", 40, []),
     ]),
     ("menu:employee", "数字员工", "menu", "/employee", "catalog:read", "user", 20, []),
     ("menu:assets", "资产台账", "menu", "/assets", "assets:read", "grid", 30, []),
-    ("menu:agent-config", "Agent 配置", "menu", "/agent-config", "assets:read", "monitor", 35, []),
     ("menu:backups", "备份管理", "menu", "/backups", "backups:read", "box", 40, [
         ("btn:backup-run", "立即备份", "button", "", "backups:operate", "", 10, []),
         ("btn:backup-verify", "恢复演练", "button", "", "backups:operate", "", 20, []),
@@ -47,6 +51,8 @@ MENU_TREE: list[tuple] = [
         ("menu:users", "用户管理", "menu", "/users", "users:manage", "user-filled", 10, []),
         ("menu:roles", "角色权限", "menu", "/roles", "roles:manage", "key", 20, []),
         ("menu:menus", "菜单管理", "menu", "/menus", "menus:manage", "menu", 30, []),
+        ("menu:ai-config", "AI 服务配置", "menu", "/ai-config", "ai:config", "cpu", 40, []),
+        ("menu:recovery-scripts", "恢复脚本", "menu", "/recovery-scripts", "recovery:manage", "video-play", 50, []),
     ]),
 ]
 
@@ -72,13 +78,27 @@ def flatten(tree: list[tuple], parent: Menu | None = None) -> list[tuple[str, Me
     return out
 
 
+# 已下线的菜单（入口移到页面内，如 Agent 配置移入资产台账母机详情）：
+# seed 时自动从库中清除节点与角色授权引用，避免残留死入口。
+DEPRECATED_CODES = ("menu:agent-config",)
+
+
 def seed_menus(db: Session) -> dict[str, Menu]:
-    """幂等创建菜单树，返回 code→Menu 映射（不删除库中已有节点）。
+    """幂等创建菜单树，返回 code→Menu 映射（不删除库中已有节点，仅清理 DEPRECATED_CODES）。
 
     逐级插入：父节点先 flush 拿到 id，子节点才能正确挂 parent_id。
     对历史数据中 parent_id 为空的非顶级节点做自愈修正。
     """
     existing = {m.code: m for m in db.scalars(select(Menu)).all()}
+
+    # 清理已下线菜单：先删角色授权引用，再删节点
+    for code in DEPRECATED_CODES:
+        gone = existing.pop(code, None)
+        if gone is not None:
+            for row in db.scalars(select(RoleMenu).where(RoleMenu.menu_id == gone.id)).all():
+                db.delete(row)
+            db.delete(gone)
+    db.flush()
 
     def _insert(nodes: list[tuple], parent: Menu | None) -> None:
         for code, name, mtype, path, perm, icon, sort, children in nodes:

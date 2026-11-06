@@ -38,7 +38,7 @@
   ├─ POST /api/v1/agent/report   （X-Agent-Token 认证，body 带 asset_id）
   ├─ GET  /api/v1/agent/config   （启动时 + 定期拉取，平台侧可改采集项/频率）
   └─ 断网本地缓存（环形，上限可配），恢复后按序补发
-母机（DevOpsAgent 平台）
+母机（新知AI-智能巡检 平台）
   ├─ 上报校验 → system_metric_samples（新增 asset_id 列）落库，保留 60 天
   ├─ 离线检测：asset 超过 offline_after 秒无上报 → 状态=offline
   ├─ 「部署 Agent」：复用纳管 SSH 通道，按用户选择下发 py / go 实现
